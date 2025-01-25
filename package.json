@@ -1,0 +1,30 @@
+{
+  "name": "operation-more-bacon",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm run emulators\" \"vite\"",
+    "emulators": "firebase emulators:start --import=./local --export-on-exit",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "bootstrap": "^5.3.3",
+    "bootstrap-icons": "^1.11.3",
+    "firebase": "^11.2.0",
+    "path": "^0.12.7",
+    "pinia": "^2.3.0",
+    "vue": "^3.4.19",
+    "vue-router": "^4.5.0",
+    "vuefire": "^3.2.1"
+  },
+  "devDependencies": {
+    "@types/bootstrap": "^5.2.10",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "concurrently": "^9.1.2",
+    "firebase-tools": "^13.29.2",
+    "terser": "^5.37.0",
+    "vite": "^6.0.5"
+  }
+}

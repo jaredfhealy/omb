@@ -1,0 +1,2 @@
+# O.M.B (Operation More Bacon)
+This is a simple application to project future balances and income based on a 1% average gain per week on the total account balance using the www.LowStressTrading.com strategies.
