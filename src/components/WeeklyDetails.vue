@@ -1,8 +1,12 @@
 <script setup>
 import { useAppStore } from '@/stores/app'
-import { computed } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 
 const store = useAppStore()
+const isSelecting = ref(false)
+const selectionStart = ref(null)
+const selectedCells = ref(new Set())
+const selectionSummary = ref(null)
 
 const getAssignmentsTooltip = (projection) => {
   const assignments = store.getAssignmentsForWeek(projection.week)
@@ -19,10 +23,114 @@ const getCurrentWeek = computed(() => {
   const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
   return Math.ceil(diffDays / 7)
 })
+
+const calculateSummary = (cells) => {
+  if (cells.size === 0) return null
+
+  const values = [...cells].map(cell => {
+    const [week, column] = cell.split('-')
+    const projection = store.projections[Number(week) - 1]
+    
+    // Get numeric value based on column
+    let value = 0
+    switch (column) {
+      case 'balance':
+        value = projection.startBalance
+        break
+      case 'shares':
+        value = projection.sharesBalance
+        break
+      case 'transaction':
+        value = projection.deposit - projection.withdrawal
+        break
+      case 'projectedGrowth':
+        value = projection.projectedGrowth
+        break
+      case 'actualGrowth':
+        value = projection.actualGrowth || 0
+        break
+      case 'actualROR':
+        value = projection.actualROR || 0
+        break
+      case 'endBalance':
+        value = projection.endBalance
+        break
+    }
+    return value
+  }).filter(v => !isNaN(v))
+
+  if (values.length === 0) return null
+
+  return {
+    min: Math.min(...values),
+    max: Math.max(...values),
+    avg: values.reduce((a, b) => a + b, 0) / values.length,
+    total: values.reduce((a, b) => a + b, 0)
+  }
+}
+
+const handleMouseDown = (week, column) => {
+  isSelecting.value = true
+  selectionStart.value = { week, column }
+  selectedCells.value = new Set([`${week}-${column}`])
+  selectionSummary.value = calculateSummary(selectedCells.value)
+}
+
+const handleMouseOver = (week, column) => {
+  if (!isSelecting.value || column !== selectionStart.value.column) return
+  selectedCells.value.add(`${week}-${column}`)
+  selectionSummary.value = calculateSummary(selectedCells.value)
+}
+
+const handleMouseUp = () => {
+  isSelecting.value = false
+}
+
+// Add escape key handler
+const handleEscape = (e) => {
+  if (e.key === 'Escape') {
+    selectedCells.value.clear()
+    selectionSummary.value = null
+  }
+}
+
+// Add event listener for escape key
+onMounted(() => {
+  document.addEventListener('keydown', handleEscape)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('keydown', handleEscape)
+})
 </script>
 
 <template>
   <div class="flex-grow-1 position-relative">
+    <!-- Update selection summary -->
+    <div v-if="selectionSummary" class="selection-summary">
+      <div class="summary-header">
+        <span class="help-text">Hit Esc to close</span>
+      </div>
+      <div class="summary-content">
+        <div class="summary-item">
+          <span class="label">Min:</span>
+          <span class="value">{{ store.currency(selectionSummary.min) }}</span>
+        </div>
+        <div class="summary-item">
+          <span class="label">Max:</span>
+          <span class="value">{{ store.currency(selectionSummary.max) }}</span>
+        </div>
+        <div class="summary-item">
+          <span class="label">Avg:</span>
+          <span class="value">{{ store.currency(selectionSummary.avg) }}</span>
+        </div>
+        <div class="summary-item">
+          <span class="label">Total:</span>
+          <span class="value">{{ store.currency(selectionSummary.total) }}</span>
+        </div>
+      </div>
+    </div>
+
     <div class="table-responsive position-absolute" style="top: 0; bottom: 0; left: 0; right: 0;">
       <div class="pb-4"> <!-- Add padding wrapper -->
         <table class="table table-striped table-hover">
@@ -57,19 +165,42 @@ const getCurrentWeek = computed(() => {
           </thead>
           <tbody>
             <tr v-for="(projection, index) in store.projections" :key="index" :class="{ 'current-week': projection.week === getCurrentWeek }">
-              <td>{{ projection.week }}</td>
-              <td>{{ store.weekRange(projection.week) }}</td>
-              <td>{{ store.currency(projection.startBalance) }}</td>
+              <td @mousedown="handleMouseDown(projection.week, 'week')"
+                  @mouseover="handleMouseOver(projection.week, 'week')"
+                  @mouseup="handleMouseUp"
+                  :class="{ 'selected': selectedCells.has(`${projection.week}-week`) }">
+                {{ projection.week }}
+              </td>
+              <td @mousedown="handleMouseDown(projection.week, 'period')"
+                  @mouseover="handleMouseOver(projection.week, 'period')"
+                  @mouseup="handleMouseUp"
+                  :class="{ 'selected': selectedCells.has(`${projection.week}-period`) }">
+                {{ store.weekRange(projection.week) }}
+              </td>
+              <td @mousedown="handleMouseDown(projection.week, 'balance')"
+                  @mouseover="handleMouseOver(projection.week, 'balance')"
+                  @mouseup="handleMouseUp"
+                  :class="{ 'selected': selectedCells.has(`${projection.week}-balance`) }">
+                {{ store.currency(projection.startBalance) }}
+              </td>
               <td v-if="store.activeAccount.positions.length > 0">
                 <span v-if="projection.sharesBalanceAddedThisWeek > 0" 
                       class="position-relative"
                       data-bs-toggle="tooltip"
                       :data-bs-html="true"
-                      :data-bs-title="getAssignmentsTooltip(projection)">
+                      :data-bs-title="getAssignmentsTooltip(projection)"
+                      @mousedown="handleMouseDown(projection.week, 'shares')"
+                      @mouseover="handleMouseOver(projection.week, 'shares')"
+                      @mouseup="handleMouseUp"
+                      :class="{ 'selected': selectedCells.has(`${projection.week}-shares`) }">
                   {{ store.currency(projection.sharesBalance) }}
                   <i class="bi bi-info-circle ms-1"></i>
                 </span>
-                <span v-else>
+                <span v-else
+                      @mousedown="handleMouseDown(projection.week, 'shares')"
+                      @mouseover="handleMouseOver(projection.week, 'shares')"
+                      @mouseup="handleMouseUp"
+                      :class="{ 'selected': selectedCells.has(`${projection.week}-shares`) }">
                   {{ store.currency(projection.sharesBalance) }}
                 </span>
               </td>
@@ -79,7 +210,11 @@ const getCurrentWeek = computed(() => {
                     @click="store.editNetTransactionFromRow(projection.week)"></i>
                   <span data-bs-toggle="tooltip" :data-bs-html="true"
                     :data-bs-title="`Deposit: ${store.currency(projection.deposit)}<br />Withdraw: (${store.currency(projection.withdrawal)})`"
-                    :style="store.formatNetTransaction(projection.deposit, projection.withdrawal).style">
+                    :style="store.formatNetTransaction(projection.deposit, projection.withdrawal).style"
+                    @mousedown="handleMouseDown(projection.week, 'transaction')"
+                    @mouseover="handleMouseOver(projection.week, 'transaction')"
+                    @mouseup="handleMouseUp"
+                    :class="{ 'selected': selectedCells.has(`${projection.week}-transaction`) }">
                     {{ store.formatNetTransaction(projection.deposit,
                       projection.withdrawal).value }}
                     {{ store.formatNetTransaction(projection.deposit,
@@ -87,8 +222,16 @@ const getCurrentWeek = computed(() => {
                   </span>
                 </div>
               </td>
-              <td>{{ store.currency(projection.projectedGrowth) }}</td>
-              <td>
+              <td @mousedown="handleMouseDown(projection.week, 'projectedGrowth')"
+                  @mouseover="handleMouseOver(projection.week, 'projectedGrowth')"
+                  @mouseup="handleMouseUp"
+                  :class="{ 'selected': selectedCells.has(`${projection.week}-projectedGrowth`) }">
+                {{ store.currency(projection.projectedGrowth) }}
+              </td>
+              <td @mousedown="handleMouseDown(projection.week, 'actualGrowth')"
+                  @mouseover="handleMouseOver(projection.week, 'actualGrowth')"
+                  @mouseup="handleMouseUp"
+                  :class="{ 'selected': selectedCells.has(`${projection.week}-actualGrowth`) }">
                 <span v-if="projection.actualGrowth !== null" data-bs-toggle="tooltip" :data-bs-html="true"
                   :data-bs-title="`
                         Avg All: ${store.currency(projection.averageGrowth)}<br>
@@ -102,7 +245,10 @@ const getCurrentWeek = computed(() => {
                   {{ store.currency(0) }}
                 </span>
               </td>
-              <td>
+              <td @mousedown="handleMouseDown(projection.week, 'actualROR')"
+                  @mouseover="handleMouseOver(projection.week, 'actualROR')"
+                  @mouseup="handleMouseUp"
+                  :class="{ 'selected': selectedCells.has(`${projection.week}-actualROR`) }">
                 <span v-if="projection.actualROR" data-bs-toggle="tooltip" :data-bs-html="true" :data-bs-title="`
                         Avg All: ${projection.averageROR}%<br>
                         Avg to Date: ${projection.trailingTotalROR}%<br>
@@ -115,8 +261,16 @@ const getCurrentWeek = computed(() => {
                   0%
                 </span>
               </td>
-              <td>{{ store.currency(projection.endBalance) }}</td>
-              <td>
+              <td @mousedown="handleMouseDown(projection.week, 'endBalance')"
+                  @mouseover="handleMouseOver(projection.week, 'endBalance')"
+                  @mouseup="handleMouseUp"
+                  :class="{ 'selected': selectedCells.has(`${projection.week}-endBalance`) }">
+                {{ store.currency(projection.endBalance) }}
+              </td>
+              <td @mousedown="handleMouseDown(projection.week, 'actions')"
+                  @mouseover="handleMouseOver(projection.week, 'actions')"
+                  @mouseup="handleMouseUp"
+                  :class="{ 'selected': selectedCells.has(`${projection.week}-actions`) }">
                 <button class="btn btn-sm btn-outline-primary" @click="store.editWeekRow(projection.week)">
                   <i class="bi bi-pencil-square"></i>
                 </button>
@@ -140,5 +294,67 @@ const getCurrentWeek = computed(() => {
 /* Add hover state to maintain highlighting */
 .current-week:hover > td {
   background-color: rgba(198, 222, 210, 0.95) !important;
+}
+
+.selected {
+  background-color: rgba(0, 123, 255, 0.15) !important;
+  position: relative;
+  z-index: 2;
+}
+
+/* Make selection more visible on current week */
+.current-week .selected {
+  background-color: rgba(0, 123, 255, 0.25) !important;
+}
+
+/* Prevent text selection while dragging */
+.table td {
+  user-select: none;
+}
+
+.selection-summary {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 10px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  z-index: 1000;
+}
+
+.summary-header {
+  margin-bottom: 8px;
+  text-align: center;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #eee;
+}
+
+.help-text {
+  font-size: 0.8em;
+  color: #666;
+  font-style: italic;
+}
+
+.summary-content {
+  display: flex;
+  gap: 20px;
+}
+
+.summary-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.summary-item .label {
+  font-size: 0.8em;
+  color: #666;
+}
+
+.summary-item .value {
+  font-weight: bold;
 }
 </style>
