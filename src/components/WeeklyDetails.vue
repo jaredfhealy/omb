@@ -24,6 +24,9 @@ const getCurrentWeek = computed(() => {
   return Math.ceil(diffDays / 7)
 })
 
+// Add allowable columns constant
+const SELECTABLE_COLUMNS = ['transaction', 'projectedGrowth', 'actualGrowth', 'actualROR']
+
 const calculateSummary = (cells) => {
   if (cells.size === 0) return null
 
@@ -70,6 +73,7 @@ const calculateSummary = (cells) => {
 }
 
 const handleMouseDown = (week, column) => {
+  if (!SELECTABLE_COLUMNS.includes(column)) return
   isSelecting.value = true
   selectionStart.value = { week, column }
   selectedCells.value = new Set([`${week}-${column}`])
@@ -77,7 +81,7 @@ const handleMouseDown = (week, column) => {
 }
 
 const handleMouseOver = (week, column) => {
-  if (!isSelecting.value || column !== selectionStart.value.column) return
+  if (!isSelecting.value || column !== selectionStart.value.column || !SELECTABLE_COLUMNS.includes(column)) return
   selectedCells.value.add(`${week}-${column}`)
   selectionSummary.value = calculateSummary(selectedCells.value)
 }
@@ -165,42 +169,19 @@ onUnmounted(() => {
           </thead>
           <tbody>
             <tr v-for="(projection, index) in store.projections" :key="index" :class="{ 'current-week': projection.week === getCurrentWeek }">
-              <td @mousedown="handleMouseDown(projection.week, 'week')"
-                  @mouseover="handleMouseOver(projection.week, 'week')"
-                  @mouseup="handleMouseUp"
-                  :class="{ 'selected': selectedCells.has(`${projection.week}-week`) }">
-                {{ projection.week }}
-              </td>
-              <td @mousedown="handleMouseDown(projection.week, 'period')"
-                  @mouseover="handleMouseOver(projection.week, 'period')"
-                  @mouseup="handleMouseUp"
-                  :class="{ 'selected': selectedCells.has(`${projection.week}-period`) }">
-                {{ store.weekRange(projection.week) }}
-              </td>
-              <td @mousedown="handleMouseDown(projection.week, 'balance')"
-                  @mouseover="handleMouseOver(projection.week, 'balance')"
-                  @mouseup="handleMouseUp"
-                  :class="{ 'selected': selectedCells.has(`${projection.week}-balance`) }">
-                {{ store.currency(projection.startBalance) }}
-              </td>
+              <td>{{ projection.week }}</td>
+              <td>{{ store.weekRange(projection.week) }}</td>
+              <td>{{ store.currency(projection.startBalance) }}</td>
               <td v-if="store.activeAccount.positions.length > 0">
                 <span v-if="projection.sharesBalanceAddedThisWeek > 0" 
                       class="position-relative"
                       data-bs-toggle="tooltip"
                       :data-bs-html="true"
-                      :data-bs-title="getAssignmentsTooltip(projection)"
-                      @mousedown="handleMouseDown(projection.week, 'shares')"
-                      @mouseover="handleMouseOver(projection.week, 'shares')"
-                      @mouseup="handleMouseUp"
-                      :class="{ 'selected': selectedCells.has(`${projection.week}-shares`) }">
+                      :data-bs-title="getAssignmentsTooltip(projection)">
                   {{ store.currency(projection.sharesBalance) }}
                   <i class="bi bi-info-circle ms-1"></i>
                 </span>
-                <span v-else
-                      @mousedown="handleMouseDown(projection.week, 'shares')"
-                      @mouseover="handleMouseOver(projection.week, 'shares')"
-                      @mouseup="handleMouseUp"
-                      :class="{ 'selected': selectedCells.has(`${projection.week}-shares`) }">
+                <span v-else>
                   {{ store.currency(projection.sharesBalance) }}
                 </span>
               </td>
@@ -261,16 +242,8 @@ onUnmounted(() => {
                   0%
                 </span>
               </td>
-              <td @mousedown="handleMouseDown(projection.week, 'endBalance')"
-                  @mouseover="handleMouseOver(projection.week, 'endBalance')"
-                  @mouseup="handleMouseUp"
-                  :class="{ 'selected': selectedCells.has(`${projection.week}-endBalance`) }">
-                {{ store.currency(projection.endBalance) }}
-              </td>
-              <td @mousedown="handleMouseDown(projection.week, 'actions')"
-                  @mouseover="handleMouseOver(projection.week, 'actions')"
-                  @mouseup="handleMouseUp"
-                  :class="{ 'selected': selectedCells.has(`${projection.week}-actions`) }">
+              <td>{{ store.currency(projection.endBalance) }}</td>
+              <td>
                 <button class="btn btn-sm btn-outline-primary" @click="store.editWeekRow(projection.week)">
                   <i class="bi bi-pencil-square"></i>
                 </button>

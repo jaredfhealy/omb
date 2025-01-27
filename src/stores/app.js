@@ -244,17 +244,18 @@ export const useAppStore = defineStore('app', {
         
         // Determine which growth value to use
         let growth
-        if (weekEndDate < today) {
+        if (weekEndDate <= today) {
           // For completed weeks, use actual growth (including 0)
           growth = actualEntry ? Number(actualEntry.growth) : 0
         } else {
-          // For future/current weeks, use projected growth
-          growth = projectedGrowth
+          // For future/current weeks:
+          // If there's an actual entry, use it, otherwise use projected
+          growth = actualEntry ? Number(actualEntry.growth) : projectedGrowth
         }
 
-        // Track actual growths when available (for completed weeks)
-        if (weekEndDate <= today) {
-          actualGrowths.push(growth)
+        // Track actual growths when available
+        if (actualEntry) {
+          actualGrowths.push(Number(actualEntry.growth))
         }
 
         // Calculate trailing growth averages
@@ -311,7 +312,7 @@ export const useAppStore = defineStore('app', {
           withdrawal: transactions.totalWithdrawals,
           withdrawalsByCategory: transactions.withdrawals,
           projectedGrowth,
-          actualGrowth: weekEndDate < today ? growth : null,
+          actualGrowth: actualEntry ? Number(actualEntry.growth) : null,
           actualROR: weekROR,
           averageROR: 0,
           trailing4WeekROR: trailing4WeekROR?.toFixed(2),
