@@ -10,23 +10,23 @@ import { useAppStore } from '@/stores/app'
 
 const store = useAppStore()
 
-const initTooltips = () => {
-  document.querySelectorAll('[data-bs-toggle="tooltip"]')
-  .forEach(el => {
-    let tooltip = bootstrap.Tooltip.getInstance(el)
-    if (tooltip) {
-      tooltip.dispose()
-    }
-    new bootstrap.Tooltip(el)
-  })
-}
+// const initTooltips = () => {
+//   document.querySelectorAll('[data-bs-toggle="tooltip"]')
+//   .forEach(el => {
+//     let tooltip = bootstrap.Tooltip.getInstance(el)
+//     if (tooltip) {
+//       tooltip.dispose()
+//     }
+//     new bootstrap.Tooltip(el)
+//   })
+// }
 
 onMounted(() => {
   store.getBaconStash()
 });
 
 onUpdated(() => {
-  initTooltips()
+  store.initTooltips()
 });
 </script>
 
