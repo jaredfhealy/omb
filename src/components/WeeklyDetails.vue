@@ -1,5 +1,6 @@
 <script setup>
 import { useAppStore } from '@/stores/app'
+import { computed } from 'vue'
 
 const store = useAppStore()
 
@@ -9,6 +10,15 @@ const getAssignmentsTooltip = (projection) => {
     ${assignments.map(p => `${p.symbol}: ${p.shares} shares @ ${store.currency(p.strikePrice)}`).join('<br>')}
     <br>Total: ${store.currency(projection.sharesBalanceAddedThisWeek)}`
 }
+
+// Add function to determine current week
+const getCurrentWeek = computed(() => {
+  const today = new Date()
+  const startDate = new Date(store.activeAccount.settings.startDate)
+  const diffTime = today - startDate
+  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
+  return Math.ceil(diffDays / 7)
+})
 </script>
 
 <template>
@@ -46,7 +56,7 @@ const getAssignmentsTooltip = (projection) => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(projection, index) in store.projections" :key="index">
+            <tr v-for="(projection, index) in store.projections" :key="index" :class="{ 'current-week': projection.week === getCurrentWeek }">
               <td>{{ projection.week }}</td>
               <td>{{ store.weekRange(projection.week) }}</td>
               <td>{{ store.currency(projection.startBalance) }}</td>
@@ -121,3 +131,14 @@ const getAssignmentsTooltip = (projection) => {
     </div>
   </div>
 </template>
+
+<style>
+.current-week > td {
+  background-color: rgba(198, 222, 210, 0.85) !important;
+}
+
+/* Add hover state to maintain highlighting */
+.current-week:hover > td {
+  background-color: rgba(198, 222, 210, 0.95) !important;
+}
+</style>
