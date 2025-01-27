@@ -2,7 +2,7 @@
   <router-view/>
 </template>
 
-<style scoped>
+<style>
 #app {
     overflow: hidden;
 }
@@ -11,21 +11,22 @@
     display: none
 }
 
-.table-responsive {
-    overflow-y: auto;
-}
-
-thead {
-    position: sticky;
-    top: 0;
-    background: white;
-    z-index: 1;
-}
-
 /* Remove the navbar's default margin-bottom and rounded borders */
 .navbar {
     margin-bottom: 0;
     border-radius: 0;
+}
+
+/* Navbar styles */
+#appNav .navbar-nav .nav-link,
+#appNav .navbar-brand,
+#appNav .dropdown-toggle {
+  color: white;
+}
+
+#appNav .navbar-nav .nav-link:hover,
+#appNav .dropdown-toggle:hover {
+  color: rgba(255, 255, 255, 0.8);
 }
 
 /* Set height of the grid so .sidenav can be 100% (adjust as needed) */

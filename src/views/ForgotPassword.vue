@@ -22,6 +22,12 @@ const handleSubmit = async () => {
 </script>
 
 <template>
+  <nav id="appNav" class="navbar navbar-expand-sm navbar-darg bg-primary mb-3">
+    <div class="container-fluid">
+      <span class="navbar-brand">Operation More Bacon</span>
+    </div>
+  </nav>
+
   <div class="container">
     <div class="row justify-content-center">
       <div class="col-md-6 col-lg-4">
