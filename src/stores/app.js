@@ -232,13 +232,29 @@ export const useAppStore = defineStore('app', {
         // Subtract newly assigned positions from start balance
         startBalance -= sharesBalanceAddedThisWeek
 
-        // Get actual entry and calculate growth
-        const actualEntry = this.activeAccount.actuals.find(a => Number(a.week) === week)
-        const growth = actualEntry ? Number(actualEntry.growth) : projectedGrowth
+        // Calculate week's end date
+        const weekStartDate = new Date(this.activeAccount.settings.startDate)
+        weekStartDate.setDate(weekStartDate.getDate() + (week - 1) * 7)
+        const weekEndDate = new Date(weekStartDate)
+        weekEndDate.setDate(weekEndDate.getDate() + 6)  // Add 6 days to get end of week
+        const today = new Date()
 
-        // Track growths when available
-        if (actualEntry?.growth) {
-          actualGrowths.push(Number(actualEntry.growth))
+        // Get actual entry
+        const actualEntry = this.activeAccount.actuals.find(a => Number(a.week) === week)
+        
+        // Determine which growth value to use
+        let growth
+        if (weekEndDate < today) {
+          // For completed weeks, use actual growth (including 0)
+          growth = actualEntry ? Number(actualEntry.growth) : 0
+        } else {
+          // For future/current weeks, use projected growth
+          growth = projectedGrowth
+        }
+
+        // Track actual growths when available (for completed weeks)
+        if (weekEndDate <= today) {
+          actualGrowths.push(growth)
         }
 
         // Calculate trailing growth averages
@@ -295,7 +311,7 @@ export const useAppStore = defineStore('app', {
           withdrawal: transactions.totalWithdrawals,
           withdrawalsByCategory: transactions.withdrawals,
           projectedGrowth,
-          actualGrowth: actualEntry?.growth || null,
+          actualGrowth: weekEndDate < today ? growth : null,
           actualROR: weekROR,
           averageROR: 0,
           trailing4WeekROR: trailing4WeekROR?.toFixed(2),
