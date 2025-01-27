@@ -30,36 +30,14 @@ const SELECTABLE_COLUMNS = ['transaction', 'projectedGrowth', 'actualGrowth', 'a
 const calculateSummary = (cells) => {
   if (cells.size === 0) return null
 
+  const [firstCell] = cells
+  const [, column] = firstCell.split('-')
+  const isROR = column === 'actualROR'
+
   const values = [...cells].map(cell => {
-    const [week, column] = cell.split('-')
+    const [week] = cell.split('-')
     const projection = store.projections[Number(week) - 1]
-    
-    // Get numeric value based on column
-    let value = 0
-    switch (column) {
-      case 'balance':
-        value = projection.startBalance
-        break
-      case 'shares':
-        value = projection.sharesBalance
-        break
-      case 'transaction':
-        value = projection.deposit - projection.withdrawal
-        break
-      case 'projectedGrowth':
-        value = projection.projectedGrowth
-        break
-      case 'actualGrowth':
-        value = projection.actualGrowth || 0
-        break
-      case 'actualROR':
-        value = projection.actualROR || 0
-        break
-      case 'endBalance':
-        value = projection.endBalance
-        break
-    }
-    return value
+    return isROR ? (projection.actualROR || 0) : (projection[column] || 0)
   }).filter(v => !isNaN(v))
 
   if (values.length === 0) return null
@@ -68,7 +46,8 @@ const calculateSummary = (cells) => {
     min: Math.min(...values),
     max: Math.max(...values),
     avg: values.reduce((a, b) => a + b, 0) / values.length,
-    total: values.reduce((a, b) => a + b, 0)
+    total: values.reduce((a, b) => a + b, 0),
+    isROR
   }
 }
 
@@ -118,19 +97,39 @@ onUnmounted(() => {
       <div class="summary-content">
         <div class="summary-item">
           <span class="label">Min:</span>
-          <span class="value">{{ store.currency(selectionSummary.min) }}</span>
+          <span class="value" v-if="selectionSummary.isROR">
+            {{ selectionSummary.min.toFixed(2) }}%
+          </span>
+          <span class="value" v-else>
+            {{ store.currency(selectionSummary.min) }}
+          </span>
         </div>
         <div class="summary-item">
           <span class="label">Max:</span>
-          <span class="value">{{ store.currency(selectionSummary.max) }}</span>
+          <span class="value" v-if="selectionSummary.isROR">
+            {{ selectionSummary.max.toFixed(2) }}%
+          </span>
+          <span class="value" v-else>
+            {{ store.currency(selectionSummary.max) }}
+          </span>
         </div>
         <div class="summary-item">
           <span class="label">Avg:</span>
-          <span class="value">{{ store.currency(selectionSummary.avg) }}</span>
+          <span class="value" v-if="selectionSummary.isROR">
+            {{ selectionSummary.avg.toFixed(2) }}%
+          </span>
+          <span class="value" v-else>
+            {{ store.currency(selectionSummary.avg) }}
+          </span>
         </div>
         <div class="summary-item">
           <span class="label">Total:</span>
-          <span class="value">{{ store.currency(selectionSummary.total) }}</span>
+          <span class="value" v-if="selectionSummary.isROR">
+            {{ selectionSummary.total.toFixed(2) }}%
+          </span>
+          <span class="value" v-else>
+            {{ store.currency(selectionSummary.total) }}
+          </span>
         </div>
       </div>
     </div>

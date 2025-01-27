@@ -1,8 +1,8 @@
 // stores/app.js
 import { defineStore } from 'pinia'
-import { watch } from 'vue'
+import { watch, nextTick } from 'vue'
 import { auth, db } from '@/firebase'
-import { signOut } from 'firebase/auth'
+import { signOut, updatePassword, createUserWithEmailAndPassword, sendPasswordResetEmail } from 'firebase/auth'
 import {
   doc,
   setDoc,
@@ -374,6 +374,63 @@ export const useAppStore = defineStore('app', {
       }
     },
 
+    async updatePassword(newPassword) {
+      try {
+        const user = auth.currentUser
+        if (!user) throw new Error('No user logged in')
+        
+        await updatePassword(user, newPassword)
+        return true
+      } catch (error) {
+        console.error('Password update failed:', error)
+        throw new Error('Failed to update password. You may need to sign out and back in.')
+      }
+    },
+
+    async createUser(email, password) {
+      try {
+        const userCredential = await createUserWithEmailAndPassword(auth, email, password)
+        this.user = userCredential.user
+        
+        // Initialize empty account structure for new user
+        const newUserData = {
+          accounts: [{
+            id: 1,
+            name: 'Default Account',
+            transactions: [],
+            actuals: [],
+            positions: [],
+            settings: {
+              startDate: new Date().toISOString().split('T')[0],
+              startingBalance: 5000,
+              weeklyReturn: 1,
+              years: 4
+            }
+          }],
+          selectedAccountId: 1
+        }
+        
+        // Save initial data
+        await setDoc(doc(db, 'accounts', userCredential.user.uid), newUserData)
+        
+        this.db = newUserData
+        return userCredential
+      } catch (error) {
+        console.error('Signup error:', error)
+        throw new Error(error.message)
+      }
+    },
+
+    async sendPasswordReset(email) {
+      try {
+        await sendPasswordResetEmail(auth, email)
+        return true
+      } catch (error) {
+        console.error('Password reset failed:', error)
+        throw new Error('Failed to send password reset email. Please try again.')
+      }
+    },
+
     // Transaction Management
     editWeekRow(week) {
       const existingActual = this.activeAccount.actuals.find(a => Number(a.week) === week)
@@ -409,6 +466,11 @@ export const useAppStore = defineStore('app', {
 
       this.calculateProjections()
       this.closeWeekRow()
+      
+      // Add nextTick to initialize tooltips after DOM update
+      nextTick(() => {
+        this.initTooltips()
+      })
     },
 
     closeWeekRow() {

@@ -4,7 +4,7 @@ const store = useAppStore()
 </script>
 
 <template>
-  <nav id="appNav" class="navbar navbar-expand-sm navbar-light bg-light mb-3">
+  <nav id="appNav" class="navbar navbar-expand-lg navbar-dark bg-primary mb-3">
     <div class="container-fluid">
       <span class="navbar-brand">Operation More Bacon</span>
       <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarContent"
@@ -24,6 +24,10 @@ const store = useAppStore()
               {{ store.user.email }}
             </a>
             <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="userDropdown">
+              <li>
+                <a class="dropdown-item" href="#" data-bs-toggle="modal" data-bs-target="#changePasswordModal">Change Password</a>
+              </li>
+              <li><hr class="dropdown-divider"></li>
               <li>
                 <a class="dropdown-item" href="#" @click.prevent="store.logout">
                   <i class="bi bi-box-arrow-right"></i> Logout

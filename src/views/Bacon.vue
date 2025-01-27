@@ -1,7 +1,16 @@
 <script setup>
 import AppNavigation from '../components/AppNavigation.vue'
 import BalanceProjector from '../components/BalanceProjector.vue'
-import { NewAccountModal, SwitchAccountModal, ConfirmModal, EditTransactionModal, EditRowModal, SettingsModal, EditPositionModal } from '../components/modals'
+import {
+  NewAccountModal,
+  SwitchAccountModal,
+  ConfirmModal,
+  EditTransactionModal,
+  EditRowModal,
+  SettingsModal,
+  EditPositionModal,
+  ChangePasswordModal
+} from '../components/modals'
 </script>
 
 <template>
@@ -19,6 +28,7 @@ import { NewAccountModal, SwitchAccountModal, ConfirmModal, EditTransactionModal
     <NewAccountModal />
     <SwitchAccountModal />
     <EditPositionModal />
+    <ChangePasswordModal />
 
   </div>
 </template>

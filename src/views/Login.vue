@@ -48,6 +48,11 @@ const login = async () => {
               <div v-if="error" class="alert alert-danger">{{ error }}</div>
               <button type="submit" class="btn btn-primary">Login</button>
             </form>
+            <div class="text-center mt-3">
+              <router-link to="/signup">Need an account? Sign up</router-link>
+              <br>
+              <router-link to="/forgot-password">Forgot Password?</router-link>
+            </div>
           </div>
         </div>
       </div>
