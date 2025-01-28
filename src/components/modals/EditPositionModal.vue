@@ -55,7 +55,7 @@ const store = useAppStore()
             </select>
           </div>
           <div class="form-group mb-3">
-            <label>Called/Sold Week</label>
+            <label>CALLed/Sold Week</label>
             <div class="form-text ms-1 mb-1">Week when position was called away or sold (optional)</div>
             <select class="form-select" v-model.number="store.editingPosition.soldWeek">
               <option :value="null">-- Not Yet Sold --</option>
@@ -73,7 +73,7 @@ const store = useAppStore()
             </div>
             <div class="col-6">
               <div class="form-group">
-                <label>Current Price</label>
+                <label>CALL/Sold Price</label>
                 <input type="number" class="form-control" v-model.number="store.editingPosition.currentPrice" step="0.01">
               </div>
             </div>

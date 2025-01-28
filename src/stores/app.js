@@ -213,6 +213,14 @@ export const useAppStore = defineStore('app', {
         const transactions = this.getTransactionsForWeek(week)
         const projectedGrowth = startBalance * (this.activeAccount.settings.weeklyReturn / 100)
 
+        // Calculate positions being sold this week
+        const positionsSoldThisWeek = (this.activeAccount.positions || []).reduce((sum, position) => {
+          if (position.soldWeek === week) {
+            return sum + (position.strikePrice * position.shares)
+          }
+          return sum
+        }, 0)
+
         // Calculate newly assigned positions for this week
         const sharesBalanceAddedThisWeek = (this.activeAccount.positions || []).reduce((sum, position) => {
           if (position.assignedWeek === week) {
@@ -221,16 +229,16 @@ export const useAppStore = defineStore('app', {
           return sum
         }, 0)
 
-        // Calculate total shares balance including previously assigned positions
+        // Calculate total shares balance including previously assigned positions, excluding sold positions
         const sharesBalance = (this.activeAccount.positions || []).reduce((sum, position) => {
-          if (position.assignedWeek <= week) {
+          if (position.assignedWeek <= week && (!position.soldWeek || position.soldWeek > week)) {
             return sum + (position.strikePrice * position.shares)
           }
           return sum
         }, 0)
 
-        // Subtract newly assigned positions from start balance
-        startBalance -= sharesBalanceAddedThisWeek
+        // Add sold positions back to cash balance and subtract newly assigned positions
+        startBalance = startBalance + positionsSoldThisWeek - sharesBalanceAddedThisWeek
 
         // Calculate week's end date
         const weekStartDate = new Date(this.activeAccount.settings.startDate)
