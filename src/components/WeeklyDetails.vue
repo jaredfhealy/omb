@@ -243,7 +243,9 @@ onUnmounted(() => {
               </td>
               <td>{{ store.currency(projection.endBalance) }}</td>
               <td>
-                <button class="btn btn-sm btn-outline-primary" @click="store.editWeekRow(projection.week)">
+                <button type="button" 
+                        class="btn btn-sm btn-outline-primary" 
+                        @click="store.showWeeklyRowModal(projection.week)">
                   <i class="bi bi-pencil-square"></i>
                 </button>
                 {{ store.activeAccount.actuals.some(a => Number(a.week) ===

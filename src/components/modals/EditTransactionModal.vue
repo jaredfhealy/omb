@@ -1,6 +1,30 @@
 <script setup>
 import { useAppStore } from '@/stores/app'
+import { watch } from 'vue'
+
 const store = useAppStore()
+
+// Move watchers to the modal component
+watch(
+  () => store.editingTransaction?.startWeek,
+  (newVal, oldVal) => {
+    if (newVal > store.editingTransaction?.endWeek && newVal !== null && oldVal === null) {
+      store.editingTransaction.endWeek = newVal
+    }
+    else if (newVal > store.editingTransaction?.endWeek && store.editingTransaction.endWeek !== null && newVal !== null) {
+      store.editingTransaction.endWeek = newVal
+    }
+  }
+)
+
+watch(
+  () => store.editingTransaction?.endWeek,
+  (newVal, oldVal) => {
+    if (newVal < store.editingTransaction?.startWeek && newVal !== null) {
+      store.editingTransaction.startWeek = newVal
+    }
+  }
+)
 </script>
 
 <template>

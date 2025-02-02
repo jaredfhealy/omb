@@ -1,26 +1,70 @@
 <script setup>
+import { ref } from 'vue'
 import { useAppStore } from '@/stores/app'
 
 const store = useAppStore()
-store.initTooltips()
+const isVisible = ref(false)
+
+const show = () => {
+  isVisible.value = true
+}
+
+const close = () => {
+  isVisible.value = false
+}
+
+const selectAccount = (id) => {
+  store.db.selectedAccountId = id
+  store.calculateProjections()
+  close()
+}
+
+const editAccount = (account) => {
+  close()
+  store.editAccount(account)
+}
+
+const deleteAccount = (account) => {
+  if (store.confirm) {
+    close()
+    store.confirm(
+      `Are you sure you want to delete ${account.name}?`,
+      () => {
+        store.db.accounts = store.db.accounts.filter(a => a.id !== account.id)
+        if (store.db.selectedAccountId === account.id) {
+          store.db.selectedAccountId = store.db.accounts[0].id
+        }
+        store.calculateProjections()
+        show()
+      }
+    )
+  }
+}
+
+const addNewAccount = () => {
+  close()
+  store.openNewAccountModal()
+}
 
 const handleFileUpload = (event) => {
   const file = event.target.files[0]
   if (file) {
     store.restoreBackup(file)
   }
-  // Reset input so same file can be selected again
   event.target.value = ''
+  close()
 }
+
+defineExpose({ show })
 </script>
 
 <template>
-  <div class="modal" tabindex="-1" :class="{ 'd-block': store.showSwitchAccountModal }" v-show="store.showSwitchAccountModal">
+  <div class="modal" tabindex="-1" :class="{ 'd-block': isVisible }" v-show="isVisible">
     <div class="modal-dialog">
       <div class="modal-content">
         <div class="modal-header">
           <h5 class="modal-title">Manage or Switch Accounts</h5>
-          <button type="button" class="btn-close" @click="store.closeSwitchAccountModal"></button>
+          <button type="button" class="btn-close" @click="close"></button>
         </div>
         <div class="modal-body">
           <table class="table">
@@ -33,16 +77,16 @@ const handleFileUpload = (event) => {
             <tbody>
               <tr v-for="account in store.db.accounts" :key="account.id">
                 <td>
-                  <a href="#" @click.prevent="store.selectAccount(account.id)" data-bs-toggle="tooltip"
+                  <a href="#" @click.prevent="selectAccount(account.id)" data-bs-toggle="tooltip"
                     data-bs-title="Click to change accounts">
                     {{ account.name }}
                   </a>
                 </td>
                 <td>
-                  <button class="btn btn-sm btn-link" @click="store.editAccount(account)">
+                  <button class="btn btn-sm btn-link" @click="editAccount(account)">
                     <i class="bi bi-pencil-square"></i>
                   </button>
-                  <button class="btn btn-sm btn-link text-danger" @click="store.deleteAccount(account)">
+                  <button class="btn btn-sm btn-link text-danger" @click="deleteAccount(account)">
                     <i class="bi bi-trash"></i>
                   </button>
                 </td>
@@ -62,7 +106,7 @@ const handleFileUpload = (event) => {
               </button>
             </div>
 
-            <button class="btn btn-primary" @click="store.switchToNewAccountModal()">
+            <button class="btn btn-primary" @click="addNewAccount">
               <i class="bi bi-plus-circle"></i> Add New Account
             </button>
           </div>
@@ -71,7 +115,6 @@ const handleFileUpload = (event) => {
     </div>
     <div class="modal-backdrop fade show"></div>
 
-    <!-- Hidden input for file upload to restoreBackup -->
     <input 
       type="file" 
       @change="handleFileUpload" 

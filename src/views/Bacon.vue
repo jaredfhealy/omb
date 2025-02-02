@@ -1,36 +1,38 @@
 <script setup>
-import AppNavigation from '../components/AppNavigation.vue'
-import BalanceProjector from '../components/BalanceProjector.vue'
+import { ref } from 'vue'
+import { useAppStore } from '@/stores/app'
+import BalanceProjector from '@/components/BalanceProjector.vue'
 import {
   NewAccountModal,
   SwitchAccountModal,
-  ConfirmModal,
   EditTransactionModal,
   EditRowModal,
   SettingsModal,
-  EditPositionModal,
-  ChangePasswordModal
-} from '../components/modals'
+  EditPositionModal
+} from '@/components/modals'
+
+const store = useAppStore()
+const positionModalRef = ref(null)
+const weeklyRowModalref = ref(null)
+const switchAccountModalRef = ref(null)
+
+// Make modals available globally
+store.showPositionModal = positionModalRef.value?.show(position, index)
+store.showWeeklyRowModal = (week) => weeklyRowModalref.value?.show(week)
+store.openSwitchAccountModal = () => switchAccountModalRef.value?.show()
 </script>
 
 <template>
-  <div id="app" v-cloak>
-    <AppNavigation />
-    <div class="container-fluid" style="height: calc(100vh - 20px);">
-      <BalanceProjector />
-    </div>
+  <!-- Main projection tracking component -->
+  <BalanceProjector />
 
-    <!-- Modals -->
-    <ConfirmModal />
-    <EditTransactionModal />
-    <EditRowModal />
-    <SettingsModal />
-    <NewAccountModal />
-    <SwitchAccountModal />
-    <EditPositionModal />
-    <ChangePasswordModal />
-
-  </div>
+  <!-- View-specific Modals -->
+  <EditTransactionModal />
+  <EditRowModal ref="weeklyRowModalref" />
+  <SettingsModal />
+  <NewAccountModal />
+  <SwitchAccountModal ref="switchAccountModalRef" />
+  <EditPositionModal id="positionModal" ref="positionModalRef" />
 </template>
 
 <style scoped>

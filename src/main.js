@@ -12,19 +12,19 @@ import * as bootstrap from 'bootstrap'
 window.bootstrap = bootstrap
 
 const pinia = createPinia()
-
-// Create the vue app with dependencies
 const app = createApp(App)
-  .use(VueFire, {
-    firebaseApp,
-    modules: [
-      VueFireAuth({
-        wait: true  // Wait for auth to complete before mounting
-      })
-    ]
-  })
-  .use(pinia)
-  .use(router)
+
+// Order matters!
+app.use(pinia)  // First
+app.use(router) // Then router
+app.use(VueFire, {
+  firebaseApp,
+  modules: [
+    VueFireAuth({
+      wait: true  // Wait for auth to complete before mounting
+    })
+  ]
+})
 
 // Mount our app
 app.mount('#app')

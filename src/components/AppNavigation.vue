@@ -1,6 +1,9 @@
 <script setup>
 import { useAppStore } from '@/stores/app'
+import { useRoute } from 'vue-router'
+
 const store = useAppStore()
+const route = useRoute()
 </script>
 
 <template>
@@ -11,9 +14,27 @@ const store = useAppStore()
         aria-controls="navbarContent" aria-expanded="false" aria-label="Toggle navigation">
         <span class="navbar-toggler-icon"></span>
       </button>
-      <div class="collapse navbar-collapse justify-content-end" id="navbarContent">
-        <ul class="navbar-nav me-3">
+      
+      <!-- Center tabs -->
+      <div class="navbar-nav mx-auto">
+        <ul class="nav nav-tabs border-0">
           <li class="nav-item">
+            <router-link to="/" class="nav-link" :class="{ 'active': route.path === '/' }">
+              Projections
+            </router-link>
+          </li>
+          <li class="nav-item">
+            <router-link to="/reporting" class="nav-link" :class="{ 'active': route.path === '/reporting' }">
+              Reports
+            </router-link>
+          </li>
+        </ul>
+      </div>
+
+      <!-- Right-aligned items -->
+      <div class="collapse navbar-collapse justify-content-end" id="navbarContent">
+        <ul class="navbar-nav">
+          <li class="nav-item" v-if="route.path === '/'">
             <a href="#" class="nav-link" @click.prevent="store.openSwitchAccountModal">
               Manage/Switch Accounts
             </a>
@@ -40,3 +61,29 @@ const store = useAppStore()
     </div>
   </nav>
 </template>
+
+<style scoped>
+.nav-tabs {
+  border-bottom: none;
+}
+
+.nav-tabs .nav-link {
+  border: none;
+  padding: 0.5rem 2rem;
+  margin: 0 0.25rem;
+  color: white;
+}
+
+.nav-tabs .nav-link:hover:not(.active) {
+  border: none;
+  background-color: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.nav-tabs .nav-link.active {
+  border-radius: 4px;
+  background-color: white;
+  color: var(--bs-primary) !important;
+  font-weight: 500;
+}
+</style>

@@ -51,7 +51,7 @@ const getWeeksHeld = (position) => {
   <div class="flex-grow-1 position-relative">
     <div class="d-flex justify-content-between align-items-center px-3 py-2">
       <h4>Assigned Positions</h4>
-      <button class="btn btn-primary" @click="store.addNewPosition">
+      <button class="btn btn-primary" @click="store.showPositionModal()">
         <i class="bi bi-plus-lg"></i> Add Position
       </button>
     </div>
@@ -124,7 +124,7 @@ const getWeeksHeld = (position) => {
               {{ getWeeklyROR(position).toFixed(2) }}%
             </td>
             <td>
-              <button class="btn btn-sm btn-outline-primary me-2" @click="store.editPosition(position, index)">
+              <button class="btn btn-sm btn-outline-primary me-2" @click="store.showPositionModal(position, index)">
                 <i class="bi bi-pencil-square"></i>
               </button>
               <button class="btn btn-sm btn-outline-danger" @click="store.removePosition(index)">

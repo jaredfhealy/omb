@@ -1,14 +1,32 @@
+<script setup>
+import { ref } from 'vue'
+import { useAppStore } from '@/stores/app'
+import AppNavigation from '@/components/AppNavigation.vue'
+import { ConfirmModal, ChangePasswordModal } from '@/components/modals'
+
+const store = useAppStore()
+const confirmModalRef = ref(null)
+
+// Expose confirm modal methods to the store
+store.confirm = (message, callback) => {
+  confirmModalRef.value?.show(message, callback)
+}
+</script>
+
 <template>
-  <router-view/>
+  <AppNavigation v-if="store.user" />
+  <div class="container-fluid" style="height: calc(100vh - 20px);" v-cloak>
+    <router-view/>
+  </div>
+  
+  <!-- Global Modals -->
+  <ConfirmModal ref="confirmModalRef" v-if="store.user" />
+  <ChangePasswordModal v-if="store.user" />
 </template>
 
 <style>
 #app {
     overflow: hidden;
-}
-
-[v-cloak]>* {
-    display: none
 }
 
 /* Remove the navbar's default margin-bottom and rounded borders */
