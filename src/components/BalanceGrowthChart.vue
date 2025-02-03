@@ -291,32 +291,6 @@ const chartRef = ref(null)
 
 defineExpose({ resetZoom })
 
-// Add account switching functionality
-// const switchAccount = async (accountId) => {
-//   console.log('Before switch:', {
-//     selectedId: store.db.selectedAccountId,
-//     accounts: store.db.accounts,
-//     active: store.activeAccount
-//   })
-
-//   store.db.selectedAccountId = Number(accountId) // Ensure it's a number
-
-//   console.log('After switch:', {
-//     selectedId: store.db.selectedAccountId,
-//     accounts: store.db.accounts,
-//     active: store.activeAccount
-//   })
-
-//   // Try forcing reactivity update
-//   await nextTick()
-//   store.$patch({ }) // Empty patch to trigger reactivity
-
-//   console.log('After patch:', {
-//     selectedId: store.db.selectedAccountId,
-//     accounts: store.db.accounts,
-//     active: store.activeAccount
-//   })
-// }
 const switchAccount = async (accountId) => {
   store.db.selectedAccountId = Number(accountId) // Ensure it's a number
   store.calculateProjections()
