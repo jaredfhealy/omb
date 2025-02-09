@@ -1,8 +1,8 @@
 <script setup>
 import { ref } from 'vue'
-import { useAppStore } from '@/stores/app'
+import { auth } from '@/firebase'
+import { updatePassword } from 'firebase/auth'
 
-const store = useAppStore()
 const newPassword = ref('')
 const confirmPassword = ref('')
 const error = ref('')
@@ -23,12 +23,16 @@ const handleSubmit = async () => {
   }
 
   try {
-    await store.updatePassword(newPassword.value)
+    const user = auth.currentUser
+    if (!user) throw new Error('No user logged in')
+    
+    await updatePassword(user, newPassword.value)
     success.value = true
     newPassword.value = ''
     confirmPassword.value = ''
   } catch (err) {
-    error.value = err.message
+    console.error('Password update failed:', err)
+    error.value = 'Failed to update password. You may need to sign out and back in.'
   }
 }
 </script>

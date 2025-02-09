@@ -1,36 +1,26 @@
 <script setup>
-import AppNavigation from '../components/AppNavigation.vue'
-import BalanceProjector from '../components/BalanceProjector.vue'
+import BalanceProjector from '@/components/BalanceProjector.vue'
 import {
-  NewAccountModal,
-  SwitchAccountModal,
-  ConfirmModal,
+  EditAccountModal,
   EditTransactionModal,
   EditRowModal,
   SettingsModal,
   EditPositionModal,
-  ChangePasswordModal
-} from '../components/modals'
+  ManageAccountModal
+} from '@/components/modals'
 </script>
 
 <template>
-  <div id="app" v-cloak>
-    <AppNavigation />
-    <div class="container-fluid" style="height: calc(100vh - 20px);">
-      <BalanceProjector />
-    </div>
+  <!-- Main projection tracking component -->
+  <BalanceProjector />
 
-    <!-- Modals -->
-    <ConfirmModal />
-    <EditTransactionModal />
-    <EditRowModal />
-    <SettingsModal />
-    <NewAccountModal />
-    <SwitchAccountModal />
-    <EditPositionModal />
-    <ChangePasswordModal />
-
-  </div>
+  <!-- View-specific Modals -->
+  <EditTransactionModal />
+  <EditRowModal />
+  <SettingsModal />
+  <EditAccountModal />
+  <EditPositionModal />
+  <ManageAccountModal />
 </template>
 
 <style scoped>

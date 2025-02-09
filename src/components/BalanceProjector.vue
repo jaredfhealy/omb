@@ -1,22 +1,32 @@
 <script setup>
-import BalanceProjectorHeader from './BalanceProjectorHeader.vue'
-import TabNavigation from './TabNavigation.vue'
-import YearlySummary from './YearlySummary.vue'
-import WeeklyDetails from './WeeklyDetails.vue'
-import TransactionManager from './TransactionManager.vue'
-import PositionsManager from './PositionsManager.vue'
+import BalanceProjectorHeader from '@/components/BalanceProjectorHeader.vue'
+import TabNavigation from '@/components/TabNavigation.vue'
+import YearlySummary from '@/components/YearlySummary.vue'
+import WeeklyDetails from '@/components/WeeklyDetails.vue'
+import TransactionManager from '@/components/TransactionManager.vue'
+import PositionsManager from '@/components/PositionsManager.vue'
 import { onMounted, onUpdated } from 'vue'
 import { useAppStore } from '@/stores/app'
+import {
+  EditAccountModal,
+  ManageAccountModal,
+  EditTransactionModal,
+  EditRowModal,
+  SettingsModal,
+  EditPositionModal,
+  ConfirmModal,
+  ChangePasswordModal
+} from '@/components/modals'
 
 const store = useAppStore()
 
 onMounted(() => {
   store.getBaconStash()
-});
+})
 
 onUpdated(() => {
   store.initTooltips()
-});
+})
 </script>
 
 <template>
@@ -41,9 +51,17 @@ onUpdated(() => {
         </div>
       </div>
     </div>
-    <!-- Remove EditPositionModal -->
-    <!-- ...other existing modals... -->
   </div>
+
+  <!-- Modals -->
+  <EditTransactionModal />
+  <EditRowModal />
+  <SettingsModal />
+  <EditAccountModal />
+  <ManageAccountModal />
+  <EditPositionModal />
+  <ConfirmModal />
+  <ChangePasswordModal />
 </template>
 
 <style>

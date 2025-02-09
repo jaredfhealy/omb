@@ -8,8 +8,15 @@ const selectionStart = ref(null)
 const selectedCells = ref(new Set())
 const selectionSummary = ref(null)
 
+// Add local function (without exposing to store)
+function getAssignmentsForWeek(week) {
+  return (store.activeAccount.positions || []).filter(position => 
+    position.assignedWeek === week
+  )
+}
+
 const getAssignmentsTooltip = (projection) => {
-  const assignments = store.getAssignmentsForWeek(projection.week)
+  const assignments = getAssignmentsForWeek(projection.week)
   return `New Assignments This Week:<br>
     ${assignments.map(p => `${p.symbol}: ${p.shares} shares @ ${store.currency(p.strikePrice)}`).join('<br>')}
     <br>Total: ${store.currency(projection.sharesBalanceAddedThisWeek)}`
@@ -85,6 +92,42 @@ onMounted(() => {
 onUnmounted(() => {
   document.removeEventListener('keydown', handleEscape)
 })
+
+// Add local function (without exposing to store)
+function editNetTransactionFromRow(week) {
+  store.activeTab = 'recurring'
+  store.selectedWeek = week
+
+  // Check if there are transactions for this week
+  const hasTransactions = store.activeAccount.transactions.some(t =>
+    t.startWeek === week && t.endWeek === week
+  )
+
+  if (!hasTransactions) {
+    store.editingTransaction = {
+      type: 'deposit',
+      startWeek: week,
+      endWeek: week,
+      category: null,
+      amount: 0
+    }
+    store.editingIndex = null
+  }
+}
+
+// Add local function (without exposing to store)
+function formatNetTransaction(deposit, withdrawal) {
+  const net = deposit - withdrawal
+  const hasMultiple = deposit && withdrawal
+
+  return {
+    value: net < 0
+      ? `(${store.currency(Math.abs(net))})`
+      : store.currency(net),
+    style: { color: net < 0 ? 'red' : 'inherit' },
+    indicator: hasMultiple ? '*' : ''
+  }
+}
 </script>
 
 <template>
@@ -187,18 +230,16 @@ onUnmounted(() => {
               <td>
                 <div class="d-flex ">
                   <i class="bi bi-pencil-square cursor-pointer me-3"
-                    @click="store.editNetTransactionFromRow(projection.week)"></i>
+                    @click="editNetTransactionFromRow(projection.week)"></i>
                   <span data-bs-toggle="tooltip" :data-bs-html="true"
                     :data-bs-title="`Deposit: ${store.currency(projection.deposit)}<br />Withdraw: (${store.currency(projection.withdrawal)})`"
-                    :style="store.formatNetTransaction(projection.deposit, projection.withdrawal).style"
+                    :style="formatNetTransaction(projection.deposit, projection.withdrawal).style"
                     @mousedown="handleMouseDown(projection.week, 'transaction')"
                     @mouseover="handleMouseOver(projection.week, 'transaction')"
                     @mouseup="handleMouseUp"
                     :class="{ 'selected': selectedCells.has(`${projection.week}-transaction`) }">
-                    {{ store.formatNetTransaction(projection.deposit,
-                      projection.withdrawal).value }}
-                    {{ store.formatNetTransaction(projection.deposit,
-                      projection.withdrawal).indicator }}
+                    {{ formatNetTransaction(projection.deposit, projection.withdrawal).value }}
+                    {{ formatNetTransaction(projection.deposit, projection.withdrawal).indicator }}
                   </span>
                 </div>
               </td>
@@ -243,7 +284,9 @@ onUnmounted(() => {
               </td>
               <td>{{ store.currency(projection.endBalance) }}</td>
               <td>
-                <button class="btn btn-sm btn-outline-primary" @click="store.editWeekRow(projection.week)">
+                <button type="button" 
+                        class="btn btn-sm btn-outline-primary" 
+                        @click="store.showWeeklyRowModal(projection.week)">
                   <i class="bi bi-pencil-square"></i>
                 </button>
                 {{ store.activeAccount.actuals.some(a => Number(a.week) ===
