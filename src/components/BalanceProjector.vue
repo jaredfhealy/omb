@@ -8,8 +8,8 @@ import PositionsManager from '@/components/PositionsManager.vue'
 import { onMounted, onUpdated } from 'vue'
 import { useAppStore } from '@/stores/app'
 import {
-  NewAccountModal,
-  SwitchAccountModal,
+  EditAccountModal,
+  ManageAccountModal,
   EditTransactionModal,
   EditRowModal,
   SettingsModal,
@@ -22,11 +22,11 @@ const store = useAppStore()
 
 onMounted(() => {
   store.getBaconStash()
-});
+})
 
 onUpdated(() => {
   store.initTooltips()
-});
+})
 </script>
 
 <template>
@@ -57,8 +57,8 @@ onUpdated(() => {
   <EditTransactionModal />
   <EditRowModal />
   <SettingsModal />
-  <NewAccountModal />
-  <SwitchAccountModal />
+  <EditAccountModal />
+  <ManageAccountModal />
   <EditPositionModal />
   <ConfirmModal />
   <ChangePasswordModal />

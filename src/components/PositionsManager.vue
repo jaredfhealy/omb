@@ -45,6 +45,18 @@ const getWeeksHeld = (position) => {
   const currentWeek = getCurrentWeek()
   return currentWeek - position.startWeek + 1
 }
+
+function removePosition(index) {
+  if (store.confirm) {
+    store.confirm(
+      'Are you sure you want to delete this position?',
+      () => {
+        store.activeAccount.positions.splice(index, 1)
+        store.saveBacon()
+      }
+    )
+  }
+}
 </script>
 
 <template>
@@ -127,7 +139,7 @@ const getWeeksHeld = (position) => {
               <button class="btn btn-sm btn-outline-primary me-2" @click="store.showPositionModal(position, index)">
                 <i class="bi bi-pencil-square"></i>
               </button>
-              <button class="btn btn-sm btn-outline-danger" @click="store.removePosition(index)">
+              <button class="btn btn-sm btn-danger" @click="removePosition(index)">
                 <i class="bi bi-trash"></i>
               </button>
             </td>

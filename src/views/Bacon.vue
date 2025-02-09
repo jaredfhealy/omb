@@ -1,25 +1,13 @@
 <script setup>
-import { ref } from 'vue'
-import { useAppStore } from '@/stores/app'
 import BalanceProjector from '@/components/BalanceProjector.vue'
 import {
-  NewAccountModal,
-  SwitchAccountModal,
+  EditAccountModal,
   EditTransactionModal,
   EditRowModal,
   SettingsModal,
-  EditPositionModal
+  EditPositionModal,
+  ManageAccountModal
 } from '@/components/modals'
-
-const store = useAppStore()
-const positionModalRef = ref(null)
-const weeklyRowModalref = ref(null)
-const switchAccountModalRef = ref(null)
-
-// Make modals available globally
-store.showPositionModal = positionModalRef.value?.show(position, index)
-store.showWeeklyRowModal = (week) => weeklyRowModalref.value?.show(week)
-store.openSwitchAccountModal = () => switchAccountModalRef.value?.show()
 </script>
 
 <template>
@@ -28,11 +16,11 @@ store.openSwitchAccountModal = () => switchAccountModalRef.value?.show()
 
   <!-- View-specific Modals -->
   <EditTransactionModal />
-  <EditRowModal ref="weeklyRowModalref" />
+  <EditRowModal />
   <SettingsModal />
-  <NewAccountModal />
-  <SwitchAccountModal ref="switchAccountModalRef" />
-  <EditPositionModal id="positionModal" ref="positionModalRef" />
+  <EditAccountModal />
+  <EditPositionModal />
+  <ManageAccountModal />
 </template>
 
 <style scoped>

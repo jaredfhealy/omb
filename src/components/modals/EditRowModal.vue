@@ -4,7 +4,7 @@ import { useAppStore } from '@/stores/app'
 
 const store = useAppStore()
 const row = ref(null)
-const isVisible = computed(() => row.value !== null)
+const showModal = computed(() => row.value !== null)
 
 const show = (week) => {
   const existingActual = store.activeAccount.actuals.find(a => Number(a.week) === week)
@@ -45,11 +45,12 @@ const save = () => {
   close()
 }
 
-defineExpose({ show })
+// Expose show function to store
+store.showWeeklyRowModal = (week) => show(week)
 </script>
 
 <template>
-  <div class="modal" tabindex="-1" :class="{ 'd-block': isVisible }" v-if="isVisible">
+  <div class="modal" tabindex="-1" :class="{ 'd-block': showModal }" v-if="showModal">
     <div class="modal-dialog">
       <div class="modal-content">
         <div class="modal-header">

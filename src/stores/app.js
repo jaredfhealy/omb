@@ -2,13 +2,11 @@
 import { defineStore } from 'pinia'
 import { nextTick } from 'vue'
 import { auth, db } from '@/firebase'
-import { signOut, createUserWithEmailAndPassword, sendPasswordResetEmail } from 'firebase/auth'
 import {
   doc,
   setDoc,
   getDoc
 } from 'firebase/firestore'
-import router from '@/router'
 
 export const useAppStore = defineStore('app', {
   state: () => ({
@@ -29,7 +27,7 @@ export const useAppStore = defineStore('app', {
       }],
       selectedAccountId: 1
     },
-    user: { displayName: "Default" },
+    user: null,
     projections: [],
     loading: true,
 
@@ -37,93 +35,15 @@ export const useAppStore = defineStore('app', {
     activeTab: 'yearly',
     transactionFilter: 'all',
     selectedWeek: null,
-
-    // Modal States
-    showSettingsModal: false,
-    showNetTransactionModal: false,
-
-    // Editing States
-    editingTransaction: null,
-    editingIndex: null,
-    settingsEdit: {},
-
-    // Modal Control
-    errors: []
   }),
 
   getters: {
-    activeAccount: (state) => {
-      console.log('Getter called:', {
-        selectedId: state.db.selectedAccountId,
-        accounts: state.db.accounts
-      })
+    activeAccount(state) {
       return state.db.accounts.find(a => a.id === state.db.selectedAccountId)
     },
 
     weeks(state) {
       return state.activeAccount.settings.years * 52
-    },
-
-    yearlyTotals(state) {
-      const totals = []
-      const weeksPerYear = 52
-      const today = new Date()
-
-      for (let year = 1; year <= this.activeAccount.settings.years; year++) {
-        const startWeek = (year - 1) * weeksPerYear
-        const endWeek = year * weeksPerYear
-        const yearProjections = state.projections.slice(startWeek, endWeek)
-
-        // Calculate total growth
-        const totalGrowth = yearProjections.reduce((sum, p) => {
-          // Get start date for this week
-          const weekStartDate = new Date(this.activeAccount.settings.startDate)
-          weekStartDate.setDate(weekStartDate.getDate() + (p.week - 1) * 7)
-
-          if (p.actualGrowth && p.actualGrowth > 0) {
-            // Use actual if it exists and is greater than zero
-            return sum + Number(p.actualGrowth)
-          } else if (weekStartDate > today && p.projectedGrowth > 0) {
-            // Use projected only for future weeks
-            return sum + p.projectedGrowth
-          }
-          return sum
-        }, 0)
-
-        const summary = {
-          year,
-          startBalance: yearProjections[0]?.startBalance || 0,
-          totalDeposits: yearProjections.reduce((sum, p) => sum + p.deposit, 0),
-          totalTaxWithdrawals: yearProjections.reduce((sum, p) => sum + p.withdrawalsByCategory.taxes, 0),
-          totalIncomeWithdrawals: yearProjections.reduce((sum, p) => sum + p.withdrawalsByCategory.income, 0),
-          totalGrowth,
-          endBalance: yearProjections[yearProjections.length - 1]?.endBalance || 0
-        }
-        totals.push(summary)
-      }
-      return totals
-    },
-
-    filteredTransactions(state) {
-      const transactions = [...(this.activeAccount?.transactions || [])]
-      let filtered = transactions
-        .map((item, originalIndex) => ({ ...item, originalIndex }))
-        .sort((a, b) => a.startWeek - b.startWeek)
-
-      // Type filter
-      if (state.transactionFilter !== 'all') {
-        filtered = filtered.filter(t => t.type === state.transactionFilter)
-      }
-
-      // Week filter
-      if (state.selectedWeek) {
-        filtered = filtered.filter(t =>
-          state.selectedWeek >= t.startWeek &&
-          (!t.endWeek || state.selectedWeek <= t.endWeek)
-        )
-      }
-
-      return filtered
     },
 
     unselectedAccounts(state) {
@@ -136,13 +56,6 @@ export const useAppStore = defineStore('app', {
   },
 
   actions: {
-    // Add new helper method
-    getAssignmentsForWeek(week) {
-      return (this.activeAccount.positions || []).filter(position => 
-        position.assignedWeek === week
-      );
-    },
-
     // Firestore interactions
     async getBaconStash() {
       const user = auth.currentUser
@@ -206,7 +119,7 @@ export const useAppStore = defineStore('app', {
       let actualGrowths = []
 
       for (let week = 1; week <= this.weeks; week++) {
-        const transactions = this.getTransactionsForWeek(week)
+        const transactions = this._getTransactionsForWeek(week)
         const projectedGrowth = startBalance * (this.activeAccount.settings.weeklyReturn / 100)
 
         // Calculate positions being sold this week
@@ -360,67 +273,8 @@ export const useAppStore = defineStore('app', {
       }
     },
 
-    // User management
-    async logout() {
-      try {
-        await signOut(auth)
-        
-        // Use imported router instead of global router
-        await router.push('/login')
-        
-        this.$reset()
-      } catch (error) {
-        console.error('Logout error:', error)
-        window.location.href = '/login'
-      }
-    },
-
-    async createUser(email, password) {
-      try {
-        const userCredential = await createUserWithEmailAndPassword(auth, email, password)
-        this.user = userCredential.user
-        
-        // Initialize empty account structure for new user
-        const newUserData = {
-          accounts: [{
-            id: 1,
-            name: 'Default Account',
-            transactions: [],
-            actuals: [],
-            positions: [],
-            settings: {
-              startDate: new Date().toISOString().split('T')[0],
-              startingBalance: 5000,
-              weeklyReturn: 1,
-              years: 4
-            }
-          }],
-          selectedAccountId: 1
-        }
-        
-        // Save initial data
-        await setDoc(doc(db, 'accounts', userCredential.user.uid), newUserData)
-        
-        this.db = newUserData
-        return userCredential
-      } catch (error) {
-        console.error('Signup error:', error)
-        throw new Error(error.message)
-      }
-    },
-
-    async sendPasswordReset(email) {
-      try {
-        await sendPasswordResetEmail(auth, email)
-        return true
-      } catch (error) {
-        console.error('Password reset failed:', error)
-        throw new Error('Failed to send password reset email. Please try again.')
-      }
-    },
-
-    // Transaction Management
-    getTransactionsForWeek(week) {
+    // Only used locally by calculateProjections
+    _getTransactionsForWeek(week) {
       const deposits = this.activeAccount?.transactions
         ?.filter(t => t.type === 'deposit' && week >= t.startWeek && (!t.endWeek || week <= t.endWeek))
         ?.reduce((sum, t) => sum + Number(t.amount), 0) || 0
@@ -447,119 +301,7 @@ export const useAppStore = defineStore('app', {
       }
     },
 
-    addNewTransaction() {
-      this.editingTransaction = {
-        type: null,
-        startWeek: null,
-        endWeek: null,
-        amount: 0,
-        category: null
-      }
-      this.editingIndex = null
-    },
-
-    editTransaction(transaction) {
-      console.log('Editing transaction:', transaction)
-      this.editingTransaction = {
-        type: transaction.type,
-        startWeek: transaction.startWeek,
-        endWeek: transaction.endWeek || null,
-        amount: Number(transaction.amount),
-        category: transaction.category || null
-      }
-      this.editingIndex = transaction.originalIndex
-    },
-
-    editNetTransactionFromRow(week) {
-      this.activeTab = 'recurring'
-      this.selectedWeek = week
-
-      // Check if there are transactions for this week
-      const hasTransactions = this.activeAccount.transactions.some(t =>
-        t.startWeek === week && t.endWeek === week
-      )
-
-      if (!hasTransactions) {
-        this.editingTransaction = {
-          type: 'deposit',
-          startWeek: week,
-          endWeek: week,
-          category: null,
-          amount: 0
-        }
-        this.editingIndex = null
-      }
-    },
-
-    saveTransactionEdit() {
-      // Reset errors
-      this.errors = []
-
-      const transaction = {
-        type: this.editingTransaction.type,
-        startWeek: this.editingTransaction.startWeek,
-        endWeek: this.editingTransaction.endWeek,
-        amount: this.editingTransaction.amount.toString(),
-        category: this.editingTransaction.category
-      }
-
-      // Check required fields first
-      if (!transaction.type)
-        this.errors.push("Type is required.")
-      if (!transaction.startWeek)
-        this.errors.push("Start Week is required.")
-      if (!transaction.amount || isNaN(transaction.amount) || transaction.amount <= 0)
-        this.errors.push("Amount is required, and should be a positive number.")
-
-      // If errors, return here
-      if (this.errors.length > 0) return
-
-      if (this.editingIndex === null) {
-        this.activeAccount.transactions.push(transaction)
-      } else {
-        this.activeAccount.transactions[this.editingIndex] = transaction
-      }
-
-      this.calculateProjections()
-      this.closeEditModal()
-    },
-
-    removeTransaction(transaction) {
-      if (this.confirm) {
-        this.confirm(
-          `Are you sure you want to delete the week ${transaction.startWeek} ${transaction.type} for $${transaction.amount}?`,
-          () => {
-            this.activeAccount.transactions.splice(transaction.originalIndex, 1)
-            this.calculateProjections()
-          }
-        )
-      }
-    },
-
-    clearFilters() {
-      this.selectedWeek = null
-      this.transactionFilter = 'all'
-    },
-
-    /**
-     * Settings modal methods
-     */
-    openSettings() {
-      this.settingsEdit = { ...this.activeAccount.settings }
-      this.showSettingsModal = true
-    },
-
-    closeSettings() {
-      this.showSettingsModal = false
-    },
-
-    saveSettings() {
-      this.activeAccount.settings = { ...this.settingsEdit }
-      this.calculateProjections()
-      this.closeSettings()
-    },
-
-    // Utility Methods
+    // Utility and formatting Methods
     currency(value) {
       if (!value) return '$0.00'
       return '$' + Number(value).toFixed(2).replace(/\d(?=(\d{3})+\.)/g, '$&,')
@@ -588,34 +330,6 @@ export const useAppStore = defineStore('app', {
       return new Date(dateString).toISOString().split('T')[0]
     },
 
-    getTransactionWeekDisplay(transaction, startEnd) {
-      const start = transaction.startWeek
-      const end = transaction.endWeek
-
-      let result = `#${startEnd === 'start' ? start : end} (${startEnd === 'start' ? this.weekRange(start) : this.weekRange(end)})`
-
-      if (startEnd === 'end') {
-        if (start === end) return "Single Week"
-        if (!end) return "Ongoing"
-        result += ` [${end - start} Wks]`
-      }
-
-      return result
-    },
-
-    formatNetTransaction(deposit, withdrawal) {
-      const net = deposit - withdrawal
-      const hasMultiple = deposit && withdrawal
-
-      return {
-        value: net < 0
-          ? `(${this.currency(Math.abs(net))})`
-          : this.currency(net),
-        style: { color: net < 0 ? 'red' : 'inherit' },
-        indicator: hasMultiple ? '*' : ''
-      }
-    },
-
     initTooltips() {
       nextTick(() => {
         document.querySelectorAll('[data-bs-toggle="tooltip"]')
@@ -627,73 +341,6 @@ export const useAppStore = defineStore('app', {
           new bootstrap.Tooltip(el)
         })
       })
-    },
-
-    downloadBackup() {
-      const data = JSON.stringify(this.db, null, 2)
-      const blob = new Blob([data], { type: 'application/json' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `${this.user.email.split('@')[0]}_backup_${this.formatDate(new Date())}.json`
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      URL.revokeObjectURL(url)
-    },
-
-    async restoreBackup(file) {
-      if (!file) return
-
-      try {
-        const text = await file.text()
-        const backupData = JSON.parse(text)
-
-        // Verify backup data structure
-        if (!backupData.accounts || !Array.isArray(backupData.accounts)) {
-          throw new Error('Invalid backup file format')
-        }
-
-        // Make sure each account has transactions or an empty array
-        backupData.accounts.forEach(account => {
-          if (!account.transactions) account.transactions = []
-        })
-
-        // Use the store's confirm method directly
-        if (this.confirm) {
-          this.confirm(
-            'Warning: This will overwrite all current data. Make sure you have saved a backup of your current data before proceeding. Continue?',
-            () => {
-              // Update store data
-              this.db = backupData
-              this.calculateProjections()
-            }
-          )
-        }
-      } catch (error) {
-        alert('Error restoring backup: Invalid file format')
-        console.error('Restore error:', error)
-      }
-    },
-
-    // Modal Management
-    closeEditModal() {
-      this.editingTransaction = null
-      this.editingIndex = null
-      this.errors = []
-      this.showNetTransactionModal = false
-    },
-
-    removePosition(index) {
-      if (this.confirm) {
-        this.confirm(
-          'Are you sure you want to delete this position?',
-          () => {
-            this.activeAccount.positions.splice(index, 1)
-            this.saveBacon()
-          }
-        )
-      }
     },
 
   }

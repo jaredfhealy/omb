@@ -1,22 +1,40 @@
 <script setup>
 import { useAppStore } from '@/stores/app'
 import { useRoute } from 'vue-router'
+import { signOut } from 'firebase/auth'
+import { auth } from '@/firebase'
+import router from '@/router'
 
 const store = useAppStore()
 const route = useRoute()
+
+// Add local function (without exposing to store)
+async function logout() {
+  try {
+    await signOut(auth)
+    
+    // Use imported router instead of global router
+    await router.push('/login')
+    
+    store.$reset()
+  } catch (error) {
+    console.error('Logout error:', error)
+    window.location.href = '/login'
+  }
+}
 </script>
 
 <template>
   <nav id="appNav" class="navbar navbar-expand-lg navbar-dark bg-primary mb-3">
     <div class="container-fluid">
       <span class="navbar-brand">Operation More Bacon</span>
-      <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarContent"
+      <button v-if="store.user" class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarContent"
         aria-controls="navbarContent" aria-expanded="false" aria-label="Toggle navigation">
         <span class="navbar-toggler-icon"></span>
       </button>
       
       <!-- Center tabs -->
-      <div class="navbar-nav mx-auto">
+      <div class="navbar-nav mx-auto" v-if="store.user">
         <ul class="nav nav-tabs border-0">
           <li class="nav-item">
             <router-link to="/" class="nav-link" :class="{ 'active': route.path === '/' }">
@@ -33,10 +51,10 @@ const route = useRoute()
 
       <!-- Right-aligned items -->
       <div class="collapse navbar-collapse justify-content-end" id="navbarContent">
-        <ul class="navbar-nav">
+        <ul class="navbar-nav" v-if="store.user">
           <li class="nav-item" v-if="route.path === '/'">
-            <a href="#" class="nav-link" @click.prevent="store.openSwitchAccountModal">
-              Manage/Switch Accounts
+            <a href="#" class="nav-link" @click.prevent="store.showManageAccountModal">
+              Manage Accounts
             </a>
           </li>
           <li class="nav-item dropdown">
@@ -50,7 +68,7 @@ const route = useRoute()
               </li>
               <li><hr class="dropdown-divider"></li>
               <li>
-                <a class="dropdown-item" href="#" @click.prevent="store.logout">
+                <a class="dropdown-item" href="#" @click.prevent="logout">
                   <i class="bi bi-box-arrow-right"></i> Logout
                 </a>
               </li>

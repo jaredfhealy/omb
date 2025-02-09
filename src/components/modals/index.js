@@ -1,5 +1,5 @@
-export { default as NewAccountModal } from './NewAccountModal.vue'
-export { default as SwitchAccountModal } from './SwitchAccountModal.vue'
+export { default as EditAccountModal } from './EditAccountModal.vue'
+export { default as ManageAccountModal } from './ManageAccountModal.vue'
 export { default as ConfirmModal } from './ConfirmModal.vue'
 export { default as EditTransactionModal } from './EditTransactionModal.vue'
 export { default as EditRowModal } from './EditRowModal.vue'

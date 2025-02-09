@@ -1,6 +1,67 @@
 <script setup>
+import { computed } from 'vue'
 import { useAppStore } from '@/stores/app'
 const store = useAppStore()
+
+// Add local computed property
+const filteredTransactions = computed(() => {
+  const transactions = [...(store.activeAccount?.transactions || [])]
+  let filtered = transactions
+    .map((item, originalIndex) => ({ ...item, originalIndex }))
+    .sort((a, b) => a.startWeek - b.startWeek)
+
+  // Type filter
+  if (store.transactionFilter !== 'all') {
+    filtered = filtered.filter(t => t.type === store.transactionFilter)
+  }
+
+  // Week filter
+  if (store.selectedWeek) {
+    filtered = filtered.filter(t =>
+      store.selectedWeek >= t.startWeek &&
+      (!t.endWeek || store.selectedWeek <= t.endWeek)
+    )
+  }
+
+  return filtered
+})
+
+// Define local functions
+function removeTransaction(transaction) {
+  if (store.confirm) {
+    store.confirm(
+      `Are you sure you want to delete the week ${transaction.startWeek} ${transaction.type} for $${transaction.amount}?`,
+      () => {
+        store.activeAccount.transactions.splice(transaction.originalIndex, 1)
+        store.calculateProjections()
+      }
+    )
+  }
+}
+
+function clearFilters() {
+  store.selectedWeek = null
+  store.transactionFilter = 'all'
+}
+
+function getTransactionWeekDisplay(transaction, startEnd) {
+  const start = transaction.startWeek
+  const end = transaction.endWeek
+
+  let result = `#${startEnd === 'start' ? start : end} (${startEnd === 'start' ? store.weekRange(start) : store.weekRange(end)})`
+
+  if (startEnd === 'end') {
+    if (start === end) return "Single Week"
+    if (!end) return "Ongoing"
+    result += ` [${end - start} Wks]`
+  }
+
+  return result
+}
+
+// Expose functions to store
+store.removeTransaction = removeTransaction
+store.clearFilters = clearFilters
 </script>
 
 <template>
@@ -27,7 +88,7 @@ const store = useAppStore()
               Week {{ p.week }} ({{ store.weekRange(p.week) }})
             </option>
           </select>
-          <button type="button" class="btn btn-warning" @click="store.clearFilters()"
+          <button type="button" class="btn btn-warning" @click="clearFilters()"
             v-show="store.selectedWeek || store.transactionFilter !== 'all'">
             <i class="bi bi-x-circle"></i> Reset
           </button>
@@ -58,16 +119,16 @@ const store = useAppStore()
               </tr>
             </thead>
             <tbody>
-              <tr v-for="transaction in store.filteredTransactions">
+              <tr v-for="transaction in filteredTransactions">
                 <td>{{ transaction.type.charAt(0).toUpperCase() + transaction.type.slice(1) }}</td>
                 <td>{{ transaction.category ? transaction.category.charAt(0).toUpperCase() + transaction.category.slice(1) : "" }}</td>
-                <td>{{ store.getTransactionWeekDisplay(transaction, 'start') }}</td>
-                <td>{{ store.getTransactionWeekDisplay(transaction, 'end') }}</td>
+                <td>{{ getTransactionWeekDisplay(transaction, 'start') }}</td>
+                <td>{{ getTransactionWeekDisplay(transaction, 'end') }}</td>
                 <td>{{ store.currency(transaction.amount) }}</td>
                 <td>
                   <button class="btn btn-sm btn-primary me-2" @click="store.editTransaction(transaction)"><i
                       class="bi bi-pencil-square"></i></button>
-                  <button class="btn btn-sm btn-danger" @click="store.removeTransaction(transaction)"><i
+                  <button class="btn btn-sm btn-danger" @click="removeTransaction(transaction)"><i
                       class="bi bi-trash"></i></button>
                 </td>
               </tr>

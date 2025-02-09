@@ -14,7 +14,7 @@ const show = (existingAccount = null) => {
 const close = () => {
   isVisible.value = false
   account.value = { id: 'new', name: '', description: '' }
-  store.openSwitchAccountModal()
+  store.showManageAccountModal()
 }
 
 const save = () => {
@@ -48,7 +48,7 @@ const save = () => {
   store.calculateProjections()
   close()
   // Show the switch account modal after saving
-  store.openSwitchAccountModal()
+  store.showManageAccountModal()
 }
 
 const handleAccountSelection = () => {
@@ -60,9 +60,9 @@ const handleAccountSelection = () => {
 defineExpose({ show })
 
 // Make methods available to store
-store.openNewAccountModal = () => show()
+store.openEditAccountModal = () => show()
 store.editAccount = (existingAccount) => show(existingAccount)
-store.closeNewAccountModal = close
+store.closeEditAccountModal = close
 store.handleAccountSelection = handleAccountSelection
 
 </script>

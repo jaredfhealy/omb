@@ -1,17 +1,34 @@
 <script setup>
 import { useAppStore } from '@/stores/app'
 const store = useAppStore()
+
+const switchAccount = (accountId) => {
+  store.db.selectedAccountId = Number(accountId)
+  store.calculateProjections()
+}
 </script>
 
 <template>
   <div class="card-header">
-    <div class="d-flex justify-content-between">
-      <div>
-        <h5 class="panel-title">Weekly Balance Projector</h5>
+    <div class="d-flex justify-content-between align-items-center">
+      <div class="d-flex align-items-center gap-3">
+        <h5 class="panel-title mb-0">Weekly Balance Projector</h5>
+        <select 
+          class="form-select form-select-sm" 
+          style="width: auto;"
+          :value="store.db.selectedAccountId"
+          @change="switchAccount($event.target.value)"
+        >
+          <option 
+            v-for="account in store.db.accounts" 
+            :key="account.id" 
+            :value="account.id"
+          >
+            {{ account.name }}
+          </option>
+        </select>
       </div>
       <div class="settings-grid">
-        <strong>Account</strong>: {{ store.activeAccount.name }}
-        &nbsp;&nbsp;|&nbsp;&nbsp;
         <strong>Start Date</strong>: {{ store.formatDate(store.activeAccount.settings.startDate) }}
         &nbsp;&nbsp;|&nbsp;&nbsp;
         <strong>Starting Balance</strong>: {{ store.currency(store.activeAccount.settings.startingBalance) }}

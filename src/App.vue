@@ -14,8 +14,8 @@ store.confirm = (message, callback) => {
 </script>
 
 <template>
-  <AppNavigation v-if="store.user" />
-  <div class="container-fluid" style="height: calc(100vh - 20px);" v-cloak>
+  <AppNavigation />
+  <div :class="store.user ? 'container-fluid' : 'container'" style="height: calc(100vh - 20px);" v-cloak>
     <router-view/>
   </div>
   

@@ -12,13 +12,6 @@ const show = () => {
 const close = () => {
   isVisible.value = false
 }
-
-const selectAccount = (id) => {
-  store.db.selectedAccountId = id
-  store.calculateProjections()
-  close()
-}
-
 const editAccount = (account) => {
   close()
   store.editAccount(account)
@@ -43,19 +36,58 @@ const deleteAccount = (account) => {
 
 const addNewAccount = () => {
   close()
-  store.openNewAccountModal()
+  store.openEditAccountModal()
 }
 
-const handleFileUpload = (event) => {
-  const file = event.target.files[0]
-  if (file) {
-    store.restoreBackup(file)
+function downloadBackup() {
+  const data = JSON.stringify(store.db, null, 2)
+  const blob = new Blob([data], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${store.user.email.split('@')[0]}_backup_${store.formatDate(new Date())}.json`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+async function restoreBackup(file) {
+  if (!file) return
+
+  try {
+    const text = await file.text()
+    const backupData = JSON.parse(text)
+
+    // Verify backup data structure
+    if (!backupData.accounts || !Array.isArray(backupData.accounts)) {
+      throw new Error('Invalid backup file format')
+    }
+
+    // Make sure each account has transactions or an empty array
+    backupData.accounts.forEach(account => {
+      if (!account.transactions) account.transactions = []
+    })
+
+    // Use the store's confirm method directly
+    if (store.confirm) {
+      store.confirm(
+        'Warning: This will overwrite all current data. Make sure you have saved a backup of your current data before proceeding. Continue?',
+        () => {
+          // Update store data
+          store.db = backupData
+          store.calculateProjections()
+        }
+      )
+    }
+  } catch (error) {
+    alert('Error restoring backup: Invalid file format')
+    console.error('Restore error:', error)
   }
-  event.target.value = ''
-  close()
 }
 
-defineExpose({ show })
+// Expose show function to store
+store.showManageAccountModal = () => show()
 </script>
 
 <template>
@@ -76,12 +108,7 @@ defineExpose({ show })
             </thead>
             <tbody>
               <tr v-for="account in store.db.accounts" :key="account.id">
-                <td>
-                  <a href="#" @click.prevent="selectAccount(account.id)" data-bs-toggle="tooltip"
-                    data-bs-title="Click to change accounts">
-                    {{ account.name }}
-                  </a>
-                </td>
+                <td>{{ account.name }}</td>
                 <td>
                   <button class="btn btn-sm btn-link" @click="editAccount(account)">
                     <i class="bi bi-pencil-square"></i>
@@ -96,7 +123,7 @@ defineExpose({ show })
 
           <div class="d-flex justify-content-between mt-3">
             <div class="btn-group">
-              <button class="btn btn-outline-secondary" @click.prevent="store.downloadBackup" data-bs-toggle="tooltip"
+              <button class="btn btn-outline-secondary" @click.prevent="downloadBackup" data-bs-toggle="tooltip"
                 data-bs-title="Download data backup">
                 <i class="bi bi-download"></i> Backup
               </button>
@@ -117,7 +144,7 @@ defineExpose({ show })
 
     <input 
       type="file" 
-      @change="handleFileUpload" 
+      @change="e => restoreBackup(e.target.files[0])" 
       accept=".json"
       class="d-none"
       ref="backupInput">

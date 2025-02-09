@@ -6,6 +6,7 @@ const store = useAppStore()
 const errors = ref([])
 const position = ref(null)
 const editingIndex = ref(null)
+const showModal = ref(false)
 
 const isVisible = computed(() => position.value !== null)
 
@@ -23,6 +24,7 @@ const show = (existingPosition = null, index = null) => {
     callProfits: 0,
     startWeek: null
   }
+  showModal.value = true
 }
 
 const close = () => {
@@ -75,11 +77,12 @@ const save = () => {
     store.activeAccount.positions[editingIndex.value] = formattedPosition
   }
 
-  store.saveBacon()
+  store.calculateProjections()
   close()
 }
 
-defineExpose({ show })
+// Expose show function to store
+store.showPositionModal = (position, index) => show(position, index)
 </script>
 
 <template>
