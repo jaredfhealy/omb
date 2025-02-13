@@ -10,31 +10,31 @@ const errors = ref([])
 
 // Define local functions
 function addNewTransaction() {
-  editingTransaction = {
+  editingTransaction.value = {
     type: null,
     startWeek: null,
     endWeek: null,
     amount: 0,
     category: null
   }
-  editingIndex = null
+  editingIndex.value = null
 }
 
 function editTransaction(transaction) {
   console.log('Editing transaction:', transaction)
-  editingTransaction = {
+  editingTransaction.value = {
     type: transaction.type,
     startWeek: transaction.startWeek,
     endWeek: transaction.endWeek || null,
     amount: Number(transaction.amount),
     category: transaction.category || null
   }
-  editingIndex = transaction.originalIndex
+  editingIndex.value = transaction.originalIndex
 }
 
 function closeEditModal() {
-  editingTransaction = null
-  editingIndex = null
+  editingTransaction.value = null
+  editingIndex.value = null
   errors.value = []
 }
 
@@ -43,11 +43,11 @@ function saveTransactionEdit() {
   errors.value = []
 
   const transaction = {
-    type: editingTransaction.type,
-    startWeek: editingTransaction.startWeek,
-    endWeek: editingTransaction.endWeek,
-    amount: editingTransaction.amount.toString(),
-    category: editingTransaction.category
+    type: editingTransaction.value.type,
+    startWeek: editingTransaction.value.startWeek,
+    endWeek: editingTransaction.value.endWeek,
+    amount: editingTransaction.value.amount.toString(),
+    category: editingTransaction.value.category
   }
 
   // Check required fields first
@@ -61,10 +61,10 @@ function saveTransactionEdit() {
   // If errors, return here
   if (errors.value.length > 0) return
 
-  if (editingIndex === null) {
+  if (editingIndex.value === null) {
     store.activeAccount.transactions.push(transaction)
   } else {
-    store.activeAccount.transactions[editingIndex] = transaction
+    store.activeAccount.transactions[editingIndex.value] = transaction
   }
 
   store.calculateProjections()
@@ -72,22 +72,22 @@ function saveTransactionEdit() {
 }
 
 watch(
-  () => editingTransaction?.startWeek,
+  () => editingTransaction.value?.startWeek,
   (newVal, oldVal) => {
-    if (newVal > editingTransaction?.endWeek && newVal !== null && oldVal === null) {
-      editingTransaction.endWeek = newVal
+    if (newVal > editingTransaction.value?.endWeek && newVal !== null && oldVal === null) {
+      editingTransaction.value.endWeek = newVal
     }
-    else if (newVal > editingTransaction?.endWeek && editingTransaction.endWeek !== null && newVal !== null) {
-      editingTransaction.endWeek = newVal
+    else if (newVal > editingTransaction.value?.endWeek && editingTransaction.value.endWeek !== null && newVal !== null) {
+      editingTransaction.value.endWeek = newVal
     }
   }
 )
 
 watch(
-  () => editingTransaction?.endWeek,
+  () => editingTransaction.value?.endWeek,
   (newVal, oldVal) => {
-    if (newVal < editingTransaction?.startWeek && newVal !== null) {
-      editingTransaction.startWeek = newVal
+    if (newVal < editingTransaction.value?.startWeek && newVal !== null) {
+      editingTransaction.value.startWeek = newVal
     }
   }
 )
