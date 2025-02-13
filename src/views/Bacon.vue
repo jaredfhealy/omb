@@ -24,6 +24,12 @@ import {
 </template>
 
 <style scoped>
+#app {
+  overflow: hidden;
+}
+body {
+  overflow: hidden;
+}
 .table-responsive {
     overflow-y: auto;
 }

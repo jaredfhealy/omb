@@ -1,11 +1,19 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
+import { useRoute } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import AppNavigation from '@/components/AppNavigation.vue'
 import { ConfirmModal, ChangePasswordModal } from '@/components/modals'
 
 const store = useAppStore()
+const route = useRoute()
 const confirmModalRef = ref(null)
+
+const containerStyle = computed(() => {
+  return route.path !== '/summarizer' ? { height: 'calc(100vh - 20px)' } : {}
+})
+
+const isOnSummarizer = computed(() => route.path === '/summarizer')
 
 // Expose confirm modal methods to the store
 store.confirm = (message, callback) => {
@@ -15,7 +23,10 @@ store.confirm = (message, callback) => {
 
 <template>
   <AppNavigation />
-  <div :class="store.user ? 'container-fluid' : 'container'" style="height: calc(100vh - 20px);" v-cloak>
+  <div :class="[
+    store.user ? 'container-fluid' : 'container',
+    { 'fixed-nav': isOnSummarizer }
+  ]" :style="containerStyle" v-cloak>
     <router-view/>
   </div>
   
@@ -25,10 +36,6 @@ store.confirm = (message, callback) => {
 </template>
 
 <style>
-#app {
-    overflow: hidden;
-}
-
 /* Remove the navbar's default margin-bottom and rounded borders */
 .navbar {
     margin-bottom: 0;
@@ -46,56 +53,12 @@ store.confirm = (message, callback) => {
 #appNav .dropdown-toggle:hover {
   color: rgba(255, 255, 255, 0.8);
 }
-
-/* Set height of the grid so .sidenav can be 100% (adjust as needed) */
-.row.content {
-    height: 450px
-}
-
-/* Set gray background color and 100% height */
-.sidenav {
-    padding-top: 20px;
-    background-color: #f1f1f1;
-    height: 100%;
-}
-
-/* Set black background color, white text and some padding */
-footer {
-    background-color: #555;
-    color: white;
-    padding: 15px;
-}
-
-/* On small screens, set height to 'auto' for sidenav and grid */
-@media screen and (max-width: 767px) {
-    .sidenav {
-        height: auto;
-        padding: 15px;
-    }
-
-    .row.content {
-        height: auto;
-    }
-}
-
-.modal {
-    z-index: 1050;
-}
-
-.modal-dialog {
-    z-index: 1055;
-}
-
-.modal-backdrop {
-    z-index: 1040;
-}
-
 .dropdown-item.flex-grow-1.active {
-    background-color: white;
-    color: black;
+  background-color: white;
+  color: black;
 }
 
-.cursor-pointer {
-    cursor: pointer;
+.fixed-nav {
+  padding-top: 72px;
 }
 </style>

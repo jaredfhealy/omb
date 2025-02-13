@@ -1,4 +1,5 @@
 <script setup>
+import { computed } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { useRoute } from 'vue-router'
 import { signOut } from 'firebase/auth'
@@ -22,10 +23,13 @@ async function logout() {
     window.location.href = '/login'
   }
 }
+
+const isOnSummarizer = computed(() => route.path === '/summarizer')
 </script>
 
 <template>
-  <nav id="appNav" class="navbar navbar-expand-lg navbar-dark bg-primary mb-3">
+  <nav id="appNav" class="navbar navbar-expand-lg navbar-dark bg-primary mb-3"
+       :class="{ 'fixed-top': isOnSummarizer }">
     <div class="container-fluid">
       <span class="navbar-brand">Operation More Bacon</span>
       <button v-if="store.user" class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarContent"
@@ -57,6 +61,21 @@ async function logout() {
               Manage Accounts
             </a>
           </li>
+          <!-- New Tools Dropdown -->
+          <li class="nav-item dropdown">
+            <a class="nav-link dropdown-toggle" href="#" id="toolsDropdown" role="button" data-bs-toggle="dropdown"
+              aria-expanded="false">
+              Tools
+            </a>
+            <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="toolsDropdown">
+              <li>
+                <router-link to="/summarizer" class="dropdown-item">
+                  Schwab Transaction Summarizer
+                </router-link>
+              </li>
+            </ul>
+          </li>
+          <!-- User Dropdown -->
           <li class="nav-item dropdown">
             <a class="nav-link dropdown-toggle" href="#" id="userDropdown" role="button" data-bs-toggle="dropdown"
               aria-expanded="false">
@@ -103,5 +122,9 @@ async function logout() {
   background-color: white;
   color: var(--bs-primary) !important;
   font-weight: 500;
+}
+
+.fixed-top + .container-fluid {
+  padding-top: 72px;
 }
 </style>
