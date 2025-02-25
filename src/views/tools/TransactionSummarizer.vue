@@ -15,9 +15,13 @@ const isLoading = ref(false)
 const copyStatus = ref('')
 const summaryRef = ref(null)
 
+function getAccountName(filename) {
+  return filename.split('_')[0]
+}
+
 function handleFileUpload(event) {
-  const file = event.target.files[0]
-  if (!file) return
+  const files = event.target.files
+  if (!files.length) return
   
   // Reset states
   errorMessage.value = ''
@@ -25,43 +29,53 @@ function handleFileUpload(event) {
   transactions.value = []
   summaryData.value = []
   
-  // Validate file type
-  if (!file.name.endsWith('.json')) {
-    errorMessage.value = 'Please select a JSON file'
-    event.target.value = '' // Reset file input
-    isLoading.value = false
-    return
-  }
-
-  const reader = new FileReader()
-  
-  reader.onload = (e) => {
-    try {
-      const data = JSON.parse(e.target.result)
-      
-      // Validate expected structure
-      if (!data.BrokerageTransactions || !Array.isArray(data.BrokerageTransactions)) {
-        throw new Error('Invalid file format: Missing BrokerageTransactions array')
-      }
-
-      transactions.value = data.BrokerageTransactions
-      processSummary()
-    } catch (error) {
-      console.error('Error processing file:', error)
-      errorMessage.value = 'Invalid file format: Please upload a valid Schwab transactions JSON file'
-      event.target.value = '' // Reset file input
-    } finally {
-      isLoading.value = false
+  // Process each file
+  const filePromises = Array.from(files).map(file => {
+    if (!file.name.endsWith('.json')) {
+      errorMessage.value = 'Please select JSON files only'
+      return Promise.reject('Invalid file type')
     }
-  }
 
-  reader.onerror = () => {
-    errorMessage.value = 'Error reading file'
-    isLoading.value = false
-    event.target.value = '' // Reset file input
-  }
+    const accountName = getAccountName(file.name)
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      
+      reader.onload = (e) => {
+        try {
+          const data = JSON.parse(e.target.result)
+          if (!data.BrokerageTransactions || !Array.isArray(data.BrokerageTransactions)) {
+            throw new Error('Invalid file format')
+          }
+          // Add account name to each transaction
+          const transactions = data.BrokerageTransactions.map(t => ({
+            ...t,
+            accountName
+          }))
+          resolve(transactions)
+        } catch (error) {
+          reject(error)
+        }
+      }
+      
+      reader.onerror = () => reject('Error reading file')
+      reader.readAsText(file)
+    })
+  })
 
-  reader.readAsText(file)
+  Promise.all(filePromises)
+    .then(allTransactions => {
+      // Combine all transactions into a single array
+      transactions.value = allTransactions.flat()
+      processSummary()
+    })
+    .catch(error => {
+      console.error('Error processing files:', error)
+      errorMessage.value = 'Error processing files: Please upload valid Schwab transactions JSON files'
+    })
+    .finally(() => {
+      isLoading.value = false
+      event.target.value = '' // Reset file input
+    })
 }
 
 function processSummary() {
@@ -71,7 +85,7 @@ function processSummary() {
   expiredContracts.value = []
   summaryData.value = []
   
-  // First pass - collect all Buy to Close transactions
+  // First pass - collect all Buy to Close and Assigned transactions
   transactions.value.forEach(t => {
     if (t.Action === 'Buy to Close') {
       const [ticker, expDate, strike, type] = t.Symbol.split(' ')
@@ -91,11 +105,29 @@ function processSummary() {
         type,
         quantity,
         totalFees,
-        date: transactionDate
+        date: transactionDate,
+        account: t.accountName
       })
     } else if (t.Action === 'Expired') {
-      const [ticker] = t.Symbol.split(' ')
-      expiredContracts.value.push(ticker)
+      const [ticker, , , type] = t.Symbol.split(' ')
+      expiredContracts.value.push(`${ticker} [${type}]`)
+    } else if (t.Action === 'Assigned') {
+      const [ticker, expDate, strike, type] = t.Symbol.split(' ')
+      const quantity = Math.abs(parseInt(t.Quantity))
+      const transactionDate = t.Date.split(' ')[0] // Take only the date part, not "as of" part
+      
+      summaryData.value.push({
+        type: 'Assigned',
+        ticker,
+        description: `Assigned at $${strike} expiring ${expDate}`,
+        premium: '0.00',
+        strike,
+        contractType: type,
+        quantity,
+        ror: '-',
+        date: transactionDate,
+        account: t.accountName
+      })
     }
   })
 
@@ -134,7 +166,8 @@ function processSummary() {
           contractType: type,
           quantity,
           ror: ror,
-          date: transactionDate
+          date: transactionDate,
+          account: t.accountName
         })
         rolls.value.delete(key)
       } else {
@@ -151,7 +184,8 @@ function processSummary() {
           contractType: type,
           quantity,
           ror: ror,
-          date: transactionDate
+          date: transactionDate,
+          account: t.accountName
         })
       }
     }
@@ -165,15 +199,30 @@ function processSummary() {
     summaryData.value.push(t)
   })
 
+  // Add any unmatched Buy to Close transactions
+  rolls.value.forEach((buyToClose, key) => {
+    summaryData.value.push({
+      type: 'Close',
+      ticker: buyToClose.ticker,
+      description: `Closed position expiring ${buyToClose.fromDate}`,
+      premium: buyToClose.amount.toFixed(2),
+      strike: buyToClose.strike,
+      contractType: buyToClose.type,
+      quantity: buyToClose.quantity,
+      ror: '-',
+      date: buyToClose.date,
+      account: buyToClose.account
+    })
+  })
+
   // Sort the summary data by date, then type, then ticker
   summaryData.value.sort((a, b) => {
     if (a.date !== b.date) {
       return a.date.localeCompare(b.date)
     }
-    if (a.type === b.type) {
-      return a.ticker.localeCompare(b.ticker)
-    }
-    return a.type === 'Open' ? -1 : 1
+    if (a.account !== b.account) return a.account.localeCompare(b.account)
+    const typeOrder = { 'Open': 1, 'Roll': 2, 'Close': 3, 'Assigned': 4 }
+    return typeOrder[a.type] - typeOrder[b.type]
   })
 }
 
@@ -234,14 +283,15 @@ async function copyAsImage() {
           </div>
           <div class="card-body">
             <div class="mb-3">
-              <label for="fileUpload" class="form-label">Upload Schwab Transaction JSON</label>
+              <label for="fileUpload" class="form-label">Upload Schwab Transaction JSON Files</label>
               <input type="file" 
                 class="form-control" 
                 id="fileUpload" 
                 @change="handleFileUpload" 
                 accept=".json"
+                multiple
                 :disabled="isLoading">
-              <div class="form-text text-muted ms-2">*Only JSON files exported from Schwab are supported</div>
+              <div class="form-text text-muted ms-2">*Upload one or more JSON files exported from Schwab. Files will be processed together.</div>
               <div v-if="errorMessage" class="alert alert-danger mt-2">
                 {{ errorMessage }}
               </div>
@@ -276,6 +326,7 @@ async function copyAsImage() {
               <thead>
                 <tr>
                   <th>Date</th>
+                  <th>Account</th>
                   <th>Symbol</th>
                   <th>Type</th>
                   <th>Qty</th>
@@ -292,6 +343,7 @@ async function copyAsImage() {
               <tbody>
                 <tr v-for="(item, index) in summaryData" :key="index">
                   <td>{{ item.date }}</td>
+                  <td>{{ item.account }}</td>
                   <td>{{ item.ticker }}</td>
                   <td>{{ item.contractType }}</td>
                   <td>{{ item.quantity }}</td>
@@ -303,7 +355,7 @@ async function copyAsImage() {
               </tbody>
               <tfoot>
                 <tr class="table-light">
-                  <td colspan="6" align="right"><b>Total Premium:</b></td>
+                  <td colspan="7" align="right"><b>Total Premium:</b></td>
                   <td><b>{{ store.currency(getTotalPremium()) }}</b></td>
                   <td></td>
                 </tr>
