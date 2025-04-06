@@ -1,93 +1,159 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, reactive, computed } from 'vue'
 import { useAppStore } from '@/stores/app'
 
 const store = useAppStore()
 const isVisible = ref(false)
-const account = ref({ id: 'new', name: '', description: '' })
+const account = reactive({
+  id: null,
+  name: '',
+  description: '',
+  transactions: [],
+  actuals: [],
+  positions: [],
+  settings: {
+    startDate: new Date().toISOString().split('T')[0],
+    startingBalance: 5000,
+    weeklyReturn: 1,
+    years: 4
+  }
+})
+
+const isEdit = computed(() => !!account.id)
 
 const show = (existingAccount = null) => {
-  isVisible.value = true
-  account.value = existingAccount || { id: 'new', name: '', description: '' }
-}
-
-const close = () => {
-  isVisible.value = false
-  account.value = { id: 'new', name: '', description: '' }
-  store.showManageAccountModal()
-}
-
-const save = () => {
-  if (!account.value.name) {
-    alert('Account Name is required')
-    return
-  }
-
-  if (account.value.id === 'new') {
-    const newId = Math.max(...store.db.accounts.map(a => a.id)) + 1
-    store.db.accounts.push({
-      id: newId,
-      name: account.value.name,
-      description: account.value.description,
+  if (existingAccount) {
+    // Editing an existing account - copy all properties
+    Object.assign(account, JSON.parse(JSON.stringify(existingAccount)))
+  } else {
+    // Creating a new account - reset to defaults
+    Object.assign(account, {
+      id: Date.now(),
+      name: '',
+      description: '',
+      transactions: [],
+      actuals: [],
+      positions: [],
       settings: {
         startDate: new Date().toISOString().split('T')[0],
         startingBalance: 5000,
         weeklyReturn: 1,
         years: 4
-      },
-      transactions: [],
-      actuals: []
+      }
     })
-    store.db.selectedAccountId = newId
+  }
+  isVisible.value = true
+}
+
+const close = () => {
+  isVisible.value = false
+}
+
+const save = () => {
+  if (!account.name.trim()) {
+    alert('Account name is required')
+    return
+  }
+
+  // Validate numeric fields
+  if (isNaN(account.settings.startingBalance) || account.settings.startingBalance < 0) {
+    alert('Starting Balance must be a positive number')
+    return
+  }
+  
+  if (isNaN(account.settings.weeklyReturn)) {
+    alert('Weekly Return Rate must be a number')
+    return
+  }
+  
+  if (isNaN(account.settings.years) || account.settings.years < 1 || account.settings.years > 10) {
+    alert('Years must be between 1 and 10')
+    return
+  }
+
+  if (isEdit.value) {
+    // Update existing account
+    const index = store.db.accounts.findIndex(a => a.id === account.id)
+    if (index !== -1) {
+      store.db.accounts[index] = JSON.parse(JSON.stringify(account))
+    }
   } else {
-    const accountIndex = store.db.accounts.findIndex(a => a.id === account.value.id)
-    store.db.accounts[accountIndex].name = account.value.name
-    store.db.accounts[accountIndex].description = account.value.description
+    // Add new account
+    store.db.accounts.push(JSON.parse(JSON.stringify(account)))
+    store.db.selectedAccountId = account.id
   }
 
-  store.calculateProjections()
   close()
-  // Show the switch account modal after saving
-  store.showManageAccountModal()
+  store.calculateProjections()
 }
 
-const handleAccountSelection = () => {
-  if (store.db.selectedAccountId === 'new') {
-    show()
-  }
-}
-
-defineExpose({ show })
-
-// Make methods available to store
-store.openEditAccountModal = () => show()
-store.editAccount = (existingAccount) => show(existingAccount)
-store.closeEditAccountModal = close
-store.handleAccountSelection = handleAccountSelection
-
+// Expose show function to store
+store.openEditAccountModal = (existingAccount = null) => show(existingAccount)
 </script>
 
 <template>
-  <div class="modal" tabindex="-1" :class="{ 'd-block': isVisible }" v-if="isVisible">
+  <div class="modal" tabindex="-1" :class="{ 'd-block': isVisible }" v-show="isVisible">
     <div class="modal-dialog">
       <div class="modal-content">
         <div class="modal-header">
-          <h5 class="modal-title">{{ account.id === 'new' ? 'Add New Account' : 'Edit Account' }}</h5>
+          <h5 class="modal-title">{{ isEdit ? 'Edit' : 'Add' }} Account</h5>
           <button type="button" class="btn-close" @click="close"></button>
         </div>
         <div class="modal-body">
-          <div class="mb-3">
-            <label class="form-label">Account Name *</label>
-            <input type="text" class="form-control" v-model="account.name" required>
-          </div>
-          <div class="mb-3">
-            <label class="form-label">Description</label>
-            <textarea class="form-control" v-model="account.description" rows="3"></textarea>
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button type="button" class="btn btn-secondary" @click="close">Cancel</button>
-          <button type="button" class="btn btn-primary" @click="save">Save</button>
+          <form @submit.prevent="save">
+            <!-- Account Basic Info Section -->
+            <div class="mb-3">
+              <label for="account-name" class="form-label">Account Name</label>
+              <input type="text" class="form-control" id="account-name" v-model="account.name" required>
+            </div>
+            
+            <div class="mb-3">
+              <label for="account-description" class="form-label">Description (Optional)</label>
+              <textarea class="form-control" id="account-description" v-model="account.description" rows="2"></textarea>
+            </div>
+            
+            <!-- Account Settings Section -->
+            <h6 class="border-bottom pb-2 mt-4">Account Settings</h6>
+            
+            <div class="mb-3">
+              <label for="account-startDate" class="form-label">Start Date</label>
+              <input type="date" class="form-control" id="account-startDate" v-model="account.settings.startDate" required>
+            </div>
+            
+            <div class="mb-3">
+              <label for="account-startingBalance" class="form-label">Starting Balance</label>
+              <div class="input-group">
+                <span class="input-group-text">$</span>
+                <input type="number" class="form-control" id="account-startingBalance" 
+                       v-model.number="account.settings.startingBalance" min="0" step="0.01" required>
+              </div>
+            </div>
+            
+            <div class="mb-3">
+              <label for="account-weeklyReturn" class="form-label">Weekly Return Rate</label>
+              <div class="input-group">
+                <input type="number" class="form-control" id="account-weeklyReturn" 
+                       v-model.number="account.settings.weeklyReturn" step="0.01" required>
+                <span class="input-group-text">%</span>
+              </div>
+              <div class="form-text">
+                {{ account.settings.weeklyReturn }}% weekly is approximately 
+                {{ ((Math.pow(1 + account.settings.weeklyReturn / 100, 52) - 1) * 100).toFixed(2) }}% annually
+              </div>
+            </div>
+            
+            <div class="mb-3">
+              <label for="account-projectionYears" class="form-label">Projection Years</label>
+              <input type="number" class="form-control" id="account-projectionYears" 
+                     v-model.number="account.settings.years" min="1" max="10" required>
+              <div class="form-text">Number of years to project (1-10)</div>
+            </div>
+            
+            <div class="d-flex justify-content-end">
+              <button type="button" class="btn btn-secondary me-2" @click="close">Cancel</button>
+              <button type="submit" class="btn btn-primary">Save</button>
+            </div>
+          </form>
         </div>
       </div>
     </div>

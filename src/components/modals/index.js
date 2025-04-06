@@ -1,8 +1,20 @@
-export { default as EditAccountModal } from './EditAccountModal.vue'
-export { default as ManageAccountModal } from './ManageAccountModal.vue'
-export { default as ConfirmModal } from './ConfirmModal.vue'
-export { default as EditTransactionModal } from './EditTransactionModal.vue'
-export { default as EditRowModal } from './EditRowModal.vue'
-export { default as SettingsModal } from './SettingsModal.vue'
-export { default as EditPositionModal } from './EditPositionModal.vue'
-export { default as ChangePasswordModal } from './ChangePasswordModal.vue'
+import EditAccountModal from './EditAccountModal.vue'
+import ManageAccountModal from './ManageAccountModal.vue'
+import EditTransactionModal from './EditTransactionModal.vue'
+import EditRowModal from './EditRowModal.vue'
+import SettingsModal from './SettingsModal.vue'
+import EditPositionModal from './EditPositionModal.vue'
+import ConfirmModal from './ConfirmModal.vue'
+import ChangePasswordModal from './ChangePasswordModal.vue'
+
+// Export modals as an object so they can be imported as a group
+export {
+  EditAccountModal,
+  ManageAccountModal,
+  EditTransactionModal,
+  EditRowModal,
+  SettingsModal,
+  EditPositionModal,
+  ConfirmModal,
+  ChangePasswordModal
+}

@@ -5,6 +5,13 @@ body {
   padding: 0;
 }
 
+/* Override Bootstrap CSS variables for z-index values */
+:root {
+  --bs-dropdown-zindex: 1100;
+  --bs-tooltip-zindex: 1080;
+  --bs-popover-zindex: 1070;
+}
+
 [v-cloak]>* {
   display: none
 }
