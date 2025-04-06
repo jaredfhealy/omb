@@ -7,14 +7,9 @@ import PositionsManager from '@/components/PositionsManager.vue'
 import { onMounted, onUpdated } from 'vue'
 import { useAppStore } from '@/stores/app'
 import {
-  EditAccountModal,
-  ManageAccountModal,
   EditTransactionModal,
   EditRowModal,
-  SettingsModal,
   EditPositionModal,
-  ConfirmModal,
-  ChangePasswordModal
 } from '@/components/modals'
 
 const store = useAppStore()
@@ -50,12 +45,7 @@ onUpdated(() => {
   <!-- Modals -->
   <EditTransactionModal />
   <EditRowModal />
-  <SettingsModal />
-  <EditAccountModal />
-  <ManageAccountModal />
   <EditPositionModal />
-  <ConfirmModal />
-  <ChangePasswordModal />
 </template>
 
 <style>
@@ -106,18 +96,6 @@ onUpdated(() => {
   flex-direction: column;
   height: 100%;
   overflow: hidden;
-}
-
-/* Other styles */
-.table-responsive {
-  overflow-y: auto;
-}
-
-thead {
-  position: sticky;
-  top: 0;
-  background: white;
-  z-index: 1;
 }
 
 /* Modal styles */

@@ -45,7 +45,26 @@ const getPerSharePL = (position) => {
 
 const getWeeksHeld = (position) => {
   const currentWeek = getCurrentWeek()
-  return currentWeek - position.startWeek + 1
+  
+  // If position is sold, calculate weeks between assignment and sale
+  if (position.soldWeek) {
+    return position.soldWeek - position.assignedWeek + 1
+  }
+  
+  // Otherwise calculate weeks between assignment and current week
+  return currentWeek - position.assignedWeek + 1
+}
+
+// New function to calculate weekly ROR
+const getWeeklyROR = (position) => {
+  const totalROR = getTotalROR(position)
+  const weeksHeld = getWeeksHeld(position)
+  
+  // Prevent division by zero
+  if (weeksHeld <= 0) return 0
+  
+  // Calculate weekly ROR
+  return totalROR / weeksHeld
 }
 
 function removePosition(index) {
@@ -71,30 +90,36 @@ function migratePositionProfits() {
   
   // Loop through all positions
   store.activeAccount.positions.forEach(position => {
-    if (position.callProfits) {
-      // If there are call profits, add them to the offsettingProfits (formerly putProfits)
-      // Round the sum to 2 decimal places
-      console.log("callProfits found - Migrating position profits for:", position.symbol)
-      position.offsettingProfits = Number(((position.putProfits || 0) + (position.callProfits || 0)).toFixed(2))
+    // Check if the position has the putProfits or callProfits properties defined
+    // Use hasOwnProperty to check for property existence, not just its value
+    if (position.hasOwnProperty('putProfits') || position.hasOwnProperty('callProfits')) {
+      // Always consolidate both properties whether they are 0 or not
+      const putValue = position.hasOwnProperty('putProfits') ? position.putProfits : 0;
+      const callValue = position.hasOwnProperty('callProfits') ? position.callProfits : 0;
+      
+      console.log(`Migrating position profits for: ${position.symbol}`, {
+        putProfits: putValue,
+        callProfits: callValue,
+        total: (putValue + callValue).toFixed(2)
+      });
+      
+      // Set the new combined value
+      position.offsettingProfits = Number((putValue + callValue).toFixed(2));
       
       // Delete the old fields
-      delete position.putProfits
-      delete position.callProfits
+      delete position.putProfits;
+      delete position.callProfits;
       
-      migrationPerformed = true
-    } else if (position.putProfits && !position.offsettingProfits) {
-      // If there are only putProfits, rename to offsettingProfits and round to 2 decimal places
-      console.log("Only putProfits fount - Migrating position profits for:", position.symbol)
-      position.offsettingProfits = Number(position.putProfits.toFixed(2))
-      delete position.putProfits
-      
-      migrationPerformed = true
+      migrationPerformed = true;
     }
-  })
+  });
   
   // If any positions were migrated, save the changes
   if (migrationPerformed) {
-    store.saveBacon()
+    console.log("Migration completed - saving changes");
+    store.saveBacon();
+  } else {
+    console.log("No positions needed migration");
   }
 }
 </script>
