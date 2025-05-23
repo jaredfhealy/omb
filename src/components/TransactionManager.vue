@@ -1,6 +1,8 @@
 <script setup>
 import { computed } from 'vue'
 import { useAppStore } from '@/stores/app'
+import DataTable from '@/components/custom/DataTable.vue'
+
 const store = useAppStore()
 
 // Add local computed property
@@ -26,6 +28,36 @@ const filteredTransactions = computed(() => {
   return filtered
 })
 
+// Define columns for DataTable
+const columns = [
+  {
+    key: 'type',
+    header: { text: 'Type / Category' },
+    class: 'col-12 col-xl-2'
+  },
+  {
+    key: 'startWeek',
+    header: { text: 'Start Week' },
+    class: 'col-6 col-xl-3'
+  },
+  {
+    key: 'endWeek',
+    header: { text: 'End Week' },
+    class: 'col-6 col-xl-3'
+  },
+  {
+    key: 'amount',
+    header: { text: 'Amount' },
+    class: 'col-6 col-xl-2',
+    value: (item) => store.currency(item.amount)
+  },
+  {
+    key: 'actions',
+    header: { text: 'Actions' },
+    class: 'col-6 col-xl-2'
+  }
+]
+
 // Define local functions
 function removeTransaction(transaction) {
   if (store.confirm) {
@@ -44,32 +76,18 @@ function clearFilters() {
   store.transactionFilter = 'all'
 }
 
-function getTransactionWeekDisplay(transaction, startEnd) {
-  const start = transaction.startWeek
-  const end = transaction.endWeek
-
-  let result = `#${startEnd === 'start' ? start : end} (${startEnd === 'start' ? store.weekRange(start) : store.weekRange(end)})`
-
-  if (startEnd === 'end') {
-    if (start === end) return "Single Week"
-    if (!end) return "Ongoing"
-    result += ` [${end - start} Wks]`
-  }
-
-  return result
-}
-
 // Expose functions to store
 store.removeTransaction = removeTransaction
 store.clearFilters = clearFilters
 </script>
 
 <template>
-  <div class="transaction-manager-container">
-    <!-- Header section with filters -->
-    <div class="p-3">
-      <div class="d-flex justify-content-between align-items-center">
-        <div class="btn-group">
+  <!-- Header section with filters - simplified structure -->
+  <div class="p-2 filter-container">
+    <!-- Combined row: Type filters, New button, and Week filter -->
+    <div class="d-flex flex-wrap align-items-center justify-content-between">
+      <div class="d-flex align-items-center">
+        <div class="btn-group me-3">
           <button class="btn" :class="store.transactionFilter === 'all' ? 'btn-primary' : 'btn-outline-primary'"
             @click="store.transactionFilter = 'all'">All</button>
           <button class="btn" :class="store.transactionFilter === 'deposit' ? 'btn-primary' : 'btn-outline-primary'"
@@ -77,149 +95,83 @@ store.clearFilters = clearFilters
           <button class="btn" :class="store.transactionFilter === 'withdrawal' ? 'btn-primary' : 'btn-outline-primary'"
             @click="store.transactionFilter = 'withdrawal'">Withdrawals</button>
         </div>
-
-        <div class="d-flex align-items-center">
-          <label class="me-2">Filter by Week:</label>
-          <select class="form-select w-auto me-2" v-model="store.selectedWeek">
-            <option :value="null">All Weeks</option>
-            <option v-for="p in store.projections" :key="p.week" :value="p.week">
-              Week {{ p.week }} ({{ store.weekRange(p.week, true) }})
-            </option>
-          </select>
-          <button type="button" class="btn btn-warning" @click="clearFilters()"
-            v-show="store.selectedWeek || store.transactionFilter !== 'all'">
-            <i class="bi bi-x-circle"></i> Reset
-          </button>
-        </div>
-
-        <button class="btn btn-primary" @click="store.addNewTransaction">
-          <i class="bi bi-plus"></i> New Transaction
+        <button class="btn btn-primary me-3" @click="store.addNewTransaction">
+          <i class="bi bi-plus"></i> New
+        </button>
+      </div>
+      
+      <div class="d-flex align-items-center mt-2 mt-md-0">
+        <label class="me-2">Filter:</label>
+        <select class="form-select me-2" style="max-width: 250px;" v-model="store.selectedWeek">
+          <option :value="null">All Weeks</option>
+          <option v-for="p in store.projections" :key="p.week" :value="p.week">
+            Week {{ p.week }} ({{ store.weekRange(p.week, true) }})
+          </option>
+        </select>
+        <button type="button" class="btn btn-warning" @click="clearFilters()"
+          v-show="store.selectedWeek || store.transactionFilter !== 'all'">
+          <i class="bi bi-x-circle"></i>
         </button>
       </div>
     </div>
-
-    <hr class="m-0"/>
-
-    <!-- Scrollable container for transaction cards -->
-    <div class="scrollable-container">
-      <div class="container-fluid pb-4">
-        <!-- Table Header Row -->
-        <div class="row sticky-top header-row bg-white py-2 mb-2">
-          <div class="col-12 col-xl-2">Type / Category</div>
-          <div class="col-12 col-xl-10 d-none d-xl-flex">
-            <div class="col-3">Start Week</div>
-            <div class="col-3">End Week</div>
-            <div class="col-2">Amount</div>
-            <div class="col-4">Actions</div>
-          </div>
-        </div>
-
-        <!-- Transaction Cards -->
-        <div v-for="(transaction, index) in filteredTransactions" :key="index" class="row mb-2">
-          <div class="col-12">
-            <div class="card h-100">
-              <div class="card-body py-2">
-                <div class="row">
-                  <!-- Transaction Type/Category Info - removed pill styling -->
-                  <div class="col-12 col-xl-2 mb-2 mb-xl-0">
-                    <div class="transaction-type">
-                      <span class="type-text" :class="transaction.type === 'deposit' ? 'text-success' : 'text-danger'">
-                        {{ transaction.type.charAt(0).toUpperCase() + transaction.type.slice(1) }}
-                      </span>
-                      <span v-if="transaction.category" class="category-text">
-                        {{ transaction.category.charAt(0).toUpperCase() + transaction.category.slice(1) }}
-                      </span>
-                    </div>
-                  </div>
-                  
-                  <!-- Transaction Details - flex layout on desktop, stacked on mobile -->
-                  <div class="col-12 col-xl-10">
-                    <div class="row">
-                      <!-- Start Week - now a separate column -->
-                      <div class="col-6 col-xl-3">
-                        <div class="data-label d-xl-none">Start Week</div>
-                        <div v-html="store.weekRange(transaction.startWeek)"></div>
-                      </div>
-                      
-                      <!-- End Week - now a separate column -->
-                      <div class="col-6 col-xl-3">
-                        <div class="data-label d-xl-none">End Week</div>
-                        <div>
-                          <span v-if="transaction.endWeek" v-html="store.weekRange(transaction.endWeek)"></span>
-                          <span v-else class="text-muted">Ongoing</span>
-                        </div>
-                      </div>
-                      
-                      <!-- Amount - reduced width -->
-                      <div class="col-6 col-xl-2">
-                        <div class="data-label d-xl-none">Amount</div>
-                        <div class="amount-display">
-                          {{ store.currency(transaction.amount) }}
-                        </div>
-                      </div>
-                      
-                      <!-- Actions - reduced width -->
-                      <div class="col-6 col-xl-4">
-                        <div class="data-label d-xl-none">Actions</div>
-                        <div class="d-flex gap-2">
-                          <button class="btn btn-sm btn-outline-primary" @click="store.editTransaction(transaction)">
-                            <i class="bi bi-pencil-square"></i> Edit
-                          </button>
-                          <button class="btn btn-sm btn-outline-danger" @click="removeTransaction(transaction)">
-                            <i class="bi bi-trash"></i> Delete
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-        
-        <!-- Empty state message -->
-        <div v-if="filteredTransactions.length === 0" class="text-center py-5">
-          <p class="text-muted">No transactions match your filters</p>
-          <button class="btn btn-outline-secondary" @click="clearFilters">Reset filters</button>
-        </div>
-      </div>
-    </div>
   </div>
+
+  <!-- DataTable without unnecessary container -->
+  <DataTable 
+    :items="filteredTransactions"
+    :columns="columns"
+    :striped="true">
+    <!-- Type column -->
+    <template #type="{ item }">
+      <div class="transaction-type">
+        <span class="type-text" :class="item.type === 'deposit' ? 'text-success' : 'text-danger'">
+          {{ item.type.charAt(0).toUpperCase() + item.type.slice(1) }}
+        </span>
+        <span v-if="item.category" class="category-text">
+          {{ item.category.charAt(0).toUpperCase() + item.category.slice(1) }}
+        </span>
+      </div>
+    </template>
+
+    <!-- Start Week column -->
+    <template #startWeek="{ item }">
+      <span v-html="store.weekRange(item.startWeek)"></span>
+    </template>
+
+    <!-- End Week column -->
+    <template #endWeek="{ item }">
+      <span v-if="item.endWeek" v-html="store.weekRange(item.endWeek)"></span>
+      <span v-else class="text-muted">Ongoing</span>
+    </template>
+
+    <!-- Actions column -->
+    <template #actions="{ item }">
+      <div class="d-flex gap-2">
+        <button class="btn btn-sm btn-outline-primary" @click="store.editTransaction(item)">
+          <i class="bi bi-pencil-square"></i>
+          <span class="d-xl-none ms-1">Edit</span>
+        </button>
+        <button class="btn btn-sm btn-outline-danger" @click="removeTransaction(item)">
+          <i class="bi bi-trash"></i>
+          <span class="d-xl-none ms-1">Delete</span>
+        </button>
+      </div>
+    </template>
+
+    <!-- Move empty state inside DataTable as a slot -->
+    <template v-if="filteredTransactions.length === 0" #empty>
+      <div class="text-center py-5">
+        <p class="text-muted">No transactions match your filters</p>
+        <button class="btn btn-outline-secondary" @click="clearFilters">Reset filters</button>
+      </div>
+    </template>
+  </DataTable>
 </template>
 
 <style>
-.transaction-manager-container {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  width: 100%;
-  position: relative;
-}
+/* Remove the container style that's no longer needed */
 
-.scrollable-container {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-}
-
-/* Alternating background colors for cards */
-.transaction-manager-container .row.mb-2:nth-child(odd) .card {
-  background-color: rgba(0, 0, 0, 0.05);
-}
-
-/* Hover effect */
-.transaction-manager-container .card:hover {
-  background-color: rgba(244, 236, 192, 0.7);
-}
-
-.header-row {
-  font-weight: bold;
-  border-bottom: 2px solid #dee2e6;
-  z-index: 1020;
-}
-
-/* Updated Transaction type and category styling */
+/* Transaction type and category styling */
 .transaction-type {
   display: flex;
   align-items: center;
@@ -235,33 +187,20 @@ store.clearFilters = clearFilters
   color: #495057;
 }
 
-/* Mobile data labels */
-.data-label {
-  font-weight: bold;
-  font-size: 0.8rem;
-  margin-bottom: 0.1rem;
-  color: #6c757d;
-}
-
-/* Amount display */
-.amount-display {
-  font-weight: 500;
-}
-
-/* Mobile-specific styling */
+/* Mobile styling */
 @media (max-width: 1199.98px) {
-  .card {
-    margin-bottom: 0.75rem;
-  }
-  
-  .row > [class*="col-"] {
-    margin-bottom: 0.5rem;
+  .data-label {
+    font-weight: bold;
+    font-size: 0.8rem;
+    margin-bottom: 0.1rem;
+    color: #6c757d;
   }
 }
 
-/* Make badges stand out more */
-.badge {
-  padding: 0.5em 0.8em;
-  font-size: 0.8rem;
+/* Override filter container height explicitly */
+.filter-container {
+  height: auto !important; /* Override any 100% height from parent styles */
+  max-height: 50px; 
+  min-height: fit-content;
 }
 </style>

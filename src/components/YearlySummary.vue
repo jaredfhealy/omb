@@ -1,6 +1,7 @@
 <script setup>
 import { useAppStore } from '@/stores/app'
 import { computed } from 'vue'
+import DataTable from '@/components/custom/DataTable.vue'
 
 const store = useAppStore()
 
@@ -52,120 +53,78 @@ const yearlyData = computed(() => {
   
   return years
 })
+
+// Define columns for DataTable
+const columns = [
+  {
+    key: 'year',
+    header: {
+      text: 'Year'
+    },
+    class: 'col-12 col-xl-2'
+  },
+  {
+    key: 'startBalance',
+    header: {
+      text: 'Start Balance'
+    },
+    value: (item) => store.currency(item.startBalance)
+  },
+  {
+    key: 'deposits',
+    header: {
+      text: 'Deposits'
+    },
+    value: (item) => store.currency(item.deposits)
+  },
+  {
+    key: 'withdrawals',
+    header: {
+      text: 'Withdrawals'
+    },
+    value: (item) => store.currency(item.withdrawals)
+  },
+  {
+    key: 'growth',
+    header: {
+      text: 'Growth',
+      tooltip: 'Total growth for the year'
+    },
+    class: 'col-6 col-xl',
+    value: (item) => store.currency(item.growth)
+  },
+  {
+    key: 'endBalance',
+    header: {
+      text: 'End Balance'
+    },
+    value: (item) => store.currency(item.endBalance)
+  },
+  {
+    key: 'change',
+    header: {
+      text: '% Change'
+    },
+    value: (item) => `${((item.endBalance - item.startBalance) / item.startBalance * 100).toFixed(2)}%`
+  }
+]
 </script>
 
 <template>
-  <div class="yearly-summary-container">
-    <div class="scrollable-container">
-      <div class="container-fluid pb-4">
-        <!-- Header Row -->
-        <div class="row sticky-top header-row bg-white py-2 mb-2">
-          <div class="col-12 col-xl-3">Year</div>
-          <div class="col-12 col-xl-9 d-none d-xl-flex">
-            <div class="col">Start Balance</div>
-            <div class="col">Deposits</div>
-            <div class="col">Withdrawals</div>
-            <div class="col">Growth</div>
-            <div class="col">End Balance</div>
-            <div class="col">% Change</div>
-          </div>
-        </div>
-
-        <!-- Year Cards -->
-        <div v-for="(year, index) in yearlyData" :key="index" class="row mb-2">
-          <div class="col-12">
-            <div class="card h-100">
-              <div class="card-body py-2">
-                <div class="row">
-                  <!-- Year Info -->
-                  <div class="col-12 col-xl-3 mb-2 mb-xl-0">
-                    <div class="year-combined">
-                      <span class="year-number">Year {{ year.yearNumber }}</span>
-                      <span class="week-count">({{ year.weeks.length }} weeks)</span>
-                    </div>
-                    <div class="year-range">
-                      Weeks #{{ year.weekStart }}-{{ year.weekEnd }}
-                    </div>
-                  </div>
-                  
-                  <!-- Year Details - flex layout on desktop, stacked on mobile -->
-                  <div class="col-12 col-xl-9">
-                    <div class="row">
-                      <!-- Start Balance -->
-                      <div class="col-6 col-xl">
-                        <div class="data-label d-xl-none">Start Balance</div>
-                        <div>{{ store.currency(year.startBalance) }}</div>
-                      </div>
-                      
-                      <!-- Deposits -->
-                      <div class="col-6 col-xl">
-                        <div class="data-label d-xl-none">Deposits</div>
-                        <div>{{ store.currency(year.deposits) }}</div>
-                      </div>
-                      
-                      <!-- Withdrawals -->
-                      <div class="col-6 col-xl">
-                        <div class="data-label d-xl-none">Withdrawals</div>
-                        <div>{{ store.currency(year.withdrawals) }}</div>
-                      </div>
-                      
-                      <!-- Growth -->
-                      <div class="col-6 col-xl">
-                        <div class="data-label d-xl-none">Growth</div>
-                        <div>{{ store.currency(year.growth) }}</div>
-                      </div>
-                      
-                      <!-- End Balance -->
-                      <div class="col-6 col-xl">
-                        <div class="data-label d-xl-none">End Balance</div>
-                        <div>{{ store.currency(year.endBalance) }}</div>
-                      </div>
-                      
-                      <!-- % Change -->
-                      <div class="col-6 col-xl">
-                        <div class="data-label d-xl-none">% Change</div>
-                        <div>
-                          {{ ((year.endBalance - year.startBalance) / year.startBalance * 100).toFixed(2) }}%
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
+  <DataTable :items="yearlyData" :columns="columns">
+    <template #year="{ item }">
+      <div class="year-combined">
+        <span class="year-number">Year {{ item.yearNumber }}</span>
+        <span class="week-count">({{ item.weeks.length }} weeks)</span>
       </div>
-    </div>
-  </div>
+      <div class="year-range">
+        Weeks #{{ item.weekStart }}-{{ item.weekEnd }}
+      </div>
+    </template>
+  </DataTable>
 </template>
 
 <style>
-.yearly-summary-container {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  width: 100%;
-  position: relative;
-}
-
-.scrollable-container {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-  height: 100%;
-}
-
-/* Alternating background colors for cards */
-.yearly-summary-container .row.mb-2:nth-child(odd) .card {
-  background-color: rgba(0, 0, 0, 0.05);
-}
-
-/* Subtle hover effect */
-.yearly-summary-container .card:hover {
-  background-color: rgba(244, 236, 192, 0.7);
-}
-
 /* Year display styling */
 .year-combined {
   display: flex;
@@ -187,23 +146,5 @@ const yearlyData = computed(() => {
   font-size: 0.85rem;
   color: #6c757d;
   margin-top: 4px;
-}
-
-/* Mobile-specific styles */
-@media (max-width: 1199.98px) {
-  .data-label {
-    font-weight: bold;
-    font-size: 0.8rem;
-    margin-bottom: 0.1rem;
-    color: #6c757d;
-  }
-  
-  .card {
-    margin-bottom: 0.75rem;
-  }
-  
-  .row > [class*="col-"] {
-    margin-bottom: 0.5rem;
-  }
 }
 </style>

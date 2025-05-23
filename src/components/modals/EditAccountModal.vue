@@ -4,7 +4,10 @@ import { useAppStore } from '@/stores/app'
 
 const store = useAppStore()
 const isVisible = ref(false)
-const account = reactive({
+const isNewAccount = ref(false)
+
+// Default account template
+const defaultAccountTemplate = {
   id: null,
   name: '',
   description: '',
@@ -17,30 +20,28 @@ const account = reactive({
     weeklyReturn: 1,
     years: 4
   }
-})
+}
 
-const isEdit = computed(() => !!account.id)
+// Initialize with defaults
+const account = reactive({...defaultAccountTemplate})
+
+// Update this to explicitly use the flag instead of checking account.id
+const isEdit = computed(() => !isNewAccount.value)
 
 const show = (existingAccount = null) => {
   if (existingAccount) {
-    // Editing an existing account - copy all properties
+    // Editing an existing account
+    isNewAccount.value = false
     Object.assign(account, JSON.parse(JSON.stringify(existingAccount)))
   } else {
     // Creating a new account - reset to defaults
-    Object.assign(account, {
-      id: Date.now(),
-      name: '',
-      description: '',
-      transactions: [],
-      actuals: [],
-      positions: [],
-      settings: {
-        startDate: new Date().toISOString().split('T')[0],
-        startingBalance: 5000,
-        weeklyReturn: 1,
-        years: 4
-      }
-    })
+    isNewAccount.value = true
+    
+    // Reset to defaults first
+    Object.assign(account, {...defaultAccountTemplate})
+    
+    // Then just set the new ID
+    account.id = Date.now()
   }
   isVisible.value = true
 }
@@ -85,6 +86,9 @@ const save = () => {
 
   close()
   store.calculateProjections()
+  
+  // Set the active tab to "yearly" after saving
+  store.activeTab = 'yearly'
 }
 
 // Expose show function to store

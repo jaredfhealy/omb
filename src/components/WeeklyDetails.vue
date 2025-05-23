@@ -1,20 +1,13 @@
 <script setup>
 import { useAppStore } from '@/stores/app'
 import { computed, ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import DataTable from '@/components/custom/DataTable.vue'
 
 const store = useAppStore()
-// Replace selection variables with selectedRows object
 const selectedRows = ref({})
 const selectionSummary = ref(null)
-// Add a reference to the scrollable container
 const scrollableContainer = ref(null)
-// Add a reference to the current week element
 const currentWeekRef = ref(null)
-
-// Add state to track expanded selected rows
-const expandedRows = ref({})
-
-// Add state to track whether summary is expanded
 const summaryExpanded = ref(false)
 
 // Add local function (without exposing to store)
@@ -40,19 +33,107 @@ const getCurrentWeek = computed(() => {
   return Math.ceil(diffDays / 7)
 })
 
-// Define selectable columns - removing 'transaction' and 'projectedGrowth'
-const SELECTABLE_COLUMNS = ['actualGrowth', 'actualROR']
-
-// Format column titles for display
-const formatColumnTitle = (column) => {
-  switch (column) {
-    case 'transaction': return 'Net Transaction'
-    case 'projectedGrowth': return 'Projected Growth'
-    case 'actualGrowth': return 'Actual Growth'
-    case 'actualROR': return 'ROR %'
-    default: return column
+// Define columns for the DataTable
+const columns = [
+  {
+    key: 'week',
+    header: {
+      text: 'Week'
+    },
+    class: 'col-12 col-xl-2'
+  },
+  {
+    key: 'startBalance',
+    header: {
+      text: 'Start: Cash',
+      tooltip: 'Total cash balance and cash investments'
+    },
+    class: 'col-6 col-xl',
+    value: (item) => store.currency(item.startBalance)
+  },
+  {
+    key: 'sharesBalance',
+    header: {
+      text: 'Start: Shares',
+      tooltip: 'Total cost basis of assigned positions'
+    },
+    class: 'col-6 col-xl',
+    getTooltip: (item) => item.sharesBalanceAddedThisWeek > 0 ? getAssignmentsTooltip(item) : null,
+    value: (item) => store.currency(item.sharesBalance)
+  },
+  {
+    key: 'netTransaction',
+    header: {
+      text: 'Net Trans.',
+      tooltip: 'Rows marked with (*) have both deposits and withdrawals'
+    },
+    class: 'col-6 col-xl',
+    value: (item) => {
+      const result = formatNetTransaction(item.deposit, item.withdrawal)
+      return `${result.value}${result.indicator}`
+    },
+    getTooltip: (item) => {
+      const result = formatNetTransaction(item.deposit, item.withdrawal, true)
+      return result.tooltip
+    },
+    tooltipHtml: true
+  },
+  {
+    key: 'projectedGrowth',
+    header: {
+      text: 'Projected',
+      tooltip: 'Expected growth based on estimated weekly % ROR from settings'
+    },
+    class: 'col-6 col-xl',
+    value: (item) => store.currency(item.projectedGrowth)
+  },
+  {
+    key: 'actualGrowth',
+    header: {
+      text: 'Actual',
+      tooltip: 'Realized growth for the current week'
+    },
+    class: 'col-6 col-xl',
+    getTooltip: (item) => item.actualGrowth !== null ? 
+      `Avg All: ${store.currency(item.averageGrowth)}<br>
+       Avg to Date: ${store.currency(item.trailingTotalGrowth)}<br>
+       Avg Last 8: ${store.currency(item.trailing8WeekGrowth)}<br>
+       Avg Last 4: ${store.currency(item.trailing4WeekGrowth)}` : null,
+    tooltipHtml: true,
+    value: (item) => store.currency(item.actualGrowth || 0)
+  },
+  {
+    key: 'ror',
+    header: {
+      text: 'ROR %',
+      tooltip: 'Rate of Return percentage'
+    },
+    class: 'col-6 col-xl',
+    getTooltip: (item) => item.actualROR ? 
+      `Avg All: ${item.averageROR}%<br>
+       Avg to Date: ${item.trailingTotalROR}%<br>
+       Avg Last 8: ${item.trailing8WeekROR}%<br>
+       Avg Last 4: ${item.trailing4WeekROR}%` : null,
+    tooltipHtml: true,
+    value: (item) => item.actualROR ? `${Number(item.actualROR).toFixed(2)}%` : '0%'
+  },
+  {
+    key: 'endBalance',
+    header: {
+      text: 'End: Total',
+      tooltip: 'Final balance after all transactions and growth'
+    },
+    class: 'col-6 col-xl',
+    value: (item) => store.currency(item.endBalance)
+  },
+  {
+    key: 'actions',
+    header: {
+      text: 'Actions'
+    },
+    class: 'col-6 col-xl'
   }
-}
+]
 
 // Updated to calculate summaries for all columns at once
 const calculateSummary = () => {
@@ -63,7 +144,7 @@ const calculateSummary = () => {
   if (selectedWeeks.length === 0) return null
   
   // Calculate summaries for all columns at once
-  const columns = SELECTABLE_COLUMNS
+  const columns = ['actualGrowth', 'actualROR']
   const summaries = {}
   
   columns.forEach(column => {
@@ -126,7 +207,6 @@ const updateSummary = () => {
   else if (!wasEmpty && newSelectionCount === 0) {
     // Previously had selections but now all unchecked
     selectionSummary.value = null
-    expandedRows.value = {}
     
     // Wait for rows to expand before scrolling
     setTimeout(() => {
@@ -144,11 +224,9 @@ const handleEscape = (e) => {
 
 // Add function to scroll to current week
 const scrollToCurrentWeek = async () => {
-  // Wait for the DOM to update
   await nextTick()
   
-  if (currentWeekRef.value && scrollableContainer.value) {
-    // Use scrollIntoView with smooth behavior and positioning
+  if (currentWeekRef.value && dataTableRef.value?.scrollableContainer) {
     currentWeekRef.value.scrollIntoView({
       behavior: 'smooth',
       block: 'center' // Center the element in the viewport
@@ -199,16 +277,23 @@ function editNetTransactionFromRow(week) {
 }
 
 // Add local function (without exposing to store)
-function formatNetTransaction(deposit, withdrawal) {
+function formatNetTransaction(deposit, withdrawal, tooltipOnly = false) {
   const net = deposit - withdrawal
   const hasMultiple = deposit && withdrawal
+
+  if (tooltipOnly && hasMultiple) {
+    return {
+      tooltip: `Deposit: ${store.currency(deposit)}<br>
+                Withdrawal: ${store.currency(withdrawal)}`
+    }
+  }
 
   return {
     value: net < 0
       ? `(${store.currency(Math.abs(net))})`
       : store.currency(net),
     style: { color: net < 0 ? 'red' : 'inherit' },
-    indicator: hasMultiple ? '*' : ''
+    indicator: hasMultiple ? '*': ''
   }
 }
 
@@ -218,7 +303,6 @@ const closeSummary = () => {
   Object.keys(selectedRows.value).forEach(key => {
     selectedRows.value[key] = false
   })
-  expandedRows.value = {}
   selectionSummary.value = null
   summaryExpanded.value = false
   
@@ -231,17 +315,30 @@ const hasSelection = computed(() => {
   return Object.values(selectedRows.value).some(selected => selected === true)
 })
 
-// Toggle expansion of a selected row in mobile view
-const toggleRowExpansion = (week) => {
-  if (selectedRows.value[week]) {
-    expandedRows.value[week] = !expandedRows.value[week]
-  }
-}
-
 // Function to toggle summary expansion
 const toggleSummaryExpansion = () => {
   summaryExpanded.value = !summaryExpanded.value
 }
+
+// Add function to get row attributes
+const getRowAttributes = (item) => ({
+  'data-week': item.week,
+  class: {
+    'current-week-card': item.week === getCurrentWeek.value, // Use .value here
+    'row-selected': selectedRows[item.week]
+  }
+})
+
+// Add ref handling function
+const handleRowRef = (el, item) => {
+  // Compare against the computed value
+  if (item.week === getCurrentWeek.value) {
+    currentWeekRef.value = el
+  }
+}
+
+// Add ref for the DataTable component
+const dataTableRef = ref(null)
 </script>
 
 <template>
@@ -326,313 +423,85 @@ const toggleSummaryExpansion = () => {
       </div>
     </div>
 
-    <div class="scrollable-container" ref="scrollableContainer">
-      <div class="container-fluid pb-4">
-        <!-- Table Header -->
-        <div class="row sticky-top header-row bg-white py-2 mb-2">
-          <!-- First header row with column group -->
-          <div class="col-12 d-none d-xl-flex mb-1">
-            <div class="col-3"></div> <!-- Week column -->
-            <div class="col-9 d-flex">
-              <div class="col-2"></div> <!-- Start: Cash* -->
-              <div class="col-2" v-if="store.activeAccount.positions.length > 0"></div> <!-- Start: Shares* -->
-              <div class="col-2"></div> <!-- Net Trans.* -->
-              
-              <!-- Growth column group -->
-              <div class="col-2 text-center border-bottom">
-                <strong>Growth</strong>
-              </div>
-              
-              <div class="col"></div> <!-- ROR % -->
-              <div class="col-2"></div> <!-- End: Total* -->
-              <div class="col-1"></div> <!-- Actions* -->
-            </div>
-          </div>
-          
-          <!-- Second header row with detailed column names -->
-          <div class="col-12 col-xl-3 d-flex">
-            <div class="col-12">Week</div> <!-- Week column header -->
-          </div>
-          <div class="col-12 col-xl-9 d-flex d-none d-xl-flex">
-            <div class="col-2" data-bs-toggle="tooltip" data-bs-title="Total cash balance and cash investments">
-              Start: Cash*
-            </div>
-            <div class="col-2" v-if="store.activeAccount.positions.length > 0" data-bs-toggle="tooltip"
-              data-bs-title="Total cost basis of assigned positions. Weeks with new assignments marked with an info icon.">
-              Start: Shares*
-            </div>
-            <div class="col-2" data-bs-toggle="tooltip"
-              data-bs-title="Rows identified with an asterisk (*) have both deposit and withdrawal values.">
-              Net Trans.*
-            </div>
-            <div class="col">Projected</div>
-            <div class="col">Actual</div>
-            <div class="col">ROR %</div>
-            <div class="col">End: Total*</div>
-            <div class="col-1">Actions*</div>
-          </div>
+    <!-- Replace table with DataTable -->
+    <DataTable 
+      ref="dataTableRef"
+      :items="store.projections"
+      :columns="columns"
+      :striped="true"
+      :get-row-attributes="getRowAttributes"
+      :get-row-ref="handleRowRef">
+      <!-- Week column with checkbox -->
+      <template #week="{ item }">
+        <div class="week-combined">
+          <input type="checkbox" 
+                 class="form-check-input enhanced-checkbox me-2" 
+                 v-model="selectedRows[item.week]" 
+                 @change="updateSummary">
+          <span class="week-number">
+            <span class="d-xl-none">Week </span>{{ item.week }}
+          </span>
+          <span class="week-separator">|</span>
+          <span class="week-date" v-html="store.weekRange(item.week)"></span>
         </div>
+      </template>
 
-        <!-- Table Body -->
-        <div v-for="(projection, index) in store.projections" :key="index" 
-             class="row mb-2" 
-             :class="{ 
-                'current-week-card': projection.week === getCurrentWeek,
-                'row-selected': selectedRows[projection.week],
-                'row-collapsed': hasSelection && !expandedRows[projection.week]
-             }"
-             :data-week="projection.week"
-             :ref="projection.week === getCurrentWeek ? el => currentWeekRef = el : null">
-          <div class="col-12">
-            <div class="card h-100">
-              <div class="card-body py-2">
-                <div class="row">
-                  <!-- Week info with integrated checkbox and toggle icon for mobile -->
-                  <div class="col-12 col-xl-3 mb-2 mb-xl-0">
-                    <div class="week-combined">
-                      <input type="checkbox" 
-                             class="form-check-input enhanced-checkbox me-2" 
-                             v-model="selectedRows[projection.week]" 
-                             @change="updateSummary">
-                      <span class="week-number">#{{ projection.week }}</span>
-                      <span class="week-separator">|</span>
-                      <span class="week-date" v-html="store.weekRange(projection.week)"></span>
-                      
-                      <!-- Add toggle button for mobile view when row is selected -->
-                      <i v-if="hasSelection && selectedRows[projection.week]" 
-                         @click="toggleRowExpansion(projection.week)"
-                         class="bi d-xl-none ms-auto toggle-icon"
-                         :class="expandedRows[projection.week] ? 'bi-chevron-up' : 'bi-chevron-down'"></i>
-                    </div>
-                  </div>
-                  
-                  <!-- Details - flex layout on desktop, stacked on mobile -->
-                  <div class="col-12 col-xl-9 details-section"
-                       :class="{ 'd-none d-xl-block': hasSelection && !expandedRows[projection.week] }">
-                    <div class="row">
-                      <!-- Start: Cash Balance -->
-                      <div class="col-6 col-xl-2">
-                        <div class="data-label d-xl-none">Start: Cash Balance</div>
-                        <div>{{ store.currency(projection.startBalance) }}</div>
-                      </div>
-                      
-                      <!-- Start: Shares Balance (if positions exist) -->
-                      <div class="col-6 col-xl-2" v-if="store.activeAccount.positions.length > 0">
-                        <div class="data-label d-xl-none">Start: Shares Balance</div>
-                        <div>
-                          <span v-if="projection.sharesBalanceAddedThisWeek > 0" 
-                                class="position-relative"
-                                data-bs-toggle="tooltip"
-                                :data-bs-html="true"
-                                :data-bs-title="getAssignmentsTooltip(projection)">
-                            {{ store.currency(projection.sharesBalance) }}
-                            <i class="bi bi-info-circle ms-1"></i>
-                          </span>
-                          <span v-else>
-                            {{ store.currency(projection.sharesBalance) }}
-                          </span>
-                        </div>
-                      </div>
-                      
-                      <!-- Net Transaction - wider column -->
-                      <div class="col-6 col-xl-2">
-                        <div class="data-label d-xl-none">Net Transaction</div>
-                        <div class="d-flex">
-                          <i class="bi bi-pencil-square cursor-pointer me-1"
-                             @click="editNetTransactionFromRow(projection.week)"></i>
-                          <span 
-                            data-bs-toggle="tooltip" 
-                            :data-bs-html="true"
-                            :data-bs-title="`Deposit: ${store.currency(projection.deposit)}<br />Withdraw: (${store.currency(projection.withdrawal)})`"
-                            :style="formatNetTransaction(projection.deposit, projection.withdrawal).style">
-                            {{ formatNetTransaction(projection.deposit, projection.withdrawal).value }}
-                            {{ formatNetTransaction(projection.deposit, projection.withdrawal).indicator }}
-                          </span>
-                        </div>
-                      </div>
-                      
-                      <!-- Projected Growth -->
-                      <div class="col-6 col-xl">
-                        <div class="data-label d-xl-none">Projected Growth</div>
-                        <div>
-                          {{ store.currency(projection.projectedGrowth) }}
-                        </div>
-                      </div>
-                      
-                      <!-- Actual Growth -->
-                      <div class="col-6 col-xl">
-                        <div class="data-label d-xl-none">Actual Growth</div>
-                        <div>
-                          <span v-if="projection.actualGrowth !== null" 
-                                data-bs-toggle="tooltip" 
-                                :data-bs-html="true"
-                                :data-bs-title="`
-                                  Avg All: ${store.currency(projection.averageGrowth)}<br>
-                                  Avg to Date: ${store.currency(projection.trailingTotalGrowth)}<br>
-                                  Avg Last 8: ${store.currency(projection.trailing8WeekGrowth)}<br>
-                                  Avg Last 4: ${store.currency(projection.trailing4WeekGrowth)}
-                                `">
-                            {{ store.currency(projection.actualGrowth) }}
-                          </span>
-                          <span v-else>
-                            {{ store.currency(0) }}
-                          </span>
-                        </div>
-                      </div>
-                      
-                      <!-- Actual %ROR -->
-                      <div class="col-6 col-xl">
-                        <div class="data-label d-xl-none">Actual %ROR</div>
-                        <div>
-                          <span v-if="projection.actualROR" 
-                                data-bs-toggle="tooltip" 
-                                :data-bs-html="true" 
-                                :data-bs-title="`
-                                  Avg All: ${projection.averageROR}%<br>
-                                  Avg to Date: ${projection.trailingTotalROR}%<br>
-                                  Avg Last 8: ${projection.trailing8WeekROR}%<br>
-                                  Avg Last 4: ${projection.trailing4WeekROR}%
-                                `">
-                            {{ Number(projection.actualROR).toFixed(2) }}%
-                          </span>
-                          <span v-else>
-                            0%
-                          </span>
-                        </div>
-                      </div>
-                      
-                      <!-- End: Total Balance -->
-                      <div class="col-6 col-xl">
-                        <div class="data-label d-xl-none">End: Total Balance</div>
-                        <div>{{ store.currency(projection.endBalance) }}</div>
-                      </div>
-                      
-                      <!-- Actions -->
-                      <div class="col-6 col-xl-1">
-                        <div class="data-label d-xl-none">Actions</div>
-                        <div>
-                          <button type="button" 
-                                  class="btn btn-sm btn-outline-primary" 
-                                  @click="store.showWeeklyRowModal(projection.week)">
-                            <i class="bi bi-pencil-square"></i>
-                          </button>
-                          {{ store.activeAccount.actuals.some(a => Number(a.week) === projection.week && a.notes) ? '*' : '' }}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
+      <!-- Actions column -->
+      <template #actions="{ item }">
+        <button type="button" 
+                class="btn btn-sm btn-outline-primary" 
+                @click="store.showWeeklyRowModal(item.week)">
+          <i class="bi bi-pencil-square"></i>
+        </button>
+        {{ store.activeAccount.actuals.some(a => Number(a.week) === item.week && a.notes) ? '*' : '' }}
+      </template>
+
+      <!-- Net Transaction column with edit icon -->
+      <template #netTransaction="{ item }">
+        <div class="d-flex">
+          <i class="bi bi-pencil-square cursor-pointer me-1"
+             @click="editNetTransactionFromRow(item.week)"></i>
+          <span :style="formatNetTransaction(item.deposit, item.withdrawal).style">
+            {{ formatNetTransaction(item.deposit, item.withdrawal).value }}
+            {{ formatNetTransaction(item.deposit, item.withdrawal).indicator }}
+          </span>
         </div>
-      </div>
-    </div>
+      </template>
+    </DataTable>
   </div>
 </template>
 
-<style>
-.current-week-card {
-  /* Highlight the current week card */
-  border-left: 4px solid #6c757d;
+<style scoped>
+/* Keep week-specific styles */
+.week-combined {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
-/* Add alternating background colors to weekly cards - similar to table-striped */
-/*.weekly-details-container .row.mb-2:nth-child(even) .card {
-  background-color: rgba(0, 0, 0, 0.02);
-}*/
-
-.weekly-details-container .row.mb-2:nth-child(odd) .card {
-  background-color: rgba(0, 0, 0, 0.05); /* Increased from 0.05 to 0.08 for better contrast */
-}
-
-/* Make sure current week highlighting remains prominent by using !important */
-.current-week-card .card {
-  background-color: rgba(198, 222, 210, 0.85) !important;
-}
-
-.current-week-card:hover .card {
-  background-color: rgba(198, 222, 210, 0.95) !important;
-}
-
-/* Add subtle hover effect for all cards */
-.weekly-details-container .card:hover:not(.current-week-card .card) {
-  background-color: rgba(244, 236, 192, 0.7);
-}
-
-.header-row {
+.week-number {
   font-weight: bold;
-  border-bottom: 2px solid #dee2e6;
-  z-index: 1020;
+  white-space: nowrap;
 }
 
-/* Ensure dropdown menus in the application appear above sticky headers */
-.dropdown-menu.show {
-  z-index: 1100;
+.week-separator {
+  color: #6c757d;
+  font-weight: normal;
 }
 
-/* Updated summary styles for grid layout */
-.summary-table-wrapper {
-  padding: 10px;
-  overflow-x: auto;
+.week-date {
+  flex: 1;
 }
 
-.summary-table {
-  width: 100%;
-  border-collapse: collapse;
-  margin-top: 10px;
-}
-
-.summary-table th, 
-.summary-table td {
-  padding: 6px 12px;
-  text-align: right;
-  border: 1px solid #dee2e6;
-}
-
-.summary-table th {
-  background-color: #f8f9fa;
-  font-weight: bold;
-  text-align: center;
-}
-
-.summary-table td.column-title {
-  text-align: left;
-  font-weight: 600;
-  background-color: #f8f9fa;
-}
-
-.summary-table tr:nth-child(even) {
-  background-color: rgba(0,0,0,0.02);
-}
-
-.summary-table tr:hover {
-  background-color: rgba(0,0,0,0.05);
-}
-
-/* Remove old card-based summary styles */
-.summary-content {
-  display: block;
-}
-/* Remove old card-based summary styles */
-.summary-content {
-  display: block;
-}
-
-/* Checkbox styling */
-.form-check-input {
+.enhanced-checkbox {
   cursor: pointer;
   width: 1.1em;
   height: 1.1em;
+  border: 1.5px solid #6c757d !important;
+  margin-right: 0.25rem !important;
 }
 
-/* Removed the selected class styles since they're no longer needed */
-
-/* Prevent text selection while dragging */
-.card-body {
-  user-select: none;
-}
-
+/* Keep summary styles */
 .selection-summary {
   min-width: 300px;
   max-width: 90%;
@@ -698,111 +567,7 @@ const toggleSummaryExpansion = () => {
   .row > [class*="col-"] {
     margin-bottom: 0.5rem;
   }
-}
 
-/* Add specific styling for the column group header */
-.header-row .border-bottom {
-  border-bottom: 1px solid #dee2e6 !important;
-  margin-bottom: 4px;
-}
-
-/* Add styling for the close button */
-.selection-summary .btn-close-sm {
-  font-size: 0.7rem;
-  padding: 0.25rem;
-}
-
-/* New container styles */
-.weekly-details-container {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  width: 100%;
-  position: relative;
-}
-
-.scrollable-container {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-}
-
-/* Styling for combined week column */
-.week-combined {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.week-number {
-  font-weight: bold;
-  white-space: nowrap;
-}
-
-.week-separator {
-  color: #6c757d;
-  font-weight: normal;
-}
-
-.week-date {
-  flex: 1;
-}
-
-/* Improved checkbox styling */
-.enhanced-checkbox {
-  cursor: pointer;
-  width: 1.1em;
-  height: 1.1em;
-  border: 1.5px solid #6c757d !important; /* Darker border */
-  margin-right: 0.25rem !important;
-}
-
-/* Remove checkbox-column class since it's no longer needed */
-
-/* Styling for collapsed cards in mobile view */
-@media (max-width: 1199.98px) {
-  .row-collapsed .card {
-    background-color: #f8f9fa !important;
-  }
-  
-  .row-collapsed .card-body {
-    padding-top: 0.25rem !important;
-    padding-bottom: 0.25rem !important;
-  }
-  
-  .row-collapsed .card {
-    opacity: 0.8;
-    transition: opacity 0.2s ease;
-  }
-  
-  .row-collapsed .card:hover {
-    opacity: 1;
-  }
-  
-  .row-selected .card {
-    border-left: 4px solid #198754;
-    background-color: rgba(198, 222, 210, 0.3) !important;
-  }
-  
-  .details-section {
-    transition: max-height 0.3s ease-out;
-  }
-  
-  /* Add toggle icon styling */
-  .toggle-icon {
-    cursor: pointer;
-    padding: 5px;
-    font-size: 0.9rem;
-    background-color: rgba(0, 0, 0, 0.05);
-    border-radius: 50%;
-    width: 24px;
-    height: 24px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  
-  /* Make sure selected rows have a clear indicator */
   .row-selected .card {
     border-left: 4px solid #198754;
     background-color: rgba(198, 222, 210, 0.3) !important;

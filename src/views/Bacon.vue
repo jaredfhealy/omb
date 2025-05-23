@@ -4,8 +4,6 @@ import {
   EditAccountModal,
   SettingsModal,
   ManageAccountModal,
-  ConfirmModal,
-  ChangePasswordModal,
 } from '@/components/modals'
 </script>
 
@@ -20,14 +18,12 @@ import {
 </template>
 
 <style>
-#app {
-  overflow: hidden;
-}
-body {
-  overflow: hidden;
-}
 .table-responsive {
-    overflow-y: auto;
+  overflow-y: auto;
+}
+
+.header-row {
+  font-weight: bold;
 }
 
 thead {

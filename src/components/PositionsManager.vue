@@ -1,6 +1,8 @@
 <script setup>
-import { onMounted } from 'vue' // Add the missing import
+import { onMounted } from 'vue'
 import { useAppStore } from '@/stores/app'
+import DataTable from '@/components/custom/DataTable.vue'
+
 const store = useAppStore()
 
 const getNetPL = (position) => {
@@ -8,7 +10,7 @@ const getNetPL = (position) => {
     ? position.currentPrice * position.shares 
     : position.strikePrice * position.shares
   const costBasis = position.strikePrice * position.shares
-  const totalProfits = position.offsettingProfits || 0 // Changed to use single offsettingProfits field
+  const totalProfits = position.offsettingProfits || 0
   return currentValue - costBasis + totalProfits
 }
 
@@ -30,12 +32,11 @@ const getCurrentWeek = () => {
   const today = new Date()
   const startDate = new Date(store.activeAccount.settings.startDate)
   
-  // Find how many weeks have passed since the start date
   const diffTime = today - startDate
   const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24))
   const currentWeek = Math.floor(diffDays / 7) + 1
 
-  return Math.min(currentWeek, store.weeks) // Don't exceed total weeks
+  return Math.min(currentWeek, store.weeks)
 }
 
 const getPerSharePL = (position) => {
@@ -46,24 +47,19 @@ const getPerSharePL = (position) => {
 const getWeeksHeld = (position) => {
   const currentWeek = getCurrentWeek()
   
-  // If position is sold, calculate weeks between assignment and sale
   if (position.soldWeek) {
     return position.soldWeek - position.assignedWeek + 1
   }
   
-  // Otherwise calculate weeks between assignment and current week
   return currentWeek - position.assignedWeek + 1
 }
 
-// New function to calculate weekly ROR
 const getWeeklyROR = (position) => {
   const totalROR = getTotalROR(position)
   const weeksHeld = getWeeksHeld(position)
   
-  // Prevent division by zero
   if (weeksHeld <= 0) return 0
   
-  // Calculate weekly ROR
   return totalROR / weeksHeld
 }
 
@@ -79,21 +75,15 @@ function removePosition(index) {
   }
 }
 
-// Run migration to consolidate profit fields when component is loaded
 onMounted(() => {
   migratePositionProfits()
 })
 
-// Add migration function to consolidate profit fields
 function migratePositionProfits() {
   let migrationPerformed = false
   
-  // Loop through all positions
   store.activeAccount.positions.forEach(position => {
-    // Check if the position has the putProfits or callProfits properties defined
-    // Use hasOwnProperty to check for property existence, not just its value
     if (position.hasOwnProperty('putProfits') || position.hasOwnProperty('callProfits')) {
-      // Always consolidate both properties whether they are 0 or not
       const putValue = position.hasOwnProperty('putProfits') ? position.putProfits : 0;
       const callValue = position.hasOwnProperty('callProfits') ? position.callProfits : 0;
       
@@ -103,10 +93,8 @@ function migratePositionProfits() {
         total: (putValue + callValue).toFixed(2)
       });
       
-      // Set the new combined value
       position.offsettingProfits = Number((putValue + callValue).toFixed(2));
       
-      // Delete the old fields
       delete position.putProfits;
       delete position.callProfits;
       
@@ -114,7 +102,6 @@ function migratePositionProfits() {
     }
   });
   
-  // If any positions were migrated, save the changes
   if (migrationPerformed) {
     console.log("Migration completed - saving changes");
     store.saveBacon();
@@ -122,190 +109,150 @@ function migratePositionProfits() {
     console.log("No positions needed migration");
   }
 }
+
+// Define columns for DataTable
+const columns = [
+  {
+    key: 'symbol',
+    header: {
+      text: 'Symbol'
+    },
+    class: 'col-12 col-xl',
+  },
+  {
+    key: 'weeks',
+    header: {
+      text: 'Assigned / Sold',
+      tooltip: 'Week when position was assigned and sold (if applicable)'
+    }
+  },
+  {
+    key: 'perSharePL',
+    header: {
+      text: 'P/L per Share',
+      tooltip: 'Profit/Loss per share based on current or sale price'
+    },
+    value: (position) => store.currency(getPerSharePL(position))
+  },
+  {
+    key: 'rawPL',
+    header: {
+      text: 'P/L Raw',
+      tooltip: 'Raw Profit/Loss before offsetting profits'
+    },
+    value: (position) => store.currency(getRawPL(position))
+  },
+  {
+    key: 'netPL',
+    header: {
+      text: 'P/L Net',
+      tooltip: 'Net Profit/Loss including offsetting profits'
+    },
+    value: (position) => store.currency(getNetPL(position))
+  },
+  {
+    key: 'ror',
+    header: {
+      text: 'ROR %',
+      tooltip: 'Return on Risk percentage based on net P/L'
+    },
+    value: (position) => getTotalROR(position).toFixed(2) + '%'
+  },
+  {
+    key: 'actions',
+    header: {
+      text: 'Actions'
+    }
+  }
+]
 </script>
 
 <template>
-  <div class="positions-manager-container">
-    <div class="scrollable-container">
-      <div class="container-fluid pb-4">
-        <!-- Table Header Row with position-relative added -->
-        <div class="row sticky-top header-row bg-white py-2 mb-2 position-relative">
-          <div class="col-12 col-xl-1">Symbol</div>
-          <div class="col-12 col-xl-11 d-none d-xl-flex">
-            <div class="col-2">Assigned / Sold</div>
-            <div class="col-2" data-bs-toggle="tooltip" data-bs-title="Profit or Loss per share if sold at current price">P/L per Share*</div>
-            <div class="col-2" data-bs-toggle="tooltip" data-bs-title="Total profit or loss on position before offsetting profits">P/L Total*</div>
-            <!-- Consolidated P/L Net column -->
-            <div class="col-2" data-bs-toggle="tooltip" data-bs-title="Net profit or loss including offsetting premium income">P/L Net*</div>
-            <div class="col-1">ROR %</div>
-            <div class="col-1">Weeks Held</div>
-            <div class="col-1">Actions</div>
-            <button class="btn btn-primary float-end" @click="store.showPositionModal()">
-              <i class="bi bi-plus-lg"></i> New
-            </button>
-          </div>
-          
-          <!-- Mobile New Button (visible on smaller screens) -->
-          <div class="position-button d-xl-none">
-            <button class="btn btn-sm btn-primary" @click="store.showPositionModal()">
-              <i class="bi bi-plus-lg"></i> New
-            </button>
-          </div>
-        </div>
-
-        <!-- Position Cards -->
-        <div v-for="(position, index) in store.activeAccount.positions" :key="index" class="row mb-2">
-          <div class="col-12">
-            <div class="card h-100">
-              <div class="card-body py-2">
-                <div class="row">
-                  <!-- Symbol/Shares Info - reduced width -->
-                  <div class="col-12 col-xl-1 mb-2 mb-xl-0">
-                    <div class="position-symbol">
-                      <span class="symbol-text">{{ position.symbol }}</span>
-                      <span class="shares-count">{{ position.shares }} shares</span>
-                    </div>
-                  </div>
-                  
-                  <!-- Position Details - adjusted column widths -->
-                  <div class="col-12 col-xl-11">
-                    <div class="row">
-                      <!-- Assigned/Sold Weeks -->
-                      <div class="col-12 col-xl-2">
-                        <div class="row">
-                          <div class="col-6 col-xl-12">
-                            <div class="data-label d-xl-none">Assigned Week</div>
-                            <div v-html="store.weekRange(position.assignedWeek)"></div>
-                          </div>
-                          <div class="col-6 col-xl-12">
-                            <div class="data-label d-xl-none">Sold Week</div>
-                            <div>
-                              <span v-if="position.soldWeek" v-html="store.weekRange(position.soldWeek)"></span>
-                              <span v-else class="text-muted">Not Yet Sold</span>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                      
-                      <!-- Per Share P/L -->
-                      <div class="col-6 col-xl-2">
-                        <div class="data-label d-xl-none">Per Share P/L</div>
-                        <div :class="getPerSharePL(position) >= 0 ? 'text-success' : 'text-danger'"
-                             data-bs-toggle="tooltip"
-                             :data-bs-html="true"
-                             :data-bs-title="`
-                               Assigned: ${store.currency(position.strikePrice)}<br>
-                               Current: ${store.currency(position.currentPrice || position.strikePrice)}
-                             `">
-                          {{ store.currency(getPerSharePL(position)) }}
-                        </div>
-                      </div>
-                      
-                      <!-- Changed to P/L Raw -->
-                      <div class="col-6 col-xl-2">
-                        <div class="data-label d-xl-none">P/L Raw</div>
-                        <div :class="getRawPL(position) >= 0 ? 'text-success' : 'text-danger'"
-                             data-bs-toggle="tooltip"
-                             :data-bs-html="true"
-                             :data-bs-title="`
-                               Basis: ${store.currency(position.strikePrice * position.shares)}<br>
-                               Value: ${store.currency(position.currentPrice ? position.currentPrice * position.shares : position.strikePrice * position.shares)}
-                             `">
-                          {{ store.currency(getRawPL(position)) }}
-                        </div>
-                      </div>
-                      
-                      <!-- Consolidated P/L Net column -->
-                      <div class="col-6 col-xl-2">
-                        <div class="data-label d-xl-none">P/L Net</div>
-                        <div :class="getNetPL(position) >= 0 ? 'text-success' : 'text-danger'"
-                             data-bs-toggle="tooltip"
-                             :data-bs-html="true"
-                             :data-bs-title="`
-                               Raw P/L: ${store.currency(getRawPL(position))}<br>
-                               Offsetting: ${store.currency(position.offsettingProfits || 0)}<br>
-                               Net P/L: ${store.currency(getNetPL(position))}
-                             `">
-                          {{ store.currency(getNetPL(position)) }}
-                        </div>
-                      </div>
-                      
-                      <!-- Total % ROR -->
-                      <div class="col-4 col-xl-1">
-                        <div class="data-label d-xl-none">ROR %</div>
-                        <div :class="getTotalROR(position) >= 0 ? 'text-success' : 'text-danger'">
-                          {{ getTotalROR(position).toFixed(2) }}%
-                        </div>
-                      </div>
-                      
-                      <!-- Weeks Held -->
-                      <div class="col-4 col-xl-1">
-                        <div class="data-label d-xl-none">Weeks Held</div>
-                        <div>{{ getWeeksHeld(position) }}</div>
-                      </div>
-                      
-                      <!-- Actions -->
-                      <div class="col-4 col-xl-1">
-                        <div class="data-label d-xl-none">Actions</div>
-                        <div class="d-flex gap-2">
-                          <button class="btn btn-sm btn-outline-primary" @click="store.showPositionModal(position, index)">
-                            <i class="bi bi-pencil-square"></i>
-                          </button>
-                          <button class="btn btn-sm btn-outline-danger" @click="removePosition(index)">
-                            <i class="bi bi-trash"></i>
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-        
-        <!-- Empty state message -->
-        <div v-if="store.activeAccount.positions.length === 0" class="text-center py-5">
-          <p class="text-muted">No positions found</p>
-          <button class="btn btn-outline-primary" @click="store.showPositionModal()">Add your first position</button>
-        </div>
+  <!-- Single DataTable without unnecessary wrappers -->
+  <DataTable 
+    :columns="columns"
+    :items="store.activeAccount.positions"
+    :striped="true"
+    @edit="index => store.showPositionModal(store.activeAccount.positions[index], index)"
+    @delete="removePosition"
+  >
+    <!-- Symbol column -->
+    <template #symbol="{ item }">
+      <div class="position-symbol d-none d-xl-flex">
+        <span class="symbol-text">{{ item.symbol }}</span>
+        <span class="shares-count">{{ item.shares }} shares</span>
       </div>
-    </div>
-  </div>
+      <div class="d-xl-none">
+        <span class="symbol-text">{{ item.symbol }}</span>&nbsp;
+        <span>({{ item.shares }} shares)</span>
+      </div>
+    </template>
+    
+    <!-- Weeks column -->
+    <template #weeks="{ item }">
+      <div>
+        <div v-html="store.weekRange(item.assignedWeek)"></div>
+        <div v-if="item.soldWeek" v-html="store.weekRange(item.soldWeek)"></div>
+        <div v-else class="text-muted">Not Yet Sold</div>
+      </div>
+    </template>
+    
+    <!-- Add slots for each value that needs conditional styling -->
+    <template #perSharePL="{ item }">
+      <div :class="getPerSharePL(item) >= 0 ? 'text-success' : 'text-danger'">
+        {{ store.currency(getPerSharePL(item)) }}
+      </div>
+    </template>
+    
+    <template #rawPL="{ item }">
+      <div :class="getRawPL(item) >= 0 ? 'text-success' : 'text-danger'">
+        {{ store.currency(getRawPL(item)) }}
+      </div>
+    </template>
+    
+    <template #netPL="{ item }">
+      <div :class="getNetPL(item) >= 0 ? 'text-success' : 'text-danger'">
+        {{ store.currency(getNetPL(item)) }}
+      </div>
+    </template>
+    
+    <template #ror="{ item }">
+      <div :class="getTotalROR(item) >= 0 ? 'text-success' : 'text-danger'">
+        {{ getTotalROR(item).toFixed(2) }}%
+      </div>
+    </template>
+    
+    <!-- Actions column -->
+    <template #actions="{ item, index }">
+      <div class="d-flex gap-2">
+        <button class="btn btn-sm btn-outline-primary flex-grow-0" 
+                @click="store.showPositionModal(item, index)">
+          <i class="bi bi-pencil-square"></i>
+        </button>
+        <button class="btn btn-sm btn-outline-danger flex-grow-0" 
+                @click="removePosition(index)">
+          <i class="bi bi-trash"></i>
+        </button>
+      </div>
+    </template>
+    
+    <template #header-actions>
+      <button class="btn btn-primary" style="width:80px;" @click="store.showPositionModal()">
+        <i class="bi bi-plus-lg"></i> New
+      </button>
+    </template>
+    
+    <!-- Empty state message -->
+    <template v-if="store.activeAccount.positions.length === 0" #empty>
+      <div class="text-center py-5">
+        <p class="text-muted">No positions found</p>
+        <button class="btn btn-outline-primary" @click="store.showPositionModal()">Add your first position</button>
+      </div>
+    </template>
+  </DataTable>
 </template>
 
 <style>
-.positions-manager-container {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  width: 100%;
-  position: relative;
-}
-
-.scrollable-container {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-}
-
-/* Alternating background colors for cards */
-.positions-manager-container .row.mb-2:nth-child(odd) .card {
-  background-color: rgba(0, 0, 0, 0.05);
-}
-
-/* Hover effect */
-.positions-manager-container .card:hover {
-  background-color: rgba(244, 236, 192, 0.7);
-}
-
-.header-row {
-  font-weight: bold;
-  border-bottom: 2px solid #dee2e6;
-  z-index: 1020;
-  position: relative;
-}
-
 /* Position symbol and shares styling */
 .position-symbol {
   display: flex;
@@ -321,33 +268,5 @@ function migratePositionProfits() {
 .shares-count {
   font-size: 0.85rem;
   color: #6c757d;
-}
-
-/* Mobile data labels */
-.data-label {
-  font-weight: bold;
-  font-size: 0.8rem;
-  margin-bottom: 0.1rem;
-  color: #6c757d;
-}
-
-/* Fix the position button styling for both desktop and mobile */
-.position-button {
-  position: absolute;
-  right: 10px;
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: 10;
-}
-
-/* Mobile-specific styling */
-@media (max-width: 1199.98px) {
-  .card {
-    margin-bottom: 0.75rem;
-  }
-  
-  .row > [class*="col-"] {
-    margin-bottom: 0.5rem;
-  }
 }
 </style>

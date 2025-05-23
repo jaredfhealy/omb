@@ -30,16 +30,17 @@ onUpdated(() => {
       <span class="visually-hidden">Loading...</span>
     </div>
   </div>
-  
-  <!-- Tab Navigation -->
-  <TabNavigation />
-  
-  <!-- Content Area (takes all remaining height) -->
-  <div class="content-area flex-grow-1">
-    <YearlySummary v-if="store.activeTab === 'yearly'" />
-    <WeeklyDetails v-if="store.activeTab === 'weekly'" />
-    <TransactionManager v-if="store.activeTab === 'recurring'" />
-    <PositionsManager v-if="store.activeTab === 'positions'" />
+  <div class="container-fluid p-0" style="height: calc(-110px + 100vh);">
+    <!-- Tab Navigation -->
+    <TabNavigation />
+    
+    <!-- Content Area (takes all remaining height) -->
+    <div class="content-area flex-grow-1">
+      <YearlySummary v-if="store.activeTab === 'yearly'" />
+      <WeeklyDetails v-if="store.activeTab === 'weekly'" />
+      <TransactionManager v-if="store.activeTab === 'recurring'" />
+      <PositionsManager v-if="store.activeTab === 'positions'" />
+    </div>
   </div>
 
   <!-- Modals -->

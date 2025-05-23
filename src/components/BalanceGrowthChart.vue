@@ -170,7 +170,7 @@ const chartOptions = computed(() => {
           title: (context) => {
             const weekLabel = context[0].label
             const weekNum = parseInt(weekLabel.split(' ')[1])
-            return `${weekLabel} (${store.weekRange(weekNum)})`
+            return `${weekLabel} (${store.weekRange(weekNum, true)})`
           },
           label: (context) => {
             const weekLabel = context.chart.data.labels[context.dataIndex]
@@ -299,24 +299,7 @@ const switchAccount = async (accountId) => {
 
 <template>
   <div v-if="store.activeAccount?.settings && store.projections?.length">
-    <div class="mb-3 d-flex justify-content-between align-items-center">
-      <!-- Keep only account selector and reset zoom -->
-      <div class="d-flex gap-2 align-items-center">
-        <label>Account:</label>
-        <select 
-          class="form-select" 
-          :value="store.db.selectedAccountId"
-          @change="switchAccount($event.target.value)"
-        >
-          <option 
-            v-for="account in store.db.accounts" 
-            :key="account.id" 
-            :value="account.id"
-          >
-            {{ account.name }}
-          </option>
-        </select>
-      </div>
+    <div class="mb-3 d-flex justify-content-end">
       <button class="btn btn-secondary" @click="resetZoom">
         Reset Zoom
       </button>
