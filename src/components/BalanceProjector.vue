@@ -1,5 +1,4 @@
 <script setup>
-import BalanceProjectorHeader from '@/components/BalanceProjectorHeader.vue'
 import TabNavigation from '@/components/TabNavigation.vue'
 import YearlySummary from '@/components/YearlySummary.vue'
 import WeeklyDetails from '@/components/WeeklyDetails.vue'
@@ -8,14 +7,9 @@ import PositionsManager from '@/components/PositionsManager.vue'
 import { onMounted, onUpdated } from 'vue'
 import { useAppStore } from '@/stores/app'
 import {
-  EditAccountModal,
-  ManageAccountModal,
   EditTransactionModal,
   EditRowModal,
-  SettingsModal,
   EditPositionModal,
-  ConfirmModal,
-  ChangePasswordModal
 } from '@/components/modals'
 
 const store = useAppStore()
@@ -36,32 +30,23 @@ onUpdated(() => {
       <span class="visually-hidden">Loading...</span>
     </div>
   </div>
-  <div class="container-fluid" style="height: calc(100vh - 20px);">
-    <div class="row">
-      <div class="col-md-12">
-        <div class="card" style="height: calc(100vh - 85px);">
-          <BalanceProjectorHeader />
-          <div class="card-body d-flex flex-column" style="padding: 0;">
-            <TabNavigation />
-            <YearlySummary v-if="store.activeTab === 'yearly'" />
-            <WeeklyDetails v-if="store.activeTab === 'weekly'" />
-            <TransactionManager v-if="store.activeTab === 'recurring'" />
-            <PositionsManager v-if="store.activeTab === 'positions'" />
-          </div>
-        </div>
-      </div>
+  <div class="container-fluid p-0" style="height: calc(-110px + 100vh);">
+    <!-- Tab Navigation -->
+    <TabNavigation />
+    
+    <!-- Content Area (takes all remaining height) -->
+    <div class="content-area flex-grow-1">
+      <YearlySummary v-if="store.activeTab === 'yearly'" />
+      <WeeklyDetails v-if="store.activeTab === 'weekly'" />
+      <TransactionManager v-if="store.activeTab === 'recurring'" />
+      <PositionsManager v-if="store.activeTab === 'positions'" />
     </div>
   </div>
 
   <!-- Modals -->
   <EditTransactionModal />
   <EditRowModal />
-  <SettingsModal />
-  <EditAccountModal />
-  <ManageAccountModal />
   <EditPositionModal />
-  <ConfirmModal />
-  <ChangePasswordModal />
 </template>
 
 <style>
@@ -79,54 +64,42 @@ onUpdated(() => {
   z-index: 9999;
 }
 
-.table-responsive {
-  overflow-y: auto;
+/* Settings Summary Bar */
+.settings-summary-bar {
+  background-color: #f8f9fa;
+  border-bottom: 1px solid #dee2e6;
+  font-size: 0.8rem;
 }
 
-thead {
-  position: sticky;
-  top: 0;
-  background: white;
-  z-index: 1;
+.settings-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 
-/* Remove the navbar's default margin-bottom and rounded borders */
-.navbar {
-  margin-bottom: 0;
-  border-radius: 0;
+.settings-grid span {
+  white-space: nowrap;
 }
 
-/* Set height of the grid so .sidenav can be 100% (adjust as needed) */
-.row.content {
-  height: 450px
-}
-
-/* Set gray background color and 100% height */
-.sidenav {
-  padding-top: 20px;
-  background-color: #f1f1f1;
+/* Make content area take full height */
+.content-area {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
   height: 100%;
 }
 
-/* Set black background color, white text and some padding */
-footer {
-  background-color: #555;
-  color: white;
-  padding: 15px;
+/* All direct children of content-area should be full height */
+.content-area > * {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
 }
 
-/* On small screens, set height to 'auto' for sidenav and grid */
-@media screen and (max-width: 767px) {
-  .sidenav {
-    height: auto;
-    padding: 15px;
-  }
-
-  .row.content {
-    height: auto;
-  }
-}
-
+/* Modal styles */
 .modal {
   z-index: 1050;
 }
@@ -137,11 +110,6 @@ footer {
 
 .modal-backdrop {
   z-index: 1040;
-}
-
-.dropdown-item.flex-grow-1.active {
-  background-color: white;
-  color: black;
 }
 
 .cursor-pointer {

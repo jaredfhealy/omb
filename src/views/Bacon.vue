@@ -2,11 +2,8 @@
 import BalanceProjector from '@/components/BalanceProjector.vue'
 import {
   EditAccountModal,
-  EditTransactionModal,
-  EditRowModal,
   SettingsModal,
-  EditPositionModal,
-  ManageAccountModal
+  ManageAccountModal,
 } from '@/components/modals'
 </script>
 
@@ -14,30 +11,25 @@ import {
   <!-- Main projection tracking component -->
   <BalanceProjector />
 
-  <!-- View-specific Modals -->
-  <EditTransactionModal />
-  <EditRowModal />
+  <!-- Account Level Modals -->
   <SettingsModal />
-  <EditAccountModal />
-  <EditPositionModal />
   <ManageAccountModal />
+  <EditAccountModal />
 </template>
 
-<style scoped>
-#app {
-  overflow: hidden;
-}
-body {
-  overflow: hidden;
-}
+<style>
 .table-responsive {
-    overflow-y: auto;
+  overflow-y: auto;
+}
+
+.header-row {
+  font-weight: bold;
 }
 
 thead {
-    position: sticky;
-    top: 0;
-    background: white;
-    z-index: 1;
+  position: sticky;
+  top: 0;
+  background: white;
+  z-index: 1;
 }
 </style>

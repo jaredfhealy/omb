@@ -1,12 +1,14 @@
 <script setup>
 import { useAppStore } from '@/stores/app'
-import { computed, ref, onMounted, onUnmounted } from 'vue'
+import { computed, ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import DataTable from '@/components/custom/DataTable.vue'
 
 const store = useAppStore()
-const isSelecting = ref(false)
-const selectionStart = ref(null)
-const selectedCells = ref(new Set())
+const selectedRows = ref({})
 const selectionSummary = ref(null)
+const scrollableContainer = ref(null)
+const currentWeekRef = ref(null)
+const summaryExpanded = ref(false)
 
 // Add local function (without exposing to store)
 function getAssignmentsForWeek(week) {
@@ -31,62 +33,221 @@ const getCurrentWeek = computed(() => {
   return Math.ceil(diffDays / 7)
 })
 
-// Add allowable columns constant
-const SELECTABLE_COLUMNS = ['transaction', 'projectedGrowth', 'actualGrowth', 'actualROR']
+// Define columns for the DataTable
+const columns = [
+  {
+    key: 'week',
+    header: {
+      text: 'Week'
+    },
+    class: 'col-12 col-xl-2'
+  },
+  {
+    key: 'startBalance',
+    header: {
+      text: 'Start: Cash',
+      tooltip: 'Total cash balance and cash investments'
+    },
+    class: 'col-6 col-xl',
+    value: (item) => store.currency(item.startBalance)
+  },
+  {
+    key: 'sharesBalance',
+    header: {
+      text: 'Start: Shares',
+      tooltip: 'Total cost basis of assigned positions'
+    },
+    class: 'col-6 col-xl',
+    getTooltip: (item) => item.sharesBalanceAddedThisWeek > 0 ? getAssignmentsTooltip(item) : null,
+    value: (item) => store.currency(item.sharesBalance)
+  },
+  {
+    key: 'netTransaction',
+    header: {
+      text: 'Net Trans.',
+      tooltip: 'Rows marked with (*) have both deposits and withdrawals'
+    },
+    class: 'col-6 col-xl',
+    value: (item) => {
+      const result = formatNetTransaction(item.deposit, item.withdrawal)
+      return `${result.value}${result.indicator}`
+    },
+    getTooltip: (item) => {
+      const result = formatNetTransaction(item.deposit, item.withdrawal, true)
+      return result.tooltip
+    },
+    tooltipHtml: true
+  },
+  {
+    key: 'projectedGrowth',
+    header: {
+      text: 'Projected',
+      tooltip: 'Expected growth based on estimated weekly % ROR from settings'
+    },
+    class: 'col-6 col-xl',
+    value: (item) => store.currency(item.projectedGrowth)
+  },
+  {
+    key: 'actualGrowth',
+    header: {
+      text: 'Actual',
+      tooltip: 'Realized growth for the current week'
+    },
+    class: 'col-6 col-xl',
+    getTooltip: (item) => item.actualGrowth !== null ? 
+      `Avg All: ${store.currency(item.averageGrowth)}<br>
+       Avg to Date: ${store.currency(item.trailingTotalGrowth)}<br>
+       Avg Last 8: ${store.currency(item.trailing8WeekGrowth)}<br>
+       Avg Last 4: ${store.currency(item.trailing4WeekGrowth)}` : null,
+    tooltipHtml: true,
+    value: (item) => store.currency(item.actualGrowth || 0)
+  },
+  {
+    key: 'ror',
+    header: {
+      text: 'ROR %',
+      tooltip: 'Rate of Return percentage'
+    },
+    class: 'col-6 col-xl',
+    getTooltip: (item) => item.actualROR ? 
+      `Avg All: ${item.averageROR}%<br>
+       Avg to Date: ${item.trailingTotalROR}%<br>
+       Avg Last 8: ${item.trailing8WeekROR}%<br>
+       Avg Last 4: ${item.trailing4WeekROR}%` : null,
+    tooltipHtml: true,
+    value: (item) => item.actualROR ? `${Number(item.actualROR).toFixed(2)}%` : '0%'
+  },
+  {
+    key: 'endBalance',
+    header: {
+      text: 'End: Total',
+      tooltip: 'Final balance after all transactions and growth'
+    },
+    class: 'col-6 col-xl',
+    value: (item) => store.currency(item.endBalance)
+  },
+  {
+    key: 'actions',
+    header: {
+      text: 'Actions'
+    },
+    class: 'col-6 col-xl'
+  }
+]
 
-const calculateSummary = (cells) => {
-  if (cells.size === 0) return null
+// Updated to calculate summaries for all columns at once
+const calculateSummary = () => {
+  const selectedWeeks = Object.keys(selectedRows.value)
+    .filter(week => selectedRows.value[week])
+    .map(week => Number(week))
+  
+  if (selectedWeeks.length === 0) return null
+  
+  // Calculate summaries for all columns at once
+  const columns = ['actualGrowth', 'actualROR']
+  const summaries = {}
+  
+  columns.forEach(column => {
+    const values = selectedWeeks.map(week => {
+      const projection = store.projections[week - 1]
+      return column === 'actualROR' 
+        ? (projection.actualROR || 0) 
+        : (column === 'transaction' 
+           ? (projection.deposit - projection.withdrawal) 
+           : (projection[column] || 0))
+    }).filter(v => !isNaN(v))
+    
+    if (values.length > 0) {
+      summaries[column] = {
+        min: Math.min(...values),
+        max: Math.max(...values),
+        avg: values.reduce((a, b) => a + b, 0) / values.length,
+        total: values.reduce((a, b) => a + b, 0),
+        isROR: column === 'actualROR'
+      }
+    }
+  })
+  
+  return Object.keys(summaries).length > 0 ? summaries : null
+}
 
-  const [firstCell] = cells
-  const [, column] = firstCell.split('-')
-  const isROR = column === 'actualROR'
-
-  const values = [...cells].map(cell => {
-    const [week] = cell.split('-')
-    const projection = store.projections[Number(week) - 1]
-    return isROR ? (projection.actualROR || 0) : (projection[column] || 0)
-  }).filter(v => !isNaN(v))
-
-  if (values.length === 0) return null
-
-  return {
-    min: Math.min(...values),
-    max: Math.max(...values),
-    avg: values.reduce((a, b) => a + b, 0) / values.length,
-    total: values.reduce((a, b) => a + b, 0),
-    isROR
+// Add function to scroll to a specific week
+const scrollToWeek = async (week) => {
+  await nextTick()
+  
+  const element = document.querySelector(`.row-selected[data-week="${week}"]`)
+  if (element && scrollableContainer.value) {
+    element.scrollIntoView({
+      behavior: 'smooth',
+      block: 'center'
+    })
   }
 }
 
-const handleMouseDown = (week, column) => {
-  if (!SELECTABLE_COLUMNS.includes(column)) return
-  isSelecting.value = true
-  selectionStart.value = { week, column }
-  selectedCells.value = new Set([`${week}-${column}`])
-  selectionSummary.value = calculateSummary(selectedCells.value)
-}
-
-const handleMouseOver = (week, column) => {
-  if (!isSelecting.value || column !== selectionStart.value.column || !SELECTABLE_COLUMNS.includes(column)) return
-  selectedCells.value.add(`${week}-${column}`)
-  selectionSummary.value = calculateSummary(selectedCells.value)
-}
-
-const handleMouseUp = () => {
-  isSelecting.value = false
+// Function called when checkboxes change - enhanced to scroll
+const updateSummary = () => {
+  const wasEmpty = selectionSummary.value === null
+  const newSelectionCount = Object.values(selectedRows.value).filter(Boolean).length
+  
+  // Update summary
+  selectionSummary.value = calculateSummary()
+  
+  // Case 1: First selection - scroll to the selected row
+  if (selectionSummary.value && wasEmpty && newSelectionCount === 1) {
+    // This means we just selected our first row - find which one
+    const selectedWeek = Object.keys(selectedRows.value).find(week => selectedRows.value[week])
+    if (selectedWeek) {
+      // Wait for collapse to occur before scrolling
+      setTimeout(() => {
+        scrollToWeek(selectedWeek)
+      }, 50)
+    }
+  } 
+  // Case 2: All rows were unchecked manually - scroll to current week
+  else if (!wasEmpty && newSelectionCount === 0) {
+    // Previously had selections but now all unchecked
+    selectionSummary.value = null
+    
+    // Wait for rows to expand before scrolling
+    setTimeout(() => {
+      scrollToCurrentWeek()
+    }, 50)
+  }
 }
 
 // Add escape key handler
 const handleEscape = (e) => {
   if (e.key === 'Escape') {
-    selectedCells.value.clear()
-    selectionSummary.value = null
+    closeSummary()
+  }
+}
+
+// Add function to scroll to current week
+const scrollToCurrentWeek = async () => {
+  await nextTick()
+  
+  if (currentWeekRef.value && dataTableRef.value?.scrollableContainer) {
+    currentWeekRef.value.scrollIntoView({
+      behavior: 'smooth',
+      block: 'center' // Center the element in the viewport
+    })
   }
 }
 
 // Add event listener for escape key
 onMounted(() => {
   document.addEventListener('keydown', handleEscape)
+  
+  // Scroll to current week after component is mounted
+  scrollToCurrentWeek()
+})
+
+// Watch for changes to the active tab
+watch(() => store.activeTab, (newTab) => {
+  if (newTab === 'weekly') {
+    // Scroll to current week when tab becomes active
+    scrollToCurrentWeek()
+  }
 })
 
 onUnmounted(() => {
@@ -116,218 +277,234 @@ function editNetTransactionFromRow(week) {
 }
 
 // Add local function (without exposing to store)
-function formatNetTransaction(deposit, withdrawal) {
+function formatNetTransaction(deposit, withdrawal, tooltipOnly = false) {
   const net = deposit - withdrawal
   const hasMultiple = deposit && withdrawal
+
+  if (tooltipOnly && hasMultiple) {
+    return {
+      tooltip: `Deposit: ${store.currency(deposit)}<br>
+                Withdrawal: ${store.currency(withdrawal)}`
+    }
+  }
 
   return {
     value: net < 0
       ? `(${store.currency(Math.abs(net))})`
       : store.currency(net),
     style: { color: net < 0 ? 'red' : 'inherit' },
-    indicator: hasMultiple ? '*' : ''
+    indicator: hasMultiple ? '*': ''
   }
 }
+
+// Add function to close the summary (for the close button)
+const closeSummary = () => {
+  // Clear all checkboxes
+  Object.keys(selectedRows.value).forEach(key => {
+    selectedRows.value[key] = false
+  })
+  selectionSummary.value = null
+  summaryExpanded.value = false
+  
+  // Scroll back to current week
+  scrollToCurrentWeek()
+}
+
+// Add computed property to check if any rows are selected
+const hasSelection = computed(() => {
+  return Object.values(selectedRows.value).some(selected => selected === true)
+})
+
+// Function to toggle summary expansion
+const toggleSummaryExpansion = () => {
+  summaryExpanded.value = !summaryExpanded.value
+}
+
+// Add function to get row attributes
+const getRowAttributes = (item) => ({
+  'data-week': item.week,
+  class: {
+    'current-week-card': item.week === getCurrentWeek.value, // Use .value here
+    'row-selected': selectedRows[item.week]
+  }
+})
+
+// Add ref handling function
+const handleRowRef = (el, item) => {
+  // Compare against the computed value
+  if (item.week === getCurrentWeek.value) {
+    currentWeekRef.value = el
+  }
+}
+
+// Add ref for the DataTable component
+const dataTableRef = ref(null)
 </script>
 
 <template>
-  <div class="flex-grow-1 position-relative">
-    <!-- Update selection summary -->
+  <div class="weekly-details-container">
+    <!-- Reorganized selection summary with collapsible feature -->
     <div v-if="selectionSummary" class="selection-summary">
       <div class="summary-header">
-        <span class="help-text">Hit Esc to close</span>
+        <div class="d-flex justify-content-between align-items-center">
+          <div class="d-flex align-items-center">
+            <i 
+              class="bi expand-icon" 
+              :class="summaryExpanded ? 'bi-chevron-up' : 'bi-chevron-down'"
+              @click="toggleSummaryExpansion"
+              title="Toggle summary"
+            ></i>
+            <span class="help-text ms-2" v-if="!summaryExpanded">
+              Select multiple rows and expand to see summary
+            </span>
+            <span class="help-text ms-2 d-none d-xl-inline-block" v-else>Hit Esc to close</span>
+          </div>
+          <button type="button" class="btn-close btn-close-sm" @click="closeSummary" aria-label="Close"></button>
+        </div>
       </div>
-      <div class="summary-content">
-        <div class="summary-item">
-          <span class="label">Min:</span>
-          <span class="value" v-if="selectionSummary.isROR">
-            {{ selectionSummary.min.toFixed(2) }}%
-          </span>
-          <span class="value" v-else>
-            {{ store.currency(selectionSummary.min) }}
-          </span>
+      
+      <!-- Only show summary when expanded - now with grid layout -->
+      <div v-if="summaryExpanded" class="summary-tables-container">
+        <!-- Actual Growth Section -->
+        <div class="summary-table-section" v-if="selectionSummary.actualGrowth">
+          <h6 class="table-title">Actual Growth</h6>
+          <div class="summary-grid-wrapper">
+            <div class="summary-grid">
+              <!-- First row: Min and Max -->
+              <div class="summary-grid-item">
+                <div class="grid-label">Min</div>
+                <div class="grid-value">{{ store.currency(selectionSummary.actualGrowth.min) }}</div>
+              </div>
+              <div class="summary-grid-item">
+                <div class="grid-label">Max</div>
+                <div class="grid-value">{{ store.currency(selectionSummary.actualGrowth.max) }}</div>
+              </div>
+              
+              <!-- Second row: Avg and Total -->
+              <div class="summary-grid-item">
+                <div class="grid-label">Avg</div>
+                <div class="grid-value">{{ store.currency(selectionSummary.actualGrowth.avg) }}</div>
+              </div>
+              <div class="summary-grid-item">
+                <div class="grid-label">Total</div>
+                <div class="grid-value">{{ store.currency(selectionSummary.actualGrowth.total) }}</div>
+              </div>
+            </div>
+          </div>
         </div>
-        <div class="summary-item">
-          <span class="label">Max:</span>
-          <span class="value" v-if="selectionSummary.isROR">
-            {{ selectionSummary.max.toFixed(2) }}%
-          </span>
-          <span class="value" v-else>
-            {{ store.currency(selectionSummary.max) }}
-          </span>
-        </div>
-        <div class="summary-item">
-          <span class="label">Avg:</span>
-          <span class="value" v-if="selectionSummary.isROR">
-            {{ selectionSummary.avg.toFixed(2) }}%
-          </span>
-          <span class="value" v-else>
-            {{ store.currency(selectionSummary.avg) }}
-          </span>
-        </div>
-        <div class="summary-item">
-          <span class="label">Total:</span>
-          <span class="value" v-if="selectionSummary.isROR">
-            {{ selectionSummary.total.toFixed(2) }}%
-          </span>
-          <span class="value" v-else>
-            {{ store.currency(selectionSummary.total) }}
-          </span>
+
+        <!-- ROR % Section -->
+        <div class="summary-table-section" v-if="selectionSummary.actualROR">
+          <h6 class="table-title">ROR %</h6>
+          <div class="summary-grid-wrapper">
+            <div class="summary-grid">
+              <!-- First row: Min and Max -->
+              <div class="summary-grid-item">
+                <div class="grid-label">Min</div>
+                <div class="grid-value">{{ selectionSummary.actualROR.min.toFixed(2) }}%</div>
+              </div>
+              <div class="summary-grid-item">
+                <div class="grid-label">Max</div>
+                <div class="grid-value">{{ selectionSummary.actualROR.max.toFixed(2) }}%</div>
+              </div>
+              
+              <!-- Second row: Avg and Total -->
+              <div class="summary-grid-item">
+                <div class="grid-label">Avg</div>
+                <div class="grid-value">{{ selectionSummary.actualROR.avg.toFixed(2) }}%</div>
+              </div>
+              <div class="summary-grid-item">
+                <div class="grid-label">Total</div>
+                <div class="grid-value">{{ selectionSummary.actualROR.total.toFixed(2) }}%</div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
 
-    <div class="table-responsive position-absolute" style="top: 0; bottom: 0; left: 0; right: 0;">
-      <div class="pb-4"> <!-- Add padding wrapper -->
-        <table class="table table-striped table-hover">
-          <thead style="position: sticky; top: 0; z-index: 1020; background-color: white;">
-            <tr>
-              <th>Week #</th>
-              <th>Time Period (Sun - Sat)</th>
-              <th data-bs-toggle="tooltip" data-bs-title="Total cash balance and cash investments">
-                Start: Cash Balance*
-              </th>
-              <th v-if="store.activeAccount.positions.length > 0" data-bs-toggle="tooltip"
-                data-bs-title="Total cost basis of assigned positions. Weeks with new assignments marked info icon. with an info icon <i class='bi bi-info-circle ms-1'></i>.">
-                Start: Shares Balance*
-              </th>
-              <th data-bs-toggle="tooltip"
-                data-bs-title="Rows identified with an asterisk (*) have both deposit and withdrawal values.">
-                Net Transaction*
-              </th>
-              <th>Projected Growth</th>
-              <th>Actual Growth</th>
-              <th data-bs-toggle="tooltip" data-bs-title="Hover over values to see trailing averages">
-                Actual %ROR
-              </th>
-              <th data-bs-toggle="tooltip" data-bs-html="true"
-                data-bs-title="Total of Cash & Cash Investments and the Cost Basis of all Stock Positions.<br><br>This will not match your brokerage balances as they calculate based on current stock price rather than original assigned price.">
-                End: Total Balance*
-              </th>
-              <th data-bs-toggle="tooltip" data-bs-title="Rows identified with an asterisk (*) have notes.">
-                Actions*
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="(projection, index) in store.projections" :key="index" :class="{ 'current-week': projection.week === getCurrentWeek }">
-              <td>{{ projection.week }}</td>
-              <td>{{ store.weekRange(projection.week) }}</td>
-              <td>{{ store.currency(projection.startBalance) }}</td>
-              <td v-if="store.activeAccount.positions.length > 0">
-                <span v-if="projection.sharesBalanceAddedThisWeek > 0" 
-                      class="position-relative"
-                      data-bs-toggle="tooltip"
-                      :data-bs-html="true"
-                      :data-bs-title="getAssignmentsTooltip(projection)">
-                  {{ store.currency(projection.sharesBalance) }}
-                  <i class="bi bi-info-circle ms-1"></i>
-                </span>
-                <span v-else>
-                  {{ store.currency(projection.sharesBalance) }}
-                </span>
-              </td>
-              <td>
-                <div class="d-flex ">
-                  <i class="bi bi-pencil-square cursor-pointer me-3"
-                    @click="editNetTransactionFromRow(projection.week)"></i>
-                  <span data-bs-toggle="tooltip" :data-bs-html="true"
-                    :data-bs-title="`Deposit: ${store.currency(projection.deposit)}<br />Withdraw: (${store.currency(projection.withdrawal)})`"
-                    :style="formatNetTransaction(projection.deposit, projection.withdrawal).style"
-                    @mousedown="handleMouseDown(projection.week, 'transaction')"
-                    @mouseover="handleMouseOver(projection.week, 'transaction')"
-                    @mouseup="handleMouseUp"
-                    :class="{ 'selected': selectedCells.has(`${projection.week}-transaction`) }">
-                    {{ formatNetTransaction(projection.deposit, projection.withdrawal).value }}
-                    {{ formatNetTransaction(projection.deposit, projection.withdrawal).indicator }}
-                  </span>
-                </div>
-              </td>
-              <td @mousedown="handleMouseDown(projection.week, 'projectedGrowth')"
-                  @mouseover="handleMouseOver(projection.week, 'projectedGrowth')"
-                  @mouseup="handleMouseUp"
-                  :class="{ 'selected': selectedCells.has(`${projection.week}-projectedGrowth`) }">
-                {{ store.currency(projection.projectedGrowth) }}
-              </td>
-              <td @mousedown="handleMouseDown(projection.week, 'actualGrowth')"
-                  @mouseover="handleMouseOver(projection.week, 'actualGrowth')"
-                  @mouseup="handleMouseUp"
-                  :class="{ 'selected': selectedCells.has(`${projection.week}-actualGrowth`) }">
-                <span v-if="projection.actualGrowth !== null" data-bs-toggle="tooltip" :data-bs-html="true"
-                  :data-bs-title="`
-                        Avg All: ${store.currency(projection.averageGrowth)}<br>
-                        Avg to Date: ${store.currency(projection.trailingTotalGrowth)}<br>
-                        Avg Last 8: ${store.currency(projection.trailing8WeekGrowth)}<br>
-                        Avg Last 4: ${store.currency(projection.trailing4WeekGrowth)}
-                      `">
-                  {{ store.currency(projection.actualGrowth) }}
-                </span>
-                <span v-else>
-                  {{ store.currency(0) }}
-                </span>
-              </td>
-              <td @mousedown="handleMouseDown(projection.week, 'actualROR')"
-                  @mouseover="handleMouseOver(projection.week, 'actualROR')"
-                  @mouseup="handleMouseUp"
-                  :class="{ 'selected': selectedCells.has(`${projection.week}-actualROR`) }">
-                <span v-if="projection.actualROR" data-bs-toggle="tooltip" :data-bs-html="true" :data-bs-title="`
-                        Avg All: ${projection.averageROR}%<br>
-                        Avg to Date: ${projection.trailingTotalROR}%<br>
-                        Avg Last 8: ${projection.trailing8WeekROR}%<br>
-                        Avg Last 4: ${projection.trailing4WeekROR}%
-                      `">
-                  {{ Number(projection.actualROR).toFixed(2) }}%
-                </span>
-                <span v-else>
-                  0%
-                </span>
-              </td>
-              <td>{{ store.currency(projection.endBalance) }}</td>
-              <td>
-                <button type="button" 
-                        class="btn btn-sm btn-outline-primary" 
-                        @click="store.showWeeklyRowModal(projection.week)">
-                  <i class="bi bi-pencil-square"></i>
-                </button>
-                {{ store.activeAccount.actuals.some(a => Number(a.week) ===
-                  projection.week &&
-                  a.notes) ? '*' : '' }}
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
+    <!-- Replace table with DataTable -->
+    <DataTable 
+      ref="dataTableRef"
+      :items="store.projections"
+      :columns="columns"
+      :striped="true"
+      :get-row-attributes="getRowAttributes"
+      :get-row-ref="handleRowRef">
+      <!-- Week column with checkbox -->
+      <template #week="{ item }">
+        <div class="week-combined">
+          <input type="checkbox" 
+                 class="form-check-input enhanced-checkbox me-2" 
+                 v-model="selectedRows[item.week]" 
+                 @change="updateSummary">
+          <span class="week-number">
+            <span class="d-xl-none">Week </span>{{ item.week }}
+          </span>
+          <span class="week-separator">|</span>
+          <span class="week-date" v-html="store.weekRange(item.week)"></span>
+        </div>
+      </template>
+
+      <!-- Actions column -->
+      <template #actions="{ item }">
+        <button type="button" 
+                class="btn btn-sm btn-outline-primary" 
+                @click="store.showWeeklyRowModal(item.week)">
+          <i class="bi bi-pencil-square"></i>
+        </button>
+        {{ store.activeAccount.actuals.some(a => Number(a.week) === item.week && a.notes) ? '*' : '' }}
+      </template>
+
+      <!-- Net Transaction column with edit icon -->
+      <template #netTransaction="{ item }">
+        <div class="d-flex">
+          <i class="bi bi-pencil-square cursor-pointer me-1"
+             @click="editNetTransactionFromRow(item.week)"></i>
+          <span :style="formatNetTransaction(item.deposit, item.withdrawal).style">
+            {{ formatNetTransaction(item.deposit, item.withdrawal).value }}
+            {{ formatNetTransaction(item.deposit, item.withdrawal).indicator }}
+          </span>
+        </div>
+      </template>
+    </DataTable>
   </div>
 </template>
 
-<style>
-.current-week > td {
-  background-color: rgba(198, 222, 210, 0.85) !important;
+<style scoped>
+/* Keep week-specific styles */
+.week-combined {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
-/* Add hover state to maintain highlighting */
-.current-week:hover > td {
-  background-color: rgba(198, 222, 210, 0.95) !important;
+.week-number {
+  font-weight: bold;
+  white-space: nowrap;
 }
 
-.selected {
-  background-color: rgba(0, 123, 255, 0.15) !important;
-  position: relative;
-  z-index: 2;
+.week-separator {
+  color: #6c757d;
+  font-weight: normal;
 }
 
-/* Make selection more visible on current week */
-.current-week .selected {
-  background-color: rgba(0, 123, 255, 0.25) !important;
+.week-date {
+  flex: 1;
 }
 
-/* Prevent text selection while dragging */
-.table td {
-  user-select: none;
+.enhanced-checkbox {
+  cursor: pointer;
+  width: 1.1em;
+  height: 1.1em;
+  border: 1.5px solid #6c757d !important;
+  margin-right: 0.25rem !important;
 }
 
+/* Keep summary styles */
 .selection-summary {
+  min-width: 300px;
+  max-width: 90%;
   position: fixed;
   top: 20px;
   left: 50%;
@@ -336,8 +513,9 @@ function formatNetTransaction(deposit, withdrawal) {
   border: 1px solid #ddd;
   border-radius: 4px;
   padding: 10px;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-  z-index: 1000;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  z-index: 1050;
+  transition: all 0.3s ease;
 }
 
 .summary-header {
@@ -371,5 +549,131 @@ function formatNetTransaction(deposit, withdrawal) {
 
 .summary-item .value {
   font-weight: bold;
+}
+
+/* Mobile-specific styles */
+@media (max-width: 1199.98px) {
+  .data-label {
+    font-weight: bold;
+    font-size: 0.8rem;
+    margin-bottom: 0.1rem;
+    color: #6c757d;
+  }
+  
+  .card {
+    margin-bottom: 0.75rem;
+  }
+  
+  .row > [class*="col-"] {
+    margin-bottom: 0.5rem;
+  }
+
+  .row-selected .card {
+    border-left: 4px solid #198754;
+    background-color: rgba(198, 222, 210, 0.3) !important;
+  }
+  
+  /* Add a badge to indicate row is selected */
+  .row-selected .week-combined::after {
+    content: "Selected";
+    font-size: 0.7rem;
+    font-weight: 500;
+    color: white;
+    background-color: #198754;
+    padding: 2px 6px;
+    border-radius: 10px;
+    margin-left: 8px;
+    display: inline-block;
+  }
+}
+
+/* Styling for the expand/collapse icon */
+.expand-icon {
+  cursor: pointer;
+  font-size: 1.1rem;
+  padding: 0.25rem;
+  background-color: rgba(0, 0, 0, 0.05);
+  border-radius: 50%;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.2s ease;
+}
+
+.expand-icon:hover {
+  background-color: rgba(0, 0, 0, 0.1);
+}
+
+/* New styles for the two-table layout */
+.summary-tables-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 15px;
+  padding: 10px;
+  justify-content: center;
+}
+
+.summary-table-section {
+  flex: 1;
+  min-width: 250px;
+  max-width: 300px;
+  border: 1px solid #e9ecef;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.table-title {
+  padding: 8px 10px;
+  margin: 0;
+  background-color: #f8f9fa;
+  border-bottom: 1px solid #e9ecef;
+  text-align: center;
+  font-weight: 600;
+}
+
+.summary-table {
+  width: 100%;
+  margin-top: 0;
+}
+
+/* New grid layout styles */
+.summary-grid-wrapper {
+  padding: 10px;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: auto auto;
+  gap: 12px;
+}
+
+.summary-grid-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px;
+  background-color: rgba(0,0,0,0.02);
+  border-radius: 4px;
+  border: 1px solid #e9ecef;
+}
+
+.grid-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #6c757d;
+  margin-bottom: 4px;
+}
+
+.grid-value {
+  font-size: 1rem;
+  font-weight: 500;
+}
+
+/* Remove old table styles that are no longer needed */
+.summary-table-wrapper {
+  padding: 10px;
 }
 </style>

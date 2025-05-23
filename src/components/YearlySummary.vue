@@ -1,79 +1,150 @@
 <script setup>
-import { computed } from 'vue'
 import { useAppStore } from '@/stores/app'
+import { computed } from 'vue'
+import DataTable from '@/components/custom/DataTable.vue'
+
 const store = useAppStore()
 
-// Add local computed property
-const yearlyTotals = computed(() => {
-  const totals = []
-  const weeksPerYear = 52
-  const today = new Date()
-
-  for (let year = 1; year <= store.activeAccount.settings.years; year++) {
-    const startWeek = (year - 1) * weeksPerYear
-    const endWeek = year * weeksPerYear
-    const yearProjections = store.projections.slice(startWeek, endWeek)
-
-    // Calculate total growth
-    const totalGrowth = yearProjections.reduce((sum, p) => {
-      // Get start date for this week
-      const weekStartDate = new Date(store.activeAccount.settings.startDate)
-      weekStartDate.setDate(weekStartDate.getDate() + (p.week - 1) * 7)
-
-      if (p.actualGrowth && p.actualGrowth > 0) {
-        // Use actual if it exists and is greater than zero
-        return sum + Number(p.actualGrowth)
-      } else if (weekStartDate > today && p.projectedGrowth > 0) {
-        // Use projected only for future weeks
-        return sum + p.projectedGrowth
-      }
-      return sum
-    }, 0)
-
-    const summary = {
-      year,
-      startBalance: yearProjections[0]?.startBalance || 0,
-      totalDeposits: yearProjections.reduce((sum, p) => sum + p.deposit, 0),
-      totalTaxWithdrawals: yearProjections.reduce((sum, p) => sum + p.withdrawalsByCategory.taxes, 0),
-      totalIncomeWithdrawals: yearProjections.reduce((sum, p) => sum + p.withdrawalsByCategory.income, 0),
-      totalGrowth,
-      endBalance: yearProjections[yearProjections.length - 1]?.endBalance || 0
+// Group projections by project year (52 weeks per year)
+const yearlyData = computed(() => {
+  const years = []
+  
+  // Get the total number of years to process
+  const totalYears = Math.ceil(store.projections.length / 52)
+  
+  for (let yearIndex = 0; yearIndex < totalYears; yearIndex++) {
+    // Calculate start and end weeks for this year
+    const startWeekIndex = yearIndex * 52
+    const endWeekIndex = Math.min((yearIndex + 1) * 52 - 1, store.projections.length - 1)
+    
+    // Get the actual projections for this year
+    const yearWeeks = store.projections.slice(startWeekIndex, endWeekIndex + 1)
+    
+    if (yearWeeks.length > 0) {
+      // Create year data object
+      const firstWeekOfYear = yearWeeks[0]
+      const lastWeekOfYear = yearWeeks[yearWeeks.length - 1]
+      
+      // Get week range strings for display
+      const yearStartRange = store.weekRange(firstWeekOfYear.week, true)
+      const yearEndRange = store.weekRange(lastWeekOfYear.week, true)
+      
+      // Calculate year totals
+      const deposits = yearWeeks.reduce((sum, p) => sum + p.deposit, 0)
+      const withdrawals = yearWeeks.reduce((sum, p) => sum + p.withdrawal, 0)
+      const growth = yearWeeks.reduce((sum, p) => {
+        return sum + ((p.actualGrowth !== null) ? p.actualGrowth : p.projectedGrowth)
+      }, 0)
+      
+      years.push({
+        yearNumber: yearIndex + 1,
+        description: `${yearStartRange} to ${yearEndRange}`,
+        startBalance: firstWeekOfYear.startBalance,
+        endBalance: lastWeekOfYear.endBalance,
+        growth,
+        deposits,
+        withdrawals,
+        weekStart: firstWeekOfYear.week,
+        weekEnd: lastWeekOfYear.week,
+        weeks: yearWeeks
+      })
     }
-    totals.push(summary)
   }
-  return totals
+  
+  return years
 })
+
+// Define columns for DataTable
+const columns = [
+  {
+    key: 'year',
+    header: {
+      text: 'Year'
+    },
+    class: 'col-12 col-xl-2'
+  },
+  {
+    key: 'startBalance',
+    header: {
+      text: 'Start Balance'
+    },
+    value: (item) => store.currency(item.startBalance)
+  },
+  {
+    key: 'deposits',
+    header: {
+      text: 'Deposits'
+    },
+    value: (item) => store.currency(item.deposits)
+  },
+  {
+    key: 'withdrawals',
+    header: {
+      text: 'Withdrawals'
+    },
+    value: (item) => store.currency(item.withdrawals)
+  },
+  {
+    key: 'growth',
+    header: {
+      text: 'Growth',
+      tooltip: 'Total growth for the year'
+    },
+    class: 'col-6 col-xl',
+    value: (item) => store.currency(item.growth)
+  },
+  {
+    key: 'endBalance',
+    header: {
+      text: 'End Balance'
+    },
+    value: (item) => store.currency(item.endBalance)
+  },
+  {
+    key: 'change',
+    header: {
+      text: '% Change'
+    },
+    value: (item) => `${((item.endBalance - item.startBalance) / item.startBalance * 100).toFixed(2)}%`
+  }
+]
 </script>
 
 <template>
-  <div class="flex-grow-1 position-relative">
-    <div class="table-responsive mt-3">
-      <table class="table table-striped table-hover">
-        <thead>
-          <tr>
-            <th>Year</th>
-            <th>Start Balance</th>
-            <th>Total Deposits</th>
-            <th>Tax Withdrawals</th>
-            <th>Income Withdrawals</th>
-            <th data-bs-toggle="tooltip" data-bs-title="Estimated taxable income">
-              Total Growth
-            </th>
-            <th>End Balance</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="total in yearlyTotals" :key="total.year">
-            <td>{{ total.year }}</td>
-            <td>{{ store.currency(total.startBalance) }}</td>
-            <td>{{ store.currency(total.totalDeposits) }}</td>
-            <td>{{ store.currency(total.totalTaxWithdrawals) }}</td>
-            <td>{{ store.currency(total.totalIncomeWithdrawals) }}</td>
-            <td>{{ store.currency(total.totalGrowth) }}</td>
-            <td>{{ store.currency(total.endBalance) }}</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
+  <DataTable :items="yearlyData" :columns="columns">
+    <template #year="{ item }">
+      <div class="year-combined">
+        <span class="year-number">Year {{ item.yearNumber }}</span>
+        <span class="week-count">({{ item.weeks.length }} weeks)</span>
+      </div>
+      <div class="year-range">
+        Weeks #{{ item.weekStart }}-{{ item.weekEnd }}
+      </div>
+    </template>
+  </DataTable>
 </template>
+
+<style>
+/* Year display styling */
+.year-combined {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.year-number {
+  font-weight: bold;
+  font-size: 1.1rem;
+}
+
+.week-count {
+  color: #6c757d;
+  font-size: 0.85rem;
+}
+
+.year-range {
+  font-size: 0.85rem;
+  color: #6c757d;
+  margin-top: 4px;
+}
+</style>

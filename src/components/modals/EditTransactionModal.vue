@@ -138,7 +138,7 @@ store.editTransaction = editTransaction
             <select class="form-select w-auto me-2" v-model.number="editingTransaction.startWeek" required>
               <option :value="null">-- Select --</option>
               <option v-for="p in store.projections" :key="p.week" :value="p.week">
-                Week {{ p.week }} ({{ store.weekRange(p.week) }})
+                Week {{ p.week }} ({{ store.weekRange(p.week, true) }})
               </option>
             </select>
           </div>
@@ -147,7 +147,7 @@ store.editTransaction = editTransaction
             <select class="form-select w-auto me-2" v-model.number="editingTransaction.endWeek">
               <option :value="null">-- Ongoing / No End --</option>
               <option v-for="p in store.projections" :key="p.week" :value="p.week">
-                Week {{ p.week }} ({{ store.weekRange(p.week) }})
+                Week {{ p.week }} ({{ store.weekRange(p.week, true) }})
               </option>
             </select>
           </div>

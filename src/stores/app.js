@@ -307,7 +307,7 @@ export const useAppStore = defineStore('app', {
       return '$' + Number(value).toFixed(2).replace(/\d(?=(\d{3})+\.)/g, '$&,')
     },
 
-    weekRange(weekNum) {
+    weekRange(weekNum, plainText = false) {
       if (!weekNum) return ''
       const startDate = this.activeAccount.settings.startDate
         ? new Date(this.activeAccount.settings.startDate)
@@ -317,12 +317,37 @@ export const useAppStore = defineStore('app', {
       const endDate = new Date(startDate)
       endDate.setDate(endDate.getDate() + 6)
 
-      const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-      const formatWeekDate = (date) => {
-        return months[date.getMonth()] + ' ' + date.getDate() + ', ' + date.getFullYear()
+      // Format with year first, then MM-DD
+      const startYear = startDate.getFullYear()
+      const endYear = endDate.getFullYear()
+      
+      const formatMonthDay = (date) => {
+        const month = String(date.getMonth() + 1).padStart(2, '0')
+        const day = String(date.getDate()).padStart(2, '0')
+        return `${month}/${day}`
       }
-
-      return `${formatWeekDate(startDate)} - ${formatWeekDate(endDate)}`
+      
+      // For plain text version (used in selects and other non-HTML contexts)
+      if (plainText) {
+        
+        if (startYear === endYear) {
+          return `${startYear}: ${formatMonthDay(startDate)} - ${formatMonthDay(endDate)}`
+        } else {
+          return `${startYear}: ${formatMonthDay(startDate)} - ${endYear}: ${formatMonthDay(endDate)}`
+        }
+      }
+      
+      // HTML version with badges (for v-html rendering)
+      const shortStartYear = startYear.toString().substring(2)
+      const shortEndYear = endYear.toString().substring(2)
+      
+      // If years are the same, only show year once
+      if (startYear === endYear) {
+        return `<span class="badge rounded-pill bg-secondary text-white">'${shortStartYear}</span> ${formatMonthDay(startDate)} - ${formatMonthDay(endDate)}`
+      } else {
+        // If years differ, show both years
+        return `<span class="badge rounded-pill bg-secondary text-white">'${shortStartYear}</span> ${formatMonthDay(startDate)} - <span class="badge rounded-pill bg-secondary text-white">'${shortEndYear}</span> ${formatMonthDay(endDate)}`
+      }
     },
 
     formatDate(dateString) {

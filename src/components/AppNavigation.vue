@@ -1,13 +1,32 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { useRoute } from 'vue-router'
-import { signOut } from 'firebase/auth'
+import { signOut, onAuthStateChanged } from 'firebase/auth'
 import { auth } from '@/firebase'
 import router from '@/router'
 
 const store = useAppStore()
 const route = useRoute()
+
+// Add state to track authentication
+const isOnSummarizer = computed(() => route.path === '/summarizer')
+
+// Initialize authentication state on component mount
+onMounted(() => {
+  onAuthStateChanged(auth, (user) => {
+    if (user) {
+      store.user = user
+      // If we're on the summarizer page, don't initiate the full data load
+      if (!isOnSummarizer.value) {
+        store.getBaconStash()
+      }
+    } else if (!isOnSummarizer.value) {
+      // Only redirect if not on summarizer page
+      router.push('/login')
+    }
+  })
+})
 
 // Add local function (without exposing to store)
 async function logout() {
@@ -24,7 +43,11 @@ async function logout() {
   }
 }
 
-const isOnSummarizer = computed(() => route.path === '/summarizer')
+// Add account switching function
+const switchAccount = (accountId) => {
+  store.db.selectedAccountId = Number(accountId)
+  store.calculateProjections()
+}
 </script>
 
 <template>
@@ -32,13 +55,13 @@ const isOnSummarizer = computed(() => route.path === '/summarizer')
        :class="{ 'fixed-top': isOnSummarizer }">
     <div class="container-fluid">
       <span class="navbar-brand">Operation More Bacon</span>
-      <button v-if="store.user" class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarContent"
+      <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarContent"
         aria-controls="navbarContent" aria-expanded="false" aria-label="Toggle navigation">
         <span class="navbar-toggler-icon"></span>
       </button>
       
-      <!-- Center tabs -->
-      <div class="navbar-nav mx-auto" v-if="store.user">
+      <!-- Center tabs - show on all pages -->
+      <div class="navbar-nav mx-auto">
         <ul class="nav nav-tabs border-0">
           <li class="nav-item">
             <router-link to="/" class="nav-link" :class="{ 'active': route.path === '/' }">
@@ -53,9 +76,27 @@ const isOnSummarizer = computed(() => route.path === '/summarizer')
         </ul>
       </div>
 
-      <!-- Right-aligned items -->
+      <!-- Right-aligned items - show conditionally based on existence of user -->
       <div class="collapse navbar-collapse justify-content-end" id="navbarContent">
-        <ul class="navbar-nav" v-if="store.user">
+        <ul class="navbar-nav align-items-center" v-if="store.user">
+          <!-- Account Selector as standard dropdown -->
+          <li class="nav-item dropdown">
+            <a class="nav-link dropdown-toggle" href="#" id="accountDropdown" role="button" data-bs-toggle="dropdown"
+              aria-expanded="false">
+              {{ store.activeAccount.name }}
+            </a>
+            <ul class="dropdown-menu" aria-labelledby="accountDropdown">
+              <li v-for="account in store.db.accounts" :key="account.id">
+                <a class="dropdown-item" 
+                   href="#" 
+                   @click.prevent="switchAccount(account.id)"
+                   :class="{ 'active': account.id === store.db.selectedAccountId }">
+                  {{ account.name }}
+                </a>
+              </li>
+            </ul>
+          </li>
+          
           <li class="nav-item" v-if="route.path === '/'">
             <a href="#" class="nav-link" @click.prevent="store.showManageAccountModal">
               Manage Accounts
@@ -94,6 +135,12 @@ const isOnSummarizer = computed(() => route.path === '/summarizer')
             </ul>
           </li>
         </ul>
+        <!-- Simplified menu for when not authenticated -->
+        <ul class="navbar-nav align-items-center" v-else>
+          <li class="nav-item">
+            <router-link to="/login" class="nav-link">Login</router-link>
+          </li>
+        </ul>
       </div>
     </div>
   </nav>
@@ -126,5 +173,11 @@ const isOnSummarizer = computed(() => route.path === '/summarizer')
 
 .fixed-top + .container-fluid {
   padding-top: 72px;
+}
+
+/* Add styling for active dropdown item */
+.dropdown-item.active {
+  background-color: var(--bs-primary);
+  color: white;
 }
 </style>

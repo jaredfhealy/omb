@@ -12,9 +12,10 @@ const show = () => {
 const close = () => {
   isVisible.value = false
 }
+
 const editAccount = (account) => {
   close()
-  store.editAccount(account)
+  store.openEditAccountModal(account)
 }
 
 const deleteAccount = (account) => {
@@ -121,7 +122,7 @@ store.showManageAccountModal = () => show()
             </tbody>
           </table>
 
-          <div class="d-flex justify-content-between mt-3">
+          <div class="d-flex justify-content-between align-items-center mt-3">
             <div class="btn-group">
               <button class="btn btn-outline-secondary" @click.prevent="downloadBackup" data-bs-toggle="tooltip"
                 data-bs-title="Download data backup">
@@ -133,9 +134,11 @@ store.showManageAccountModal = () => show()
               </button>
             </div>
 
-            <button class="btn btn-primary" @click="addNewAccount">
-              <i class="bi bi-plus-circle"></i> Add New Account
-            </button>
+            <div>
+              <button class="btn btn-primary" @click="addNewAccount">
+                <i class="bi bi-plus-circle"></i> Add New Account
+              </button>
+            </div>
           </div>
         </div>
       </div>

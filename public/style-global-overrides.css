@@ -5,6 +5,19 @@ body {
   padding: 0;
 }
 
+/* Direct overrides for Bootstrap components */
+.dropdown-menu {
+  z-index: 1100 !important;
+}
+
+.tooltip {
+  z-index: 1080 !important;
+}
+
+.popover {
+  z-index: 1070 !important;
+}
+
 [v-cloak]>* {
   display: none
 }

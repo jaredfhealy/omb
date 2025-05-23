@@ -10,8 +10,9 @@ const route = useRoute()
 const confirmModalRef = ref(null)
 
 const containerStyle = computed(() => {
-  return route.path !== '/summarizer' ? { height: 'calc(100vh - 20px)' } : {}
+  return route.path !== '/summarizer' ? {} : {}
 })
+// temp, removed from containerStyle function: height: 'calc(100vh - 115px)'
 
 const isOnSummarizer = computed(() => route.path === '/summarizer')
 
