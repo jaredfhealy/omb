@@ -29,7 +29,7 @@ const props = defineProps({
 })
 
 // Add direct ref instead of prop
-const scrollableContainer = ref(null)
+const scrollableWindow = ref(null)
 
 // Emit events for actions
 const emit = defineEmits(['row-click'])
@@ -41,14 +41,14 @@ const getRowClasses = (index) => ({
 
 // Expose the ref to parent
 defineExpose({
-  scrollableContainer
+  scrollableWindow
 })
 </script>
 
 <template>
   <div class="data-table-container">
-    <div class="scrollable-container" ref="scrollableContainer">
-      <div class="container-fluid pb-4">
+    <div class="scrollable-window" ref="scrollableWindow">
+      <div class="container-fluid pb-1">
         <!-- Header Row -->
         <div class="row sticky-top header-row bg-white pb-2 pt-0 mb-2">
           <div class="col-12 d-none d-xl-block">
@@ -122,15 +122,7 @@ defineExpose({
 </template>
 
 <style>
-.data-table-container {
-  display: flex;
-  flex-direction: column;
-  height: 96%;
-  width: 100%;
-  position: relative;
-}
-
-.scrollable-container {
+.scrollable-window {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;

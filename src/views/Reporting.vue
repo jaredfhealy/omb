@@ -4,6 +4,7 @@ import { useAppStore } from '@/stores/app'
 import BalanceGrowthChart from '@/components/BalanceGrowthChart.vue'
 import ActualGrowthChart from '@/components/ActualGrowthChart.vue'
 import RORChart from '@/components/RORChart.vue'
+import TrailingIncomeChart from '@/components/TrailingIncomeChart.vue'
 
 const store = useAppStore()
 const activeTab = ref('growth')
@@ -34,10 +35,13 @@ onMounted(() => {
     
     <div class="card-body">
       <div v-if="activeTab === 'growth'">
-        <h4>Actual Growth per Week</h4>
+        <h4>4-Week Trailing Income</h4>
+        <TrailingIncomeChart class="mb-4" />
+
+        <h4>Weekly Actual Growth</h4>
         <ActualGrowthChart class="mb-4" />
         
-        <h4>Rate of Return (ROR)</h4>
+        <h4>Weekly Rate of Return (ROR)</h4>
         <RORChart />
       </div>
       

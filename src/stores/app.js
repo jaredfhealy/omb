@@ -35,6 +35,7 @@ export const useAppStore = defineStore('app', {
     activeTab: 'yearly',
     transactionFilter: 'all',
     selectedWeek: null,
+    windowWidth: window.innerWidth,
   }),
 
   getters: {
@@ -52,7 +53,9 @@ export const useAppStore = defineStore('app', {
 
     activeAccount(state) {
       return state.db.accounts.find(a => a.id === state.db.selectedAccountId)
-    }
+    },
+
+    isBelowXL: (state) => state.windowWidth < 1200,
   },
 
   actions: {
@@ -179,16 +182,21 @@ export const useAppStore = defineStore('app', {
         const last4WeeksGrowth = actualGrowths.slice(-4)
         const last8WeeksGrowth = actualGrowths.slice(-8)
         
-        const trailing4WeekGrowth = last4WeeksGrowth.length > 0
-          ? last4WeeksGrowth.reduce((sum, g) => sum + g, 0) / last4WeeksGrowth.length
+        // Add calculation for trailing 4-week growth total (sum)
+        const trailing4WeekGrowthTotal = last4WeeksGrowth.length > 0
+          ? last4WeeksGrowth.reduce((sum, g) => sum + g, 0)
           : null
         
-        const trailing8WeekGrowth = last8WeeksGrowth.length > 0
+        const trailing4WeekGrowthAvg = last4WeeksGrowth.length > 0
+          ? trailing4WeekGrowthTotal / last4WeeksGrowth.length
+          : null
+        
+        const trailing8WeekGrowthAvg = last8WeeksGrowth.length > 0
           ? last8WeeksGrowth.reduce((sum, g) => sum + g, 0) / last8WeeksGrowth.length
           : null
 
         // Calculate trailing total growth
-        const trailingTotalGrowth = actualGrowths.length > 0
+        const trailingTotalGrowthAvg = actualGrowths.length > 0
           ? actualGrowths.reduce((sum, g) => sum + g, 0) / actualGrowths.length
           : null
 
@@ -204,16 +212,16 @@ export const useAppStore = defineStore('app', {
         const last4Weeks = actualRORs.slice(-4)
         const last8Weeks = actualRORs.slice(-8)
         
-        const trailing4WeekROR = last4Weeks.length > 0 
+        const trailing4WeekRORAvg = last4Weeks.length > 0 
           ? last4Weeks.reduce((sum, ror) => sum + ror, 0) / last4Weeks.length 
           : null
         
-        const trailing8WeekROR = last8Weeks.length > 0 
+        const trailing8WeekRORAvg = last8Weeks.length > 0 
           ? last8Weeks.reduce((sum, ror) => sum + ror, 0) / last8Weeks.length 
           : null
 
         // Calculate trailing total ROR
-        const trailingTotalROR = actualRORs.length > 0
+        const trailingTotalRORAvg = actualRORs.length > 0
           ? actualRORs.reduce((sum, ror) => sum + ror, 0) / actualRORs.length
           : null
 
@@ -232,13 +240,14 @@ export const useAppStore = defineStore('app', {
           actualGrowth: actualEntry ? Number(actualEntry.growth) : null,
           actualROR: weekROR,
           averageROR: 0,
-          trailing4WeekROR: trailing4WeekROR?.toFixed(2),
-          trailing8WeekROR: trailing8WeekROR?.toFixed(2),
-          trailingTotalROR: trailingTotalROR?.toFixed(2),
+          trailing4WeekRORAvg: trailing4WeekRORAvg?.toFixed(2),
+          trailing8WeekRORAvg: trailing8WeekRORAvg?.toFixed(2),
+          trailingTotalRORAvg: trailingTotalRORAvg?.toFixed(2),
           averageGrowth: 0,
-          trailing4WeekGrowth: trailing4WeekGrowth?.toFixed(2),
-          trailing8WeekGrowth: trailing8WeekGrowth?.toFixed(2),
-          trailingTotalGrowth: trailingTotalGrowth?.toFixed(2),
+          trailing4WeekGrowthAvg: trailing4WeekGrowthAvg?.toFixed(2),
+          trailing8WeekGrowthAvg: trailing8WeekGrowthAvg?.toFixed(2),
+          trailingTotalGrowthAvg: trailingTotalGrowthAvg?.toFixed(2),
+          trailing4WeekGrowthTotal: trailing4WeekGrowthTotal?.toFixed(2),
           endBalance
         })
 
@@ -366,6 +375,17 @@ export const useAppStore = defineStore('app', {
           new bootstrap.Tooltip(el)
         })
       })
+    },
+
+    setupWindowResizeListener() {
+      const handleResize = () => {
+        this.windowWidth = window.innerWidth
+      }
+      
+      window.addEventListener('resize', handleResize)
+      
+      // To ensure proper cleanup, we can return a function that removes the event listener
+      return () => window.removeEventListener('resize', handleResize)
     },
 
   }

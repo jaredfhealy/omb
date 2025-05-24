@@ -41,6 +41,7 @@ const addNewAccount = () => {
 }
 
 function downloadBackup() {
+  close()
   const data = JSON.stringify(store.db, null, 2)
   const blob = new Blob([data], { type: 'application/json' })
   const url = URL.createObjectURL(blob)
@@ -70,6 +71,9 @@ async function restoreBackup(file) {
       if (!account.transactions) account.transactions = []
     })
 
+    // Close the modal before showing confirmation
+    close()
+    
     // Use the store's confirm method directly
     if (store.confirm) {
       store.confirm(
@@ -85,6 +89,13 @@ async function restoreBackup(file) {
     alert('Error restoring backup: Invalid file format')
     console.error('Restore error:', error)
   }
+}
+
+// Add a function to switch to an account
+const switchToAccount = (accountId) => {
+  close()
+  store.db.selectedAccountId = Number(accountId)
+  store.calculateProjections()
 }
 
 // Expose show function to store
@@ -109,7 +120,18 @@ store.showManageAccountModal = () => show()
             </thead>
             <tbody>
               <tr v-for="account in store.db.accounts" :key="account.id">
-                <td>{{ account.name }}</td>
+                <td>
+                  <!-- Current account: show as bold text -->
+                  <span v-if="account.id === store.db.selectedAccountId" class="fw-bold">
+                    {{ account.name }}
+                  </span>
+                  
+                  <!-- Other accounts: show as clickable links with tooltip -->
+                  <a v-else href="#" 
+                     @click.prevent="switchToAccount(account.id)">
+                    {{ account.name }}
+                  </a>
+                </td>
                 <td>
                   <button class="btn btn-sm btn-link" @click="editAccount(account)">
                     <i class="bi bi-pencil-square"></i>
@@ -124,18 +146,24 @@ store.showManageAccountModal = () => show()
 
           <div class="d-flex justify-content-between align-items-center mt-3">
             <div class="btn-group">
-              <button class="btn btn-outline-secondary" @click.prevent="downloadBackup" data-bs-toggle="tooltip"
+              <button class="btn btn-outline-secondary" 
+                :class="store.isBelowXL ? 'btn-sm' : ''" 
+                @click.prevent="downloadBackup" data-bs-toggle="tooltip"
                 data-bs-title="Download data backup">
                 <i class="bi bi-download"></i> Backup
               </button>
-              <button class="btn btn-outline-danger" @click.prevent="$refs.backupInput.click()" data-bs-toggle="tooltip"
+              <button class="btn btn-outline-danger" 
+                :class="store.isBelowXL ? 'btn-sm' : ''"
+                @click.prevent="$refs.backupInput.click()" data-bs-toggle="tooltip"
                 data-bs-title="Restore data from backup">
                 <i class="bi bi-upload"></i> Restore
               </button>
             </div>
 
             <div>
-              <button class="btn btn-primary" @click="addNewAccount">
+              <button class="btn btn-primary"
+                :class="store.isBelowXL ? 'btn-sm' : ''"
+                @click="addNewAccount">
                 <i class="bi bi-plus-circle"></i> Add New Account
               </button>
             </div>

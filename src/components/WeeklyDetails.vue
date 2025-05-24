@@ -6,7 +6,7 @@ import DataTable from '@/components/custom/DataTable.vue'
 const store = useAppStore()
 const selectedRows = ref({})
 const selectionSummary = ref(null)
-const scrollableContainer = ref(null)
+const scrollableWindow = ref(null)
 const currentWeekRef = ref(null)
 const summaryExpanded = ref(false)
 
@@ -96,9 +96,9 @@ const columns = [
     class: 'col-6 col-xl',
     getTooltip: (item) => item.actualGrowth !== null ? 
       `Avg All: ${store.currency(item.averageGrowth)}<br>
-       Avg to Date: ${store.currency(item.trailingTotalGrowth)}<br>
-       Avg Last 8: ${store.currency(item.trailing8WeekGrowth)}<br>
-       Avg Last 4: ${store.currency(item.trailing4WeekGrowth)}` : null,
+       Avg to Date: ${store.currency(item.trailingTotalGrowthAvg)}<br>
+       Avg Last 8: ${store.currency(item.trailing8WeekGrowthAvg)}<br>
+       Avg Last 4: ${store.currency(item.trailing4WeekGrowthAvg)}` : null,
     tooltipHtml: true,
     value: (item) => store.currency(item.actualGrowth || 0)
   },
@@ -111,9 +111,9 @@ const columns = [
     class: 'col-6 col-xl',
     getTooltip: (item) => item.actualROR ? 
       `Avg All: ${item.averageROR}%<br>
-       Avg to Date: ${item.trailingTotalROR}%<br>
-       Avg Last 8: ${item.trailing8WeekROR}%<br>
-       Avg Last 4: ${item.trailing4WeekROR}%` : null,
+       Avg to Date: ${item.trailingTotalRORAvg}%<br>
+       Avg Last 8: ${item.trailing8WeekRORAvg}%<br>
+       Avg Last 4: ${item.trailing4WeekRORAvg}%` : null,
     tooltipHtml: true,
     value: (item) => item.actualROR ? `${Number(item.actualROR).toFixed(2)}%` : '0%'
   },
@@ -176,7 +176,7 @@ const scrollToWeek = async (week) => {
   await nextTick()
   
   const element = document.querySelector(`.row-selected[data-week="${week}"]`)
-  if (element && scrollableContainer.value) {
+  if (element && scrollableWindow.value) {
     element.scrollIntoView({
       behavior: 'smooth',
       block: 'center'
@@ -226,7 +226,7 @@ const handleEscape = (e) => {
 const scrollToCurrentWeek = async () => {
   await nextTick()
   
-  if (currentWeekRef.value && dataTableRef.value?.scrollableContainer) {
+  if (currentWeekRef.value && dataTableRef.value?.scrollableWindow) {
     currentWeekRef.value.scrollIntoView({
       behavior: 'smooth',
       block: 'center' // Center the element in the viewport
@@ -357,14 +357,16 @@ const dataTableRef = ref(null)
             <span class="help-text ms-2" v-if="!summaryExpanded">
               Select multiple rows and expand to see summary
             </span>
-            <span class="help-text ms-2 d-none d-xl-inline-block" v-else>Hit Esc to close</span>
+            <span class="help-text ms-2 d-none d-xl-inline-block" v-else>
+              Hit Esc to close ({{ Object.values(selectedRows).filter(Boolean).length }} weeks selected)
+            </span>
           </div>
           <button type="button" class="btn-close btn-close-sm" @click="closeSummary" aria-label="Close"></button>
         </div>
       </div>
       
       <!-- Only show summary when expanded - now with grid layout -->
-      <div v-if="summaryExpanded" class="summary-tables-container">
+      <div v-if="summaryExpanded" class="summary-tables-div">
         <!-- Actual Growth Section -->
         <div class="summary-table-section" v-if="selectionSummary.actualGrowth">
           <h6 class="table-title">Actual Growth</h6>
@@ -516,6 +518,7 @@ const dataTableRef = ref(null)
   box-shadow: 0 2px 8px rgba(0,0,0,0.15);
   z-index: 1050;
   transition: all 0.3s ease;
+  display: block;
 }
 
 .summary-header {
@@ -607,7 +610,7 @@ const dataTableRef = ref(null)
 }
 
 /* New styles for the two-table layout */
-.summary-tables-container {
+.summary-tables-div {
   display: flex;
   flex-wrap: wrap;
   gap: 15px;

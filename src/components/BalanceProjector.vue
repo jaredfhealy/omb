@@ -4,7 +4,7 @@ import YearlySummary from '@/components/YearlySummary.vue'
 import WeeklyDetails from '@/components/WeeklyDetails.vue'
 import TransactionManager from '@/components/TransactionManager.vue'
 import PositionsManager from '@/components/PositionsManager.vue'
-import { onMounted, onUpdated } from 'vue'
+import { onMounted, onUpdated, onBeforeUnmount } from 'vue'
 import { useAppStore } from '@/stores/app'
 import {
   EditTransactionModal,
@@ -14,12 +14,20 @@ import {
 
 const store = useAppStore()
 
+// Store the cleanup function for resize listener
+let cleanupResizeListener
+
 onMounted(() => {
   store.getBaconStash()
+  cleanupResizeListener = store.setupWindowResizeListener()
 })
 
 onUpdated(() => {
   store.initTooltips()
+})
+
+onBeforeUnmount(() => {
+  if (cleanupResizeListener) cleanupResizeListener()
 })
 </script>
 
@@ -30,17 +38,16 @@ onUpdated(() => {
       <span class="visually-hidden">Loading...</span>
     </div>
   </div>
-  <div class="container-fluid p-0" style="height: calc(-110px + 100vh);">
-    <!-- Tab Navigation -->
-    <TabNavigation />
-    
-    <!-- Content Area (takes all remaining height) -->
-    <div class="content-area flex-grow-1">
-      <YearlySummary v-if="store.activeTab === 'yearly'" />
-      <WeeklyDetails v-if="store.activeTab === 'weekly'" />
-      <TransactionManager v-if="store.activeTab === 'recurring'" />
-      <PositionsManager v-if="store.activeTab === 'positions'" />
-    </div>
+
+  <!-- Tab Navigation -->
+  <TabNavigation />
+  
+  <!-- Content Area (takes all remaining height) -->
+  <div class="content-area flex-grow-1">
+    <YearlySummary v-if="store.activeTab === 'yearly'" />
+    <WeeklyDetails v-if="store.activeTab === 'weekly'" />
+    <TransactionManager v-if="store.activeTab === 'recurring'" />
+    <PositionsManager v-if="store.activeTab === 'positions'" />
   </div>
 
   <!-- Modals -->
@@ -82,21 +89,42 @@ onUpdated(() => {
 }
 
 /* Make content area take full height */
-.content-area {
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  position: relative;
-  height: 100%;
+@media (max-width: 1199.98px) {
+  .content-area {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    position: relative;
+    height: calc(100vh - 150px); /* Smaller subtraction for smaller screens */
+  }
+  
+  /* Target direct children of content-area that have -container in their class name */
+  .content-area [class*="-container"] {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    height:  calc(100vh - 150px);
+    overflow: hidden;
+  }
 }
 
-/* All direct children of content-area should be full height */
-.content-area > * {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  overflow: hidden;
+@media (min-width: 1200px) {
+  .content-area {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    position: relative;
+    height: calc(100vh - 106px);
+  }
+  
+  /* Target children of content-area that have -container in their class name */
+  .content-area [class*="-container"] {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    height: calc(100vh - 100px);
+    overflow: hidden;
+  }
 }
 
 /* Modal styles */

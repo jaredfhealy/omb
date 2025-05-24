@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { useRoute } from 'vue-router'
 import { signOut, onAuthStateChanged } from 'firebase/auth'
@@ -11,6 +11,35 @@ const route = useRoute()
 
 // Add state to track authentication
 const isOnSummarizer = computed(() => route.path === '/summarizer')
+
+// Add computed property for current page name
+const currentPageName = computed(() => {
+  switch(route.path) {
+    case '/': return 'Projections';
+    case '/reporting': return 'Reports';
+    case '/summarizer': return 'Summarizer';
+    default: return 'Select Page';
+  }
+})
+
+// Reference to collapse element
+const navbarCollapse = ref(null)
+
+// Function to close mobile menu
+const closeMenu = () => {
+  if (window.innerWidth < 992) { // Bootstrap lg breakpoint
+    // Use Bootstrap collapse API to hide menu
+    const bsCollapse = window.bootstrap?.Collapse.getInstance(navbarCollapse.value)
+    if (bsCollapse) {
+      bsCollapse.hide()
+    }
+  }
+}
+
+// Watch for route changes to close the menu
+watch(() => route.path, () => {
+  closeMenu()
+})
 
 // Initialize authentication state on component mount
 onMounted(() => {
@@ -54,68 +83,51 @@ const switchAccount = (accountId) => {
   <nav id="appNav" class="navbar navbar-expand-lg navbar-dark bg-primary mb-3"
        :class="{ 'fixed-top': isOnSummarizer }">
     <div class="container-fluid">
-      <span class="navbar-brand">Operation More Bacon</span>
+      <a href="#" class="navbar-brand" @click.prevent="store.showManageAccountModal" data-bs-toggle="tooltip" data-bs-title="Operation More Bacon">
+        O.M.B. &nbsp;|&nbsp; <span class="small">{{ store.activeAccount.name }}</span>
+      </a>
       <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarContent"
         aria-controls="navbarContent" aria-expanded="false" aria-label="Toggle navigation">
         <span class="navbar-toggler-icon"></span>
       </button>
       
-      <!-- Center tabs - show on all pages -->
-      <div class="navbar-nav mx-auto">
-        <ul class="nav nav-tabs border-0">
-          <li class="nav-item">
-            <router-link to="/" class="nav-link" :class="{ 'active': route.path === '/' }">
-              Projections
-            </router-link>
-          </li>
-          <li class="nav-item">
-            <router-link to="/reporting" class="nav-link" :class="{ 'active': route.path === '/reporting' }">
-              Reports
-            </router-link>
-          </li>
-        </ul>
-      </div>
+      <!-- Remove center tabs section -->
 
       <!-- Right-aligned items - show conditionally based on existence of user -->
-      <div class="collapse navbar-collapse justify-content-end" id="navbarContent">
+      <div class="collapse navbar-collapse justify-content-end" id="navbarContent" ref="navbarCollapse">
         <ul class="navbar-nav align-items-center" v-if="store.user">
-          <!-- Account Selector as standard dropdown -->
-          <li class="nav-item dropdown">
-            <a class="nav-link dropdown-toggle" href="#" id="accountDropdown" role="button" data-bs-toggle="dropdown"
-              aria-expanded="false">
-              {{ store.activeAccount.name }}
+          <li class="nav-item">
+            <!-- Still keep this handler for non-route actions -->
+            <a href="#" class="nav-link" @click.prevent="store.showManageAccountModal(); closeMenu()">
+              Manage / Switch Accounts
             </a>
-            <ul class="dropdown-menu" aria-labelledby="accountDropdown">
-              <li v-for="account in store.db.accounts" :key="account.id">
-                <a class="dropdown-item" 
-                   href="#" 
-                   @click.prevent="switchAccount(account.id)"
-                   :class="{ 'active': account.id === store.db.selectedAccountId }">
-                  {{ account.name }}
-                </a>
-              </li>
-            </ul>
           </li>
           
-          <li class="nav-item" v-if="route.path === '/'">
-            <a href="#" class="nav-link" @click.prevent="store.showManageAccountModal">
-              Manage Accounts
-            </a>
-          </li>
-          <!-- New Tools Dropdown -->
+          <!-- Dynamic page selector dropdown -->
           <li class="nav-item dropdown">
-            <a class="nav-link dropdown-toggle" href="#" id="toolsDropdown" role="button" data-bs-toggle="dropdown"
+            <a class="nav-link dropdown-toggle" href="#" id="pageSelector" role="button" data-bs-toggle="dropdown"
               aria-expanded="false">
-              Tools
+              {{ currentPageName }}
             </a>
-            <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="toolsDropdown">
+            <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="pageSelector">
               <li>
-                <router-link to="/summarizer" class="dropdown-item">
+                <router-link to="/" class="dropdown-item" :class="{ 'active': route.path === '/' }">
+                  Projections
+                </router-link>
+              </li>
+              <li>
+                <router-link to="/reporting" class="dropdown-item" :class="{ 'active': route.path === '/reporting' }">
+                  Reports
+                </router-link>
+              </li>
+              <li>
+                <router-link to="/summarizer" class="dropdown-item" :class="{ 'active': route.path === '/summarizer' }">
                   Schwab Transaction Summarizer
                 </router-link>
               </li>
             </ul>
           </li>
+          
           <!-- User Dropdown -->
           <li class="nav-item dropdown">
             <a class="nav-link dropdown-toggle" href="#" id="userDropdown" role="button" data-bs-toggle="dropdown"
@@ -124,11 +136,11 @@ const switchAccount = (accountId) => {
             </a>
             <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="userDropdown">
               <li>
-                <a class="dropdown-item" href="#" data-bs-toggle="modal" data-bs-target="#changePasswordModal">Change Password</a>
+                <a class="dropdown-item" href="#" data-bs-toggle="modal" data-bs-target="#changePasswordModal" @click="closeMenu">Change Password</a>
               </li>
               <li><hr class="dropdown-divider"></li>
               <li>
-                <a class="dropdown-item" href="#" @click.prevent="logout">
+                <a class="dropdown-item" href="#" @click.prevent="logout(); closeMenu()">
                   <i class="bi bi-box-arrow-right"></i> Logout
                 </a>
               </li>
