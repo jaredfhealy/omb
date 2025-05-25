@@ -91,13 +91,17 @@ const switchAccount = (accountId) => {
         <span class="navbar-toggler-icon"></span>
       </button>
       
-      <!-- Remove center tabs section -->
-
       <!-- Right-aligned items - show conditionally based on existence of user -->
       <div class="collapse navbar-collapse justify-content-end" id="navbarContent" ref="navbarCollapse">
         <ul class="navbar-nav align-items-center" v-if="store.user">
+          <!-- Add the Import CSV button -->
           <li class="nav-item">
-            <!-- Still keep this handler for non-route actions -->
+            <a href="#" class="nav-link" @click.prevent="store.showImportTransactionsModal(); closeMenu()">
+              <i class="bi bi-file-earmark-arrow-up"></i> Import CSV
+            </a>
+          </li>
+
+          <li class="nav-item">
             <a href="#" class="nav-link" @click.prevent="store.showManageAccountModal(); closeMenu()">
               Manage / Switch Accounts
             </a>

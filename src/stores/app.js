@@ -123,8 +123,7 @@ export const useAppStore = defineStore('app', {
 
       for (let week = 1; week <= this.weeks; week++) {
         const transactions = this._getTransactionsForWeek(week)
-        const projectedGrowth = startBalance * (this.activeAccount.settings.weeklyReturn / 100)
-
+        
         // Calculate positions being sold this week
         const positionsSoldThisWeek = (this.activeAccount.positions || []).reduce((sum, position) => {
           if (position.soldWeek === week) {
@@ -148,6 +147,9 @@ export const useAppStore = defineStore('app', {
           }
           return sum
         }, 0)
+
+        // Calculate projected growth based on total account value (cash + shares)
+        const projectedGrowth = (startBalance + sharesBalance) * (this.activeAccount.settings.weeklyReturn / 100)
 
         // Add sold positions back to cash balance and subtract newly assigned positions
         startBalance = startBalance + positionsSoldThisWeek - sharesBalanceAddedThisWeek
@@ -201,7 +203,7 @@ export const useAppStore = defineStore('app', {
           : null
 
         // Calculate this week's actual ROR if available
-        const weekROR = actualEntry && actualEntry.growth > 0 ? (Number(actualEntry.growth) / (startBalance + sharesBalance) * 100) : null
+        const weekROR = actualEntry ? (Number(actualEntry.growth) / (startBalance + sharesBalance) * 100) : null
 
         // Track RORs when available
         if (weekROR !== null) {
@@ -388,5 +390,6 @@ export const useAppStore = defineStore('app', {
       return () => window.removeEventListener('resize', handleResize)
     },
 
+    // Remove the CSV import functions that were moved to the ImportTransactionsModal component
   }
 })
