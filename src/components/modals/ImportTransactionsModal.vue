@@ -1,6 +1,7 @@
 <script setup>
 import { ref } from 'vue'
 import { useAppStore } from '@/stores/app'
+import Papa from 'papaparse'
 
 const store = useAppStore()
 const isVisible = ref(false)
@@ -11,6 +12,7 @@ const hasError = ref(false)
 const errorMessage = ref('')
 const discardFirstWeek = ref(true) // Default to true for this option
 const deleteAndReloadTransactions = ref(false) // Default to false for this option
+const forceRecalculateAll = ref(false) // Default to false for recalculation option
 
 // Modal control methods
 const show = () => {
@@ -31,6 +33,7 @@ const resetForm = () => {
   errorMessage.value = ''
   discardFirstWeek.value = true // Reset to default
   deleteAndReloadTransactions.value = false // Reset to default
+  forceRecalculateAll.value = false // Reset to default
   
   // Reset the file input element to clear the selected file
   const fileInput = document.querySelector('#csvFile')
@@ -100,85 +103,164 @@ async function importTransactionsFromCSV(file) {
   }
   
   try {
-    // Parse the CSV file
-    const text = await file.text()
-    const { data, errors, meta } = parseCSV(text)
+    // Step 1: Parse CSV file and extract structured data
+    const text = await file.text();
+    const { dataRows, errors, meta } = parseCSV(text);
     
-    // Process the transactions even if there are errors
-    const results = processTransactions(data, discardFirstWeek.value)
+    // Get broker map for type categorization
+    const brokerMap = _getBrokerageMap(meta.headers.toString());
     
-    // Add the errors to the results
-    results.errors = errors
-    results.skippedRows = errors.length
+    // Step 2: Process data rows and assign to actuals array by week
+    // Returns arrays of transactions and positions for further processing
+    const { transactionsImport, positionsImport, processDataResults } = 
+      _processData(dataRows, brokerMap);
     
-    return results
+    // Step 3: Process transactions into account transactions array
+    const transactionResults = _processTransactions(transactionsImport);
+    
+    // Combine all results for display
+    const results = {
+      totalProcessed: processDataResults.rowsProcessed, // Add proper property name
+      weeksProcessed: processDataResults.weeksProcessed,
+      weeksUpdated: processDataResults.weeksUpdated,
+      weeksChanged: processDataResults.weeksChanged,
+      transfersDeleted: transactionResults.transactionsDeleted, // Map to template expected property
+      transfersAdded: transactionResults.transactionsAdded, // Map to template expected property
+      errors: errors,
+      skippedRows: errors.length
+    };
+    
+    // After processing the import, recalculate any weeks that need it
+    const recalculationResults = recalculateWeekTotals();
+    results.recalculation = recalculationResults;
+    
+    return results;
   } catch (error) {
-    console.error('Import transaction error:', error)
-    throw error
+    console.error('Import transaction error:', error);
+    throw error;
   }
 }
 
-// CSV parser function - moved from store
-function parseCSV(csvText) {
-  // Simple CSV parser (could use Papa Parse or similar in production)
-  const lines = csvText.split('\n')
-  const headerRow = lines[0].split(',').map(h => h.replace(/"/g, ''))
-  
-  // Build a column mapping from the header row
-  const columnMap = {
-    date: 0,
-    action: 1,
-    symbol: 2,
-    description: 3,
-    quantity: 4,
-    price: 5,
-    fees: 6,
-    amount: 7
+// Brokerage format detection and mapping function
+function _getBrokerageMap(keySearch) {
+  // If keySearch is empty, check for active account's formatKey
+  keySearch = store.activeAccount?.formatKey || keySearch;
+  if (!keySearch || keySearch.length === 0) {
+    throw new Error('No brokerage format specified');
   }
+
+  // Define known brokerage formats with their header patterns and column mappings
+  const knownFormats = {
+    'schwab': {
+      headerRow: 'Date,Action,Symbol,Description,Quantity,Price,Fees & Comm,Amount',
+      columns: {
+        date: 0,
+        action: 1,
+        symbol: 2,
+        description: 3,
+        quantity: 4,
+        price: 5,
+        fees: 6,
+        amount: 7
+      },
+      weeklyTotalTypes: ['sell to open', 'buy to close', 'bank interest'],
+      transactionTypes: ['moneylink transfer', 'journal'],
+      positionTypes: ['buy', 'sell']
+    }
+  }
+  
+  // Try direct lookup first (header string as key)
+  let brokerMap = knownFormats[keySearch];
+  
+  // If not found, search by formatKey
+  if (!brokerMap) {
+    // Loop through all formats and find one with matching formatKey
+    for (const key in knownFormats) {
+      if (knownFormats[key].headerRow === keySearch) {
+        brokerMap = knownFormats[key];
+  
+        // Store the brokerage name in our account data for recalculation purposes
+        store.activeAccount.formatKey = key;
+        break;
+      }
+    }
+  }
+  
+  // If still not found, default to the first format
+  if (!brokerMap) {
+    const firstHeader = Object.keys(knownFormats)[0];
+    brokerMap = knownFormats[firstHeader];
+  }
+  
+  // Return the current map
+  return brokerMap;
+}
+
+// Helper function to parse financial values from string
+function _parseAmount(amountStr, defaultValue = 0) {
+  if (!amountStr || amountStr.length === 0) {
+    return defaultValue;
+  }
+  
+  // Check if the value is in parentheses (negative)
+  const isNegative = amountStr.includes('(') && amountStr.includes(')');
+  
+  // Remove all non-numeric characters except decimal point and minus sign
+  amountStr = amountStr.replace(/[^\d.-]/g, '');
+  
+  // Apply negative sign if needed (for values in parentheses)
+  if (isNegative && !amountStr.startsWith('-')) {
+    amountStr = `-${amountStr}`;
+  }
+  
+  // Parse to float
+  const parsedValue = parseFloat(amountStr);
+  if (isNaN(parsedValue)) {
+    return defaultValue;
+  }
+  
+  // Round to 2 decimal places for financial values
+  return Math.round(parsedValue * 100) / 100;
+}
+
+// CSV parser function
+function parseCSV(csvText) {
+  // Parse CSV with Papa Parse
+  const parseResult = Papa.parse(csvText, {
+    skipEmptyLines: true,
+    header: false
+  });
+  
+  const lines = parseResult.data;
+  if (!lines || lines.length === 0) {
+    throw new Error('CSV file appears to be empty');
+  }
+  
+  const headerRow = lines[0];
+  
+  // Detect brokerage format and get column mapping
+  const brokerageMap = _getBrokerageMap(headerRow.toString());
+  const columnMap = brokerageMap.columns;
   
   // Check that required columns exist
-  const requiredColumns = ['date', 'symbol', 'description', 'amount']
+  const requiredColumns = ['date', 'action', 'symbol', 'amount'];
   for (const col of requiredColumns) {
     if (columnMap[col] === undefined) {
-      throw new Error(`CSV must contain ${requiredColumns.join(', ')} columns`)
+      throw new Error(`CSV must contain ${requiredColumns.join(', ')} columns`);
     }
   }
   
-  // Define skip types up here so we can use them during parsing
-  const skipTypes = [
-    // Specific actions to skip
-    'sell', 'expired', 'buy', 'assigned'
-  ]
+  // Parse data rows - store all transaction data
+  const dataRows = [];
+  const errors = [];
   
-  // Parse data rows
-  const data = []
-  const errors = []
-  
+  // Start from index 1 to skip the header
   for (let i = 1; i < lines.length; i++) {
-    if (!lines[i].trim()) continue
-    
-    // For CSV files, only remove enclosing quotes but preserve any quotes within the data
-    const values = lines[i].replace(/^"(.*)"$/, '$1').split('","')
+    const values = lines[i];
+    if (!values || values.length === 0) continue;
 
-    // First check if this is a transaction type we want to skip
-    const actionValue = values.length > columnMap.action ? 
-      values[columnMap.action].toLowerCase() : ''
-
-    // Skip transactions in skip list
-    if (skipTypes.includes(actionValue)) {
-      continue;
-    }
-
-    // Determine the target system for this entry
-    let target = 'actuals' // Default target for regular entries
-    
-    // Set target to 'transaction' for special handling entries
-    if (actionValue === 'moneylink transfer' || actionValue === 'journal') {
-      target = 'transaction'
-    }
-    
-    // Common code for parsing date and amount
-    let transactionDate, amount;
+    // Parse date and amount but don't skip any transaction types yet
+    let transactionDate;
     
     // Parse date
     try {
@@ -186,7 +268,7 @@ function parseCSV(csvText) {
       let dateToUse = dateStr;
       
       // Check if the date has the special "as of" format
-      if (dateStr.includes(' as of ')) {
+      if (dateStr && dateStr.includes(' as of ')) {
         dateToUse = dateStr.split(' as of ')[0].trim();
       }
       
@@ -201,76 +283,184 @@ function parseCSV(csvText) {
       });
       continue;
     }
-    
-    // Parse amount
-    try {
-      let amountStr = values[columnMap.amount];
-      const isNegative = amountStr.includes('(') && amountStr.includes(')');
-      
-      // Remove all non-numeric characters except decimal point AND minus sign
-      amountStr = amountStr.replace(/[^\d.-]/g, '');
-      
-      // Apply negative sign if needed (for values in parentheses)
-      if (isNegative && !amountStr.startsWith('-')) {
-        amountStr = `-${amountStr}`;
-      }
-      
-      // Skip empty amount fields
-      if (amountStr.length === 0) {
-        amount = 0;
-      } else {
-        amount = parseFloat(amountStr);
-        if (isNaN(amount)) {
-          throw new Error(`Could not parse amount: ${values[columnMap.amount]}`);
-        }
-        // Round to 2 decimal places for financial values
-        amount = Math.round(amount * 100) / 100;
-      }
-    } catch (e) {
-      errors.push({
-        message: `Invalid amount format at line ${i+1}: "${values[columnMap.amount]}"`,
-        line: i+1
-      });
-      continue;
-    }
-    
-    // Skip additional validation for transaction-targeted entries
-    if (target === 'actuals' && values.length !== headerRow.length) {
-      errors.push({ 
-        message: `Line ${i+1} has ${values.length} values, expected ${headerRow.length}`,
-        line: i+1
-      });
-      continue;
-    }
-    
-    // Add the record to the data array
-    data.push({
+
+    // Create a data object with all available data
+    const dataObj = {
       date: transactionDate,
-      description: values[columnMap.description],
-      amount: amount,
-      target: target,
-      action: actionValue,
-      originalValues: values // Store original values for reference
+      description: values[columnMap.description] || '',
+      amount: values[columnMap.amount] ? _parseAmount(values[columnMap.amount]) : 0,
+      action: values[columnMap.action] || '',
+      symbol: values[columnMap.symbol] || '',
+      quantity: values[columnMap.quantity] ? parseInt(values[columnMap.quantity]) : 0,
+      price: values[columnMap.price] ? _parseAmount(values[columnMap.price]) : 0,
+      fees: values[columnMap.fees] ? _parseAmount(values[columnMap.fees]) : 0
+    };
+
+    // Add to the data array (without filtering)
+    dataRows.push(dataObj);
+  }
+  
+  // Add any Papa Parse errors
+  if (parseResult.errors && parseResult.errors.length > 0) {
+    parseResult.errors.forEach(error => {
+      errors.push({
+        message: `CSV parsing error: ${error.message} at line ${error.row + 1}`,
+        line: error.row + 1
+      });
     });
   }
   
-  return { data, errors, meta: { headers: headerRow } }
+  return { 
+    dataRows,
+    errors, 
+    meta: { 
+      headers: headerRow, 
+      brokerageFormat: brokerageMap.name 
+    } 
+  };
 }
 
-// Transaction processor function - moved from store
-function processTransactions(transactions, shouldDiscardFirstWeek = false) {
-  // Group transactions by week
-  const weeklyTotals = {}
-  const weeklyAmounts = {} // Track individual amounts per week
-  let transactionsProcessed = 0
-  let transfersAdded = 0 // Track transactions added to transactions array
-  let transfersDeleted = 0 // Track transactions deleted
-  let smallestWeek = Infinity
+// Process data rows and organize into actuals and identify transactions/positions
+function _processData(dataRows, brokerMap) {
+  // Variables used for processing
+  let rowsProcessed = 0;
+  let transactionsImport = [];
+  let positionsImport = [];
+  let smallestWeek = Infinity;
+  let weeksChanged = [];
   
   // Get the account start date
-  const startDate = new Date(store.activeAccount.settings.startDate)
+  const startDate = new Date(store.activeAccount.settings.startDate);
   
-  // Delete existing transactions if requested
+  // Create a mapping of transactions by week
+  const dataByWeek = {};
+  
+  // First pass: Group all data rows by their corresponding week
+  dataRows.forEach(dataRow => {
+    // Calculate which week this data row belongs to
+    const transactionDate = new Date(dataRow.date);
+    const diffTime = transactionDate - startDate;
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    
+    // Skip rows before the start date
+    if (diffDays < 0) return;
+    
+    const week = Math.floor(diffDays / 7) + 1;
+    
+    // Track smallest week for potential discarding
+    if (week < smallestWeek) {
+      smallestWeek = week;
+    }
+    
+    // Initialize the array for this week if it doesn't exist
+    if (!dataByWeek[week]) {
+      dataByWeek[week] = [];
+    }
+    
+    // Add this row to the week's array
+    dataByWeek[week].push(dataRow);
+    
+    // Identify if this is a transaction or position based on action
+    const action = dataRow.action.toLowerCase();
+    
+    // Categorize based on broker map types
+    if (brokerMap.transactionTypes.includes(action)) {
+      // Add to transactions import for later processing
+      transactionsImport.push({
+        ...dataRow,
+        week: week
+      });
+    } else if (brokerMap.positionTypes.includes(action)) {
+      // Add to positions import for later processing
+      positionsImport.push({
+        ...dataRow,
+        week: week
+      });
+    }
+    
+    rowsProcessed++;
+  });
+  
+  // If requested, discard the first week's data
+  if (discardFirstWeek.value && smallestWeek !== Infinity) {
+    delete dataByWeek[smallestWeek];
+    // Adjust the processed count
+    if (dataByWeek[smallestWeek]) {
+      rowsProcessed -= dataByWeek[smallestWeek].length;
+    }
+  }
+  
+  // Process each week's data into the actuals array
+  const weeksProcessed = Object.keys(dataByWeek).length;
+
+  Object.entries(dataByWeek).forEach(([week, weekData]) => {
+    const weekNumber = parseInt(week);
+    
+    // Generate hash for this week's data - update to use renamed function
+    const dataHash = _generateImportDataHash(weekData);
+    
+    // Find existing entry for this week
+    const existingEntry = store.activeAccount.actuals.find(a => parseInt(a.week) === weekNumber);
+    
+    if (existingEntry) {
+      // Make sure the data array is reactive
+      if (!existingEntry.data) {
+        existingEntry.data = [];
+      }
+      
+      // Check if data has changed using the hash
+      const dataChanged = !existingEntry.transactionHash || 
+                         existingEntry.transactionHash !== dataHash;
+      
+      // Create a new array to ensure reactivity
+      const dataArray = [...weekData];
+      
+      // Force reactivity by replacing the entire property
+      existingEntry.data = dataArray;
+      
+      // Update the transaction hash
+      existingEntry.transactionHash = dataHash;
+      
+      // Flag for recalculation if transactions have changed OR force recalculate is enabled
+      if (dataChanged || forceRecalculateAll.value) {
+        existingEntry.needsRecalculation = true;
+        weeksChanged.push(weekNumber);
+      }
+    } else {
+      // Create new entry with data array and hash
+      store.activeAccount.actuals.push({
+        week: weekNumber,
+        growth: 0, // Will be calculated during recalculation
+        notes: `Imported from CSV on ${new Date().toLocaleDateString()}`,
+        data: [...weekData],
+        transactionHash: dataHash,
+        needsRecalculation: true
+      });
+      
+      weeksChanged.push(weekNumber);
+    }
+  });
+
+  return {
+    transactionsImport,
+    positionsImport,
+    processDataResults: {
+      rowsProcessed,
+      weeksProcessed,
+      weeksUpdated: weeksChanged.length,
+      weeksChanged
+    }
+  };
+}
+
+function _processTransactions(transactionsImport) {
+  let transactionsAdded = 0;
+  let transactionsDeleted = 0;
+  
+  // Get the account start date
+  const startDate = new Date(store.activeAccount.settings.startDate);
+  
+  // Delete existing transactions if requested (for deposits/withdrawals)
   if (deleteAndReloadTransactions.value) {
     if (store.activeAccount.transactions && store.activeAccount.transactions.length) {
       // Calculate the current week based on today's date
@@ -284,7 +474,7 @@ function processTransactions(transactions, shouldDiscardFirstWeek = false) {
         t.startWeek <= currentWeek
       );
       
-      transfersDeleted = transactionsToDelete.length;
+      transactionsDeleted = transactionsToDelete.length;
       
       // Filter out transactions for weeks at or before the current week
       store.activeAccount.transactions = store.activeAccount.transactions.filter(t => 
@@ -294,129 +484,184 @@ function processTransactions(transactions, shouldDiscardFirstWeek = false) {
   }
   
   // Process each transaction
-  transactions.forEach(transaction => {
-    // Calculate which week this transaction belongs to
-    const transactionDate = new Date(transaction.date)
-    const diffTime = transactionDate - startDate
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
+  transactionsImport.forEach(transaction => {
+    // Create a proper transaction object
+    const week = transaction.week;
     
-    // Skip transactions before the start date
-    if (diffDays < 0) return
+    // Determine if it's a deposit or withdrawal based on amount
+    const isDeposit = transaction.amount >= 0;
+    const transactionObject = {
+      category: isDeposit ? '' : 'Income',
+      amount: Math.abs(transaction.amount),
+      type: isDeposit ? 'deposit' : 'withdrawal',
+      description: transaction.description,
+      startWeek: week,
+      endWeek: week
+    };
     
-    const week = Math.floor(diffDays / 7) + 1
+    // Check if a matching transaction already exists
+    const existingTransaction = store.activeAccount.transactions.find(t => 
+      t.type === transactionObject.type && 
+      t.startWeek === week && 
+      (t.endWeek === week || t.endWeek == "") && 
+      t.amount === transactionObject.amount
+    );
     
-    // Process based on target
-    if (transaction.target === 'transaction') {
-      // Add to account transactions instead of weekly totals
-      const transferType = transaction.amount >= 0 ? 'deposit' : 'withdrawal';
-      const transferCategory = transaction.amount >= 0 ? '' : 'Income';
-      const transferAmount = Math.abs(transaction.amount); // Always positive for transaction objects
-      
-      // Check if a matching transaction already exists
-      const existingTransaction = store.activeAccount.transactions.find(t => 
-        t.type === transferType && 
-        t.startWeek === week && 
-        t.endWeek === week && 
-        t.amount === transferAmount
-      );
-      
-      // Only add if no matching transaction exists
-      if (!existingTransaction) {
-        store.activeAccount.transactions.push({
-          category: transferCategory,
-          amount: transferAmount,
-          type: transferType,
-          startWeek: week,
-          endWeek: week,
-          description: transaction.description
-        });
-        transfersAdded++;
-      }
-      
-      transactionsProcessed++;
-      return; // Skip regular processing
+    // Only add if no matching transaction exists
+    if (!existingTransaction) {
+      store.activeAccount.transactions.push(transactionObject);
+      transactionsAdded++;
     }
-    
-    // Regular transaction processing for actuals
-    // Track smallest week for potential discarding
-    if (week < smallestWeek) {
-      smallestWeek = week;
-    }
-    
-    // Initialize arrays for tracking amounts if needed
-    if (!weeklyAmounts[week]) {
-      weeklyAmounts[week] = [];
-    }
-    
-    // Store the individual transaction amount
-    weeklyAmounts[week].push(transaction.amount);
-    
-    // Aggregate transactions by week
-    if (!weeklyTotals[week]) {
-      weeklyTotals[week] = 0;
-    }
-    weeklyTotals[week] += transaction.amount;
-    
-    transactionsProcessed++;
   });
   
-  // If requested, discard the first week's data
-  if (shouldDiscardFirstWeek && smallestWeek !== Infinity) {
-    delete weeklyTotals[smallestWeek]
-    delete weeklyAmounts[smallestWeek]
-    // Adjust the processed count
-    if (weeklyAmounts[smallestWeek]) {
-      transactionsProcessed -= weeklyAmounts[smallestWeek].length
-    }
+  return {
+    transactionsProcessed: transactionsImport.length,
+    transactionsAdded,
+    transactionsDeleted
+  };
+}
+
+// Isolated function to calculate weekly total from transactions
+function _calculateWeekTotal(weekData, brokerMap) {
+  // Use broker map to identify types that contribute to weekly total
+  const weeklyTotalTypes = brokerMap.weeklyTotalTypes || [];
+  
+  let total = 0;
+  let detailedAmounts = [];
+  let deposits = [];
+  let withdrawals = [];
+  
+  if (!weekData || !weekData.length) {
+    return { total: 0, detailedAmounts: [], deposits, withdrawals };
   }
   
-  // Track which weeks were actually updated (values changed)
-  const weeksChanged = [];
-  const weeksProcessed = Object.keys(weeklyTotals).length;
-  
-  // Update actuals in the store
-  Object.entries(weeklyTotals).forEach(([week, amount]) => {
-    week = parseInt(week)
+  // Process each transaction
+  weekData.forEach(dataRow => {
+    const action = dataRow.action.toLowerCase();
     
-    // Round the final amount to 2 decimal places
-    amount = Math.round(amount * 100) / 100;
-    
-    // Find existing entry for this week
-    const existingEntry = store.activeAccount.actuals.find(a => parseInt(a.week) === week)
-    
-    if (existingEntry) {
-      // Only update if the amount is actually different
-      if (Number(existingEntry.growth) !== amount) {
-        existingEntry.growth = amount;
-        weeksChanged.push(week); // Track that this week was updated
-      }
-    } else {
-      // Create new entry (always counts as updated since it's new)
-      store.activeAccount.actuals.push({
-        week: week,
-        growth: amount,
-        notes: `Imported from CSV on ${new Date().toLocaleDateString()}`
-      });
-      weeksChanged.push(week); // Track that this week was added
+    // Only include transactions that should affect weekly total
+    if (weeklyTotalTypes.includes(action)) {
+      // Regular transaction - add to weekly total
+      total += dataRow.amount;
+      detailedAmounts.push(dataRow.amount);
     }
   });
   
-  // Recalculate projections with new actuals data
-  store.calculateProjections()
+  // Round the final amount to 2 decimal places
+  total = Math.round(total * 100) / 100;
   
-  // Return summary of changes
-  return {
-    totalProcessed: transactionsProcessed,
-    transfersAdded: transfersAdded,
-    transfersDeleted: transfersDeleted,
-    weeksProcessed: weeksProcessed,
-    weeksUpdated: weeksChanged.length,
-    weeksChanged, // Include the actual array of week numbers that were updated
-    weeklyTotals,
-    weeklyAmounts,
-    errors: [] // Initialize empty errors array that will be populated later
+  return { 
+    total, 
+    detailedAmounts,
+    deposits,
+    withdrawals
+  };
+}
+
+// Function to recalculate week totals for actuals that need it
+function recalculateWeekTotals() {
+  if (!store.activeAccount || !store.activeAccount.actuals) {
+    return { weeksProcessed: 0, weeksUpdated: 0 };
+  }
+
+  // Get the brokerage map for the current account
+  const brokerMap = _getBrokerageMap();
+
+  // Find weeks that need recalculation
+  const weeksToRecalculate = store.activeAccount.actuals
+    .filter(actual => actual.needsRecalculation === true)
+    .sort((a, b) => a.week - b.week);
+
+  if (weeksToRecalculate.length === 0) {
+    // No weeks need recalculation
+    return { weeksProcessed: 0, weeksUpdated: 0 };
+  }
+
+  // Check for weeks with missing transaction data
+  const weeksWithoutData = weeksToRecalculate
+    .filter(actual => !actual.data || actual.data.length === 0)
+    .map(actual => actual.week);
+
+  if (weeksWithoutData.length > 0) {
+    // Alert user about weeks without transaction data
+    store.confirm(
+      `Warning: Weeks ${weeksWithoutData.join(', ')} have no transaction data. Do you want to continue with recalculation?`,
+      // On confirm
+      () => _performRecalculation(weeksToRecalculate, brokerMap),
+      // On cancel
+      () => console.log('Recalculation canceled due to missing transaction data')
+    );
+    return { weeksProcessed: 0, weeksUpdated: 0, weeksWithoutData };
+  } else {
+    // No missing data issues, proceed with recalculation
+    return _performRecalculation(weeksToRecalculate, brokerMap);
   }
 }
+
+// Internal helper to perform the actual recalculation
+function _performRecalculation(weeksToRecalculate, brokerMap) {
+  let weeksUpdated = 0;
+  
+  // Process each week that needs recalculation
+  weeksToRecalculate.forEach(actual => {
+    // Use the calculation function to get new values
+    const { total } = _calculateWeekTotal(actual.data || [], brokerMap);
+    
+    // Update the week's growth value if changed
+    if (Number(actual.growth) !== total) {
+      actual.growth = total;
+      weeksUpdated++;
+    }
+    
+    // Clear the recalculation flag after processing
+    actual.needsRecalculation = false;
+  });
+  
+  // Recalculate projections if any week was updated
+  if (weeksUpdated > 0) {
+    store.calculateProjections();
+  }
+  
+  return {
+    weeksProcessed: weeksToRecalculate.length,
+    weeksUpdated
+  };
+}
+
+// Function to generate a hash for an array of data rows
+function _generateImportDataHash(dataRows) {
+  if (!dataRows || !dataRows.length) {
+    return 'empty';
+  }
+  
+  // Sort the array to ensure consistent ordering (still important for stable hash)
+  const sortedDataRows = [...dataRows].sort((a, b) => {
+    if (a.date && b.date) {
+      const dateA = a.date.getTime();
+      const dateB = b.date.getTime();
+      if (dateA !== dateB) return dateA - dateB;
+    }
+    // Secondary sort by amount if dates are equal
+    return a.amount - b.amount;
+  });
+  
+  // Convert to string for hashing
+  const dataString = JSON.stringify(sortedDataRows);
+  
+  // Use a more efficient FNV-1a hashing algorithm
+  let hash = 2166136261; // FNV offset basis
+  for (let i = 0; i < dataString.length; i++) {
+    hash ^= dataString.charCodeAt(i);
+    // Multiply by the FNV prime
+    hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
+  }
+  
+  // Convert to unsigned 32-bit integer then to hex
+  return (hash >>> 0).toString(16);
+}
+
+// Expose the recalculate method to the app store
+store.recalculateActuals = recalculateWeekTotals;
 
 // Expose the show method to the app store
 store.showImportTransactionsModal = show
@@ -424,7 +669,7 @@ store.showImportTransactionsModal = show
 
 <template>
   <div class="modal" tabindex="-1" :class="{ 'd-block': isVisible }" v-show="isVisible">
-    <div class="modal-dialog">
+    <div class="modal-dialog modal-lg">
       <div class="modal-content">
         <div class="modal-header">
           <h5 class="modal-title">Import Transactions</h5>
@@ -478,7 +723,23 @@ store.showImportTransactionsModal = show
                 Delete and reload transactions
               </label>
               <div class="form-text">
-                When checked, all historic deposit/withdrawal entries will be deleted and recreated from the import.
+                When checked, all deposit/withdrawal entries before the current will be deleted and recreated from the import.
+              </div>
+            </div>
+            
+            <!-- Force recalculate all weeks option -->
+            <div class="form-check mb-3">
+              <input 
+                class="form-check-input" 
+                type="checkbox" 
+                id="forceRecalculateAllOption" 
+                v-model="forceRecalculateAll"
+              >
+              <label class="form-check-label" for="forceRecalculateAllOption">
+                Force recalculate all weeks
+              </label>
+              <div class="form-text">
+                When checked, all weeks will be recalculated after the import, regardless of changes.
               </div>
             </div>
             
@@ -497,50 +758,17 @@ store.showImportTransactionsModal = show
               <h5>Import Completed Successfully</h5>
               <p>{{ importResults.totalProcessed }} transactions processed</p>
               <p>{{ importResults.weeksUpdated }} of {{ importResults.weeksProcessed }} weeks updated</p>
-              <p>{{ importResults.transfersAdded }} deposits/withdrawals added</p>
-              <p v-if="importResults.transfersDeleted">{{ importResults.transfersDeleted }} deposits/withdrawals deleted</p>
+              <p v-if="importResults.transfersDeleted">{{ importResults.transfersDeleted }} transactions deleted</p>
+              <p>{{ importResults.transfersAdded }} deposit/withdrawal transactions added</p>
               <p v-if="importResults.skippedRows">{{ importResults.skippedRows }} rows skipped due to errors</p>
-            </div>
-            
-            <div class="weekly-results">
-              <h6>Processed Weeks:</h6>
-              <ul class="list-group">
-                <li 
-                  v-for="(amount, week) in importResults.weeklyTotals" 
-                  :key="week"
-                  class="list-group-item"
-                >
-                  <div class="d-flex justify-content-between align-items-center">
-                    <span>
-                      Week {{ week }}: <span v-html="store.weekRange(week)"></span>
-                      <!-- Add a badge to indicate which weeks were actually updated -->
-                      <span v-if="importResults.weeksChanged && importResults.weeksChanged.includes(parseInt(week))" 
-                            class="badge bg-success ms-2">Updated</span>
-                    </span>
-                    <span class="badge bg-primary rounded-pill">{{ store.currency(amount) }}</span>
-                  </div>
-                  
-                  <!-- Expandable transaction amounts -->
-                  <div v-if="importResults.weeklyAmounts && importResults.weeklyAmounts[week]" class="mt-2">
-                    <a 
-                      data-bs-toggle="collapse" 
-                      :href="'#amounts-week-' + week" 
-                      role="button" 
-                      aria-expanded="false"
-                      class="text-decoration-none small"
-                    >
-                      Show transaction amounts
-                    </a>
-                    <div class="collapse" :id="'amounts-week-' + week">
-                      <div class="card card-body py-2 px-3 mt-2 bg-light">
-                        <small>
-                          {{ importResults.weeklyAmounts[week].join(', ') }}
-                        </small>
-                      </div>
-                    </div>
-                  </div>
-                </li>
-              </ul>
+              <!-- Add recalculation results if available -->
+              <p v-if="importResults.recalculation?.weeksProcessed">
+                {{ importResults.recalculation.weeksUpdated }} of {{ importResults.recalculation.weeksProcessed }} weeks recalculated
+              </p>
+              <!-- Warning about missing data if applicable -->
+              <p v-if="importResults.recalculation?.weeksWithoutData" class="text-warning">
+                Warning: Weeks {{ importResults.recalculation.weeksWithoutData.join(', ') }} have no transaction data
+              </p>
             </div>
 
             <!-- Only show errors section if there are errors -->

@@ -123,36 +123,43 @@ export const useAppStore = defineStore('app', {
 
       for (let week = 1; week <= this.weeks; week++) {
         const transactions = this._getTransactionsForWeek(week)
-        
-        // Calculate positions being sold this week
-        const positionsSoldThisWeek = (this.activeAccount.positions || []).reduce((sum, position) => {
+
+        // Single pass over positions for all share/cash calculations
+        let sharesSold = 0
+        let sharesBought = 0
+        let startSharesBalance = 0
+        let sharesSoldPreviousWeek = 0
+        let sharesBoughtPreviousWeek = 0
+        const positions = this.activeAccount.positions || []
+        for (let i = 0; i < positions.length; i++) {
+          const position = positions[i]
+          // Sold this week
           if (position.soldWeek === week) {
-            return sum + (position.strikePrice * position.shares)
+            sharesSold += (position.sellAmount || 0)
           }
-          return sum
-        }, 0)
-
-        // Calculate newly assigned positions for this week
-        const sharesBalanceAddedThisWeek = (this.activeAccount.positions || []).reduce((sum, position) => {
+          // Sold previous week
+          if (position.soldWeek === week - 1) {
+            sharesSoldPreviousWeek += (position.sellAmount || 0)
+          }
+          // Bought (assigned) this week
           if (position.assignedWeek === week) {
-            return sum + (position.strikePrice * position.shares)
+            sharesBought += (position.strikePrice * position.shares)
           }
-          return sum
-        }, 0)
-
-        // Calculate total shares balance including previously assigned positions, excluding sold positions
-        const sharesBalance = (this.activeAccount.positions || []).reduce((sum, position) => {
-          if (position.assignedWeek <= week && (!position.soldWeek || position.soldWeek > week)) {
-            return sum + (position.strikePrice * position.shares)
+          // Bought (assigned) previous week
+          if (position.assignedWeek === week - 1) {
+            sharesBoughtPreviousWeek += (position.strikePrice * position.shares)
           }
-          return sum
-        }, 0)
+          // Shares held at start of week (assigned before this week, not yet sold)
+          if (position.assignedWeek < week && (!position.soldWeek || position.soldWeek >= week)) {
+            startSharesBalance += (position.strikePrice * position.shares)
+          }
+        }
 
         // Calculate projected growth based on total account value (cash + shares)
-        const projectedGrowth = (startBalance + sharesBalance) * (this.activeAccount.settings.weeklyReturn / 100)
+        const projectedGrowth = (startBalance + startSharesBalance) * (this.activeAccount.settings.weeklyReturn / 100)
 
         // Add sold positions back to cash balance and subtract newly assigned positions
-        startBalance = startBalance + positionsSoldThisWeek - sharesBalanceAddedThisWeek
+        startBalance = startBalance + sharesSoldPreviousWeek - sharesBoughtPreviousWeek
 
         // Calculate week's end date
         const weekStartDate = new Date(this.activeAccount.settings.startDate)
@@ -203,7 +210,7 @@ export const useAppStore = defineStore('app', {
           : null
 
         // Calculate this week's actual ROR if available
-        const weekROR = actualEntry ? (Number(actualEntry.growth) / (startBalance + sharesBalance) * 100) : null
+        const weekROR = actualEntry ? (Number(actualEntry.growth) / (startBalance + startSharesBalance) * 100) : null
 
         // Track RORs when available
         if (weekROR !== null) {
@@ -227,14 +234,17 @@ export const useAppStore = defineStore('app', {
           ? actualRORs.reduce((sum, ror) => sum + ror, 0) / actualRORs.length
           : null
 
-        // Adjust end balance calculation - ADD sharesBalance here for total assets
-        const endBalance = startBalance + growth + transactions.deposits - transactions.totalWithdrawals + sharesBalance
+        // Adjust end balance calculation - ADD startSharesBalance here for total assets
+        const endBalance = startBalance + growth + transactions.deposits - transactions.totalWithdrawals + startSharesBalance
 
         this.projections.push({
           week,
           startBalance,
-          sharesBalanceAddedThisWeek,
-          sharesBalance,
+          startSharesBalance,
+          sharesBought,
+          sharesSold,
+          sharesBoughtPreviousWeek,
+          sharesSoldPreviousWeek,
           deposit: transactions.deposits,
           withdrawal: transactions.totalWithdrawals,
           withdrawalsByCategory: transactions.withdrawals,
@@ -253,8 +263,8 @@ export const useAppStore = defineStore('app', {
           endBalance
         })
 
-        // Next week's start balance should be cash only (endBalance minus sharesBalance)
-        startBalance = endBalance - sharesBalance
+        // Next week's start balance should be cash only (endBalance minus startSharesBalance)
+        startBalance = endBalance - startSharesBalance
       }
 
       // Calculate growth average all time, must be calculated after all projections are done
@@ -314,8 +324,15 @@ export const useAppStore = defineStore('app', {
 
     // Utility and formatting Methods
     currency(value) {
-      if (!value) return '$0.00'
-      return '$' + Number(value).toFixed(2).replace(/\d(?=(\d{3})+\.)/g, '$&,')
+      const num = Number(value)
+      if (!value || isNaN(num)) return '$0.00'
+      if (num < 0) {
+        // Format negative numbers with parentheses
+        return '($' + Math.abs(num).toFixed(2).replace(/\d(?=(\d{3})+\.)/g, '$&,') + ')'
+      } else {
+        // Format positive numbers normally
+        return '$' + num.toFixed(2).replace(/\d(?=(\d{3})+\.)/g, '$&,')
+      }
     },
 
     weekRange(weekNum, plainText = false) {

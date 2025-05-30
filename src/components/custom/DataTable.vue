@@ -51,8 +51,12 @@ defineExpose({
       <div class="container-fluid pb-1">
         <!-- Header Row -->
         <div class="row sticky-top header-row bg-white pb-2 pt-0 mb-2">
-          <div class="col-12 d-none d-xl-block">
-            <div class="card border-0">
+          <div class="col-12 d-flex flex-column align-items-stretch d-none d-xl-block">
+            <!-- Render header-actions slot if provided, above the column labels -->
+            <div class="p-2 align-self-end">
+              <slot name="header-actions"></slot>
+            </div>
+            <div class="card border-0 flex-grow-1">
               <div class="card-body py-2">
                 <div class="row d-none d-xl-flex">
                   <template v-for="column in columns" :key="column.key">

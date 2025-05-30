@@ -68,7 +68,11 @@ function removePosition(index) {
     store.confirm(
       'Are you sure you want to delete this position?',
       () => {
-        store.activeAccount.positions.splice(index, 1)
+        const [position] = store.activeAccount.positions.splice(index, 1)
+        if (position) {
+          position.soldWeek = null
+          store.syncPositionTransaction(position)
+        }
         store.saveBacon()
       }
     )
@@ -76,13 +80,14 @@ function removePosition(index) {
 }
 
 onMounted(() => {
-  migratePositionProfits()
+  migratePositionData()
 })
 
-function migratePositionProfits() {
+function migratePositionData() {
   let migrationPerformed = false
   
   store.activeAccount.positions.forEach(position => {
+    // Migrate put/call profits to offsettingProfits
     if (position.hasOwnProperty('putProfits') || position.hasOwnProperty('callProfits')) {
       const putValue = position.hasOwnProperty('putProfits') ? position.putProfits : 0;
       const callValue = position.hasOwnProperty('callProfits') ? position.callProfits : 0;
@@ -100,7 +105,22 @@ function migratePositionProfits() {
       
       migrationPerformed = true;
     }
+
+    // Ensure each position has a positionKey
+    if (!position.hasOwnProperty('positionKey')) {
+      position.positionKey = store.getPositionKey(position);
+      migrationPerformed = true;
+    }
   });
+
+  // Sort positions by assigned week after migration
+  const posBeforeSort = JSON.stringify(store.activeAccount.positions)
+  store.activeAccount.positions.sort((a, b) => a.assignedWeek - b.assignedWeek)
+  const posAfterSort = JSON.stringify(store.activeAccount.positions)
+  if (posBeforeSort !== posAfterSort) {
+    migrationPerformed = true; 
+    console.log("Positions sorted by assigned week");
+  }
   
   if (migrationPerformed) {
     console.log("Migration completed - saving changes");

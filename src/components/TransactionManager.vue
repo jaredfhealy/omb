@@ -134,7 +134,7 @@ store.clearFilters = clearFilters
           {{ item.type.charAt(0).toUpperCase() + item.type.slice(1) }}
         </span>
         <span v-if="item.category" class="category-text">
-          {{ item.category.charAt(0).toUpperCase() + item.category.slice(1) }}
+          {{ (item.category.charAt(0).toUpperCase() + item.category.slice(1)).replace('_', ' ') }}
         </span>
       </div>
     </template>

@@ -13,6 +13,7 @@ let position = reactive({
   currentPrice: 0,
   assignedWeek: null,
   soldWeek: null,
+  sellAmount: null, // NEW: dedicated sell amount field
   offsettingProfits: 0, // Renamed from putProfits
   startWeek: null
 })
@@ -64,10 +65,53 @@ const toggleShowAllWeeks = () => {
   showAllWeeks.value = !showAllWeeks.value
 }
 
+// Helper to generate a unique key for a position
+function getPositionKey(pos) {
+  return `${pos.symbol}_${pos.shares}_${pos.strikePrice}`
+}
+store.getPositionKey = getPositionKey
+
+// Transaction sync logic as a reusable function
+function syncPositionTransaction(pos) {
+  // Only sync if soldWeek and sellAmount are both present
+  if (!pos.soldWeek || pos.sellAmount === null || pos.sellAmount === '' || isNaN(pos.sellAmount)) {
+    return
+  }
+
+  // Get position key and find existing transaction index
+  const key = pos.positionKey || getPositionKey(pos)
+  const txIndex = store.activeAccount.transactions.findIndex(t => t.positionKey === key)
+  
+  // Calculate netPL using only sellAmount and cost basis (no offsettingProfits)
+  const netPL = Number(pos.sellAmount) - (pos.strikePrice * pos.shares)
+  const absAmount = Math.abs(Number(netPL.toFixed(2)))
+
+  // Always create/update transaction if we got here
+  const tx = {
+    type: netPL >= 0 ? 'deposit' : 'withdrawal',
+    startWeek: pos.soldWeek,
+    endWeek: pos.soldWeek,
+    amount: absAmount.toString(),
+    category: 'realized_PL',
+    positionKey: key
+  }
+  if (txIndex !== -1) {
+    // Update existing
+    store.activeAccount.transactions[txIndex] = tx
+  } else {
+    // Add new
+    store.activeAccount.transactions.push(tx)
+  }
+}
+
 // Reset showAllWeeks when modal is opened
 const show = (existingPosition = null, index = null) => {
-  // Reset to default state - only show current and future weeks
-  showAllWeeks.value = false
+  // If editing and soldWeek is set, show all weeks by default
+  if (existingPosition && existingPosition.soldWeek) {
+    showAllWeeks.value = true
+  } else {
+    showAllWeeks.value = false
+  }
   
   if (existingPosition) {
     isEdit.value = true
@@ -126,20 +170,40 @@ const save = () => {
     position.startWeek = position.assignedWeek
   }
   
-  if (isEdit.value && editIndex.value !== null) {
-    // Update existing position
-    store.activeAccount.positions[editIndex.value] = { ...position }
-  } else {
-    // Add new position
-    store.activeAccount.positions.push({ ...position })
+  // If soldWeek is set, require sellAmount
+  if (position.soldWeek && (position.sellAmount === null || isNaN(position.sellAmount) || position.sellAmount === '')) {
+    alert('Sell Amount is required when Sold Week is set')
+    return
+  }
+  // If sellAmount is set, ensure it's a number
+  if (position.sellAmount !== null && position.sellAmount !== '' && isNaN(position.sellAmount)) {
+    alert('Sell Amount must be a number')
+    return
   }
   
+  const posCopy = { ...position }
+  posCopy.positionKey = getPositionKey(posCopy)
+
+  if (isEdit.value && editIndex.value !== null) {
+    // Update existing position
+    store.activeAccount.positions[editIndex.value] = { ...posCopy }
+  } else {
+    // Add new position
+    store.activeAccount.positions.push({ ...posCopy })
+  }
+
+  // Call the reusable transaction sync function
+  syncPositionTransaction(posCopy)
+
   close()
-  store.saveBacon()
+  store.calculateProjections()
 }
 
 // Expose the show function to the store
 store.showPositionModal = (existingPosition = null, index = null) => show(existingPosition, index)
+
+// Expose the sync function for use in imports
+store.syncPositionTransaction = syncPositionTransaction
 
 // Add real-time P/L calculations as computed properties
 const perSharePL = computed(() => {
@@ -310,7 +374,7 @@ const weeklyROR = computed(() => {
                 <!-- Price Info -->
                 <div class="row">
                   <div class="col-md-6 mb-3">
-                    <label for="position-strikePrice" class="form-label">Strike Price</label>
+                    <label for="position-strikePrice" class="form-label">Strike/Buy Price</label>
                     <div class="input-group">
                       <span class="input-group-text">$</span>
                       <input type="number" class="form-control" id="position-strikePrice" v-model.number="position.strikePrice" 
@@ -325,6 +389,20 @@ const weeklyROR = computed(() => {
                       <input type="number" class="form-control" id="position-currentPrice" v-model.number="position.currentPrice" 
                              min="0" step="0.01">
                     </div>
+                  </div>
+                </div>
+                
+                <!-- Start Week -->
+                <div class="mb-3">
+                  <label for="position-startWeek" class="form-label">Start Week</label>
+                  <select class="form-select" id="position-startWeek" v-model="position.startWeek">
+                    <option :value="null">Select Week</option>
+                    <option v-for="p in store.projections" :key="p.week" :value="p.week">
+                      Week {{ p.week }} ({{ store.weekRange(p.week, true) }})
+                    </option>
+                  </select>
+                  <div class="form-text">
+                    The first week premiums were collected (defaults to Assigned Week, but can be set earlier for migrated/edited positions).
                   </div>
                 </div>
                 
@@ -366,6 +444,17 @@ const weeklyROR = computed(() => {
                   </div>
                   <div class="form-text" v-else-if="availableSoldWeeks.length === 0 && !showAllWeeks">
                     No valid weeks available. Try "Show All Weeks" to see past weeks.
+                  </div>
+                </div>
+                <!-- Sell Amount input, only show if soldWeek is set -->
+                <div class="mb-3" v-if="position.soldWeek">
+                  <label for="position-sellAmount" class="form-label">Sell Amount <span class="text-danger">*</span></label>
+                  <div class="input-group">
+                    <span class="input-group-text">$</span>
+                    <input type="number" class="form-control" id="position-sellAmount" v-model.number="position.sellAmount" min="0" step="0.01" required>
+                  </div>
+                  <div class="form-text">
+                    Enter the total proceeds from the sale (after fees/commissions). Required when Sold Week is set.
                   </div>
                 </div>
                 
