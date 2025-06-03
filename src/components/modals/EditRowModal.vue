@@ -5,14 +5,18 @@ import { useAppStore } from '@/stores/app'
 const store = useAppStore()
 const row = ref(null)
 const showModal = computed(() => row.value !== null)
+if (!Array.isArray(store.activeAccount.notes)) store.activeAccount.notes = []
 
 const show = (week) => {
-  const existingActual = store.activeAccount.actuals.find(a => Number(a.week) === week)
+  // Find the week in actuals to get the growth value
+  const actual = store.activeAccount.actuals.find(a => Number(a.week) === week)
+
+  // Find the note for this week in the notes array
+  const noteEntry = store.activeAccount.notes.find(n => Number(n.week) === week)
   row.value = {
     week,
-    growth: existingActual?.growth || null,
-    notes: existingActual?.notes || '',
-    needsRecalculation: existingActual?.needsRecalculation || false
+    growth: actual?.growth ?? null,
+    note: noteEntry?.note || ''
   }
 }
 
@@ -21,49 +25,23 @@ const close = () => {
 }
 
 const save = () => {
-  const weekIndex = store.activeAccount.actuals.findIndex(a => Number(a.week) === row.value.week)
-  const hasData = row.value.growth || row.value.notes.trim() || row.value.needsRecalculation
-  const recalculateTotal = row.value.needsRecalculation === true;
+  const week = row.value.week
 
-  if (weekIndex === -1 && hasData) {
-    // Creating a new entry - add minimal required fields
-    store.activeAccount.actuals.push({
-      week: row.value.week.toString(),
-      growth: row.value.growth,
-      notes: row.value.notes.trim() || null,
-      needsRecalculation: row.value.needsRecalculation
+  // Find the actual for this week to get the weekStart date
+  const actual = store.activeAccount.actuals.find(a => Number(a.week) === week)
+  const weekStart = actual?.weekStart || null
+
+  // Remove any existing note for this week
+  store.activeAccount.notes = store.activeAccount.notes.filter(n => Number(n.week) !== week)
+  // Only save if note is not empty
+  if (row.value.note && row.value.note.trim()) {
+    store.activeAccount.notes.push({
+      week,
+      weekStart,
+      note: row.value.note.trim()
     })
-  } else if (weekIndex !== -1) {
-    if (hasData) {
-      // Updating existing entry - only update the fields we're editing
-      const existingActual = store.activeAccount.actuals[weekIndex];
-      
-      // Update only specific properties
-      existingActual.growth = row.value.growth;
-      existingActual.notes = row.value.notes.trim() || null;
-      existingActual.needsRecalculation = row.value.needsRecalculation;
-      
-      // Force reactivity by replacing the object in the array
-      store.activeAccount.actuals = [
-        ...store.activeAccount.actuals.slice(0, weekIndex),
-        existingActual,
-        ...store.activeAccount.actuals.slice(weekIndex + 1)
-      ];
-    } else {
-      // No data - remove the entry
-      store.activeAccount.actuals.splice(weekIndex, 1)
-    }
   }
-
-  // If recalculation is needed, trigger it
-  if (row.value.needsRecalculation) {
-    // Recalculate also triggers calculateProjections
-    store.recalculateActuals();
-  } else {
-    // Just update projections without full recalculation
-    store.calculateProjections();
-  }
-  
+  store.saveBacon()
   close()
 }
 
@@ -82,21 +60,12 @@ store.showWeeklyRowModal = (week) => show(week)
         <div class="modal-body">
           <div class="mb-3">
             <label class="form-label">Actual Growth ($)</label>
-            <input type="number" class="form-control" v-model.number="row.growth" step="0.01">
+            <input type="number" class="form-control" v-model.number="row.growth" step="0.01" disabled>
           </div>
           <div class="mb-3">
             <label class="form-label">Notes</label>
-            <textarea class="form-control" v-model="row.notes" rows="5"
+            <textarea class="form-control" v-model="row.note" rows="5"
               placeholder="Enter notes for this week..."></textarea>
-          </div>
-          <div class="form-check mb-3">
-            <input class="form-check-input" type="checkbox" id="needsRecalculation" v-model="row.needsRecalculation">
-            <label class="form-check-label" for="needsRecalculation">
-              Recalculate from transaction data
-            </label>
-            <div class="form-text">
-              If checked, growth value will be recalculated based on transaction data when saving.
-            </div>
           </div>
         </div>
         <div class="modal-footer">

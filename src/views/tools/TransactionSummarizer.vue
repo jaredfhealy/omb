@@ -5,305 +5,255 @@ import { useAppStore } from '@/stores/app'
 
 const store = useAppStore()
 
-const transactions = ref([])
 const summaryData = ref([])
 const expiredContracts = ref([])
-// Change from Map to Array to track all Buy to Close transactions
-const buyToCloseTransactions = ref([])
-// Track all matched transactions by ID
-const matchedTransactionIds = ref(new Set())
-const openTransactions = ref(new Map())
-const errorMessage = ref('')
-const isLoading = ref(false)
-const copyStatus = ref('')
-const summaryRef = ref(null)
 const symbolFilter = ref('')
+const selectedWeek = ref('')
+const endWeek = ref('')
+const selectedAccount = ref('all')
+const copyStatus = ref('')
+const isLoading = ref(false)
+const showRawData = ref(false)
 
-// Computed property for filtered summary data
-const filteredSummaryData = computed(() => {
-  if (!symbolFilter.value) return summaryData.value
+const accountOptions = computed(() => {
+  if (store.db && Array.isArray(store.db.accounts)) {
+    return [
+      { label: 'All Accounts', value: 'all' },
+      ...store.db.accounts.map((acc, idx) => ({ label: acc.name || `Account ${idx + 1}`, value: idx }))
+    ]
+  }
+  return [{ label: 'All Accounts', value: 'all' }]
+})
 
-  const filter = symbolFilter.value.toUpperCase()
-  return summaryData.value.filter(item => 
-    item.ticker && item.ticker.toUpperCase().includes(filter)
-  )
+// Update availableWeeks to show all weeks from account start to current week
+const availableWeeks = computed(() => {
+  // Get the account start date
+  let startDate = null
+  if (selectedAccount.value === 'all') {
+    if (store.db && Array.isArray(store.db.accounts) && store.db.accounts.length > 0) {
+      // Find the oldest startDate among all accounts
+      const validDates = store.db.accounts
+        .map(acc => acc.settings && acc.settings.startDate ? new Date(acc.settings.startDate) : null)
+        .filter(d => d && !isNaN(d))
+      if (validDates.length > 0) {
+        startDate = new Date(Math.min(...validDates.map(d => d.getTime())))
+      }
+    }
+  } else {
+    const acc = store.db.accounts[selectedAccount.value]
+    if (acc && acc.settings && acc.settings.startDate) {
+      startDate = new Date(acc.settings.startDate)
+    }
+  }
+  if (!startDate) return []
+  const today = new Date()
+  const diffTime = today - startDate
+  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
+  const currentWeek = Math.floor(diffDays / 7) + 1
+  // Weeks are 1-based
+  return Array.from({ length: currentWeek }, (_, i) => i + 1)
+})
+
+// Default to last week on load
+onMounted(() => {
+  if (availableWeeks.value.length > 0) {
+    selectedWeek.value = availableWeeks.value[availableWeeks.value.length - 1]
+  }
 })
 
 // Computed property for totals that respects the symbol filter
 const filteredTotalPremium = computed(() => {
-  return filteredSummaryData.value.reduce((total, item) => {
+  return summaryData.value.reduce((total, item) => {
     return total + parseFloat(item.premium || 0)
   }, 0)
 })
 
-function getAccountName(filename) {
-  return filename.split('_')[0]
-}
-
-function handleFileUpload(event) {
-  const files = event.target.files
-  if (!files.length) return
-  
-  // Reset states
-  errorMessage.value = ''
-  isLoading.value = true
-  transactions.value = []
-  summaryData.value = []
-  
-  // Process each file
-  const filePromises = Array.from(files).map(file => {
-    if (!file.name.endsWith('.json')) {
-      errorMessage.value = 'Please select JSON files only'
-      return Promise.reject('Invalid file type')
+watch(
+  () => availableWeeks.value,
+  (weeks) => {
+    if (weeks.length > 0) {
+      selectedWeek.value = weeks[weeks.length - 1]
     }
-    
-    const accountName = getAccountName(file.name)
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader()
-      
-      reader.onload = (e) => {
-        try {
-          const data = JSON.parse(e.target.result)
-          if (!data.BrokerageTransactions || !Array.isArray(data.BrokerageTransactions)) {
-            throw new Error('Invalid file format')
-          }
-          // Add account name to each transaction
-          const transactions = data.BrokerageTransactions.map(t => ({
-            ...t,
-            accountName
-          }))
-          resolve(transactions)
-        } catch (error) {
-          reject(error)
-        }
-      }
-      
-      reader.onerror = () => {
-        reject('Error reading file')
-      }
-      reader.readAsText(file)
-    })
-  })
+  }
+)
 
-  Promise.all(filePromises)
-    .then(allTransactions => {
-      // Combine all transactions into a single array
-      transactions.value = allTransactions.flat()
-      processSummary()
-    })
-    .catch(error => {
-      errorMessage.value = 'Error processing files: Please upload valid Schwab transactions JSON files'
-    })
-    .finally(() => {
-      isLoading.value = false
-      event.target.value = '' // Reset file input
-    })
-}
+// When start week changes, set end week to match if not after
+watch(selectedWeek, (newVal) => {
+  endWeek.value = newVal
+})
 
-function processSummary() {
-  // Clear existing data
-  buyToCloseTransactions.value = []
-  matchedTransactionIds.value = new Set()
-  openTransactions.value = new Map()
+// Moved summary calculation logic to calculateSummary function
+const calculateSummary = () => {
+  // Only populate expiredContracts if no symbol filter is applied
   expiredContracts.value = []
-  summaryData.value = []
-  
-  // Add a unique ID to each transaction for tracking
-  transactions.value.forEach((t, index) => {
-    t.id = index
-  })
-  
-  // First check for dividend and interest transactions - add directly to summaryData
-  transactions.value.forEach((t, index) => {
-    const action = t.Action ? t.Action.toLowerCase() : '';
-    if (action.includes('dividend') || action.includes('interest')) {
-      // This is a dividend or interest payment
-      const ticker = t.Symbol || 'N/A'
-      const amount = parseFloat(t.Amount.replace(/[$,]/g, ''))
-      
-      // Add directly to summaryData instead of separate array
-      summaryData.value.push({
-        type: action.includes('dividend') ? 'Dividend' : 'Interest',
-        ticker: ticker, // Keep the ticker if available
-        description: `${t.Action} | ${t.Description || ''}`,
-        premium: amount.toFixed(2), // Use premium field for consistency
-        strike: '-',
-        contractType: '-',
-        quantity: '-',
-        ror: '-',      // No ROR for dividends/interest
-        date: t.Date,
-        account: t.accountName
-      })
-    }
-  })
-  
-  // First pass - collect all Buy to Close and Assigned transactions
-  transactions.value.forEach((t, index) => {
-    if (t.Action === 'Buy to Close') {
-      const [ticker, expDate, strike, type] = t.Symbol.split(' ')
-      const amount = parseFloat(t.Amount.replace(/[$,]/g, ''))
-      const quantity = Math.abs(parseInt(t.Quantity))
-      const totalFees = parseFloat(t['Fees & Comm']?.replace(/[$,]/g, '') || '0')
-      const transactionDate = t.Date
-      
-      // Store each Buy to Close with all its details in an array
-      buyToCloseTransactions.value.push({
-        id: t.id,
-        ticker,
-        fromDate: expDate,
-        amount,
-        strike: parseFloat(strike),
-        type,
-        quantity,
-        totalFees,
-        date: transactionDate,
-        account: t.accountName,
-        matched: false
-      })
-    } else if (t.Action === 'Expired') {
-      const [ticker, , , type] = t.Symbol.split(' ')
-      expiredContracts.value.push(`${ticker} [${type}]`)
-    } else if (t.Action === 'Assigned') {
-      const [ticker, expDate, strike, type] = t.Symbol.split(' ')
-      const quantity = Math.abs(parseInt(t.Quantity))
-      const transactionDate = t.Date.split(' ')[0] // Take only the date part, not "as of" part
-      
-      summaryData.value.push({
-        type: 'Assigned',
-        ticker,
-        description: `Assigned at $${strike} expiring ${expDate}`,
-        premium: '0.00',
-        strike,
-        contractType: type,
-        quantity,
-        ror: '-',
-        date: transactionDate,
-        account: t.accountName
-      })
-    }
-  })
-
-  // Second pass - process Sell to Open and match with rolls
-  transactions.value.forEach((t, index) => {
-    if (t.Action === 'Sell to Open') {
-      const [ticker, expDate, strike, type] = t.Symbol.split(' ')
-      const transactionDate = t.Date
-      const sellAmount = parseFloat(t.Amount.replace(/[$,]/g, ''))
-      const quantity = Math.abs(parseInt(t.Quantity))
-      const totalFees = parseFloat(t['Fees & Comm']?.replace(/[$,]/g, '') || '0')
-      const strikePrice = parseFloat(strike)
-
-      // Try to find a matching Buy to Close from the same day for the same ticker/type
-      // that hasn't been matched yet
-      const matchingBuyToClose = buyToCloseTransactions.value.find(btc => 
-        !btc.matched && 
-        btc.ticker === ticker && 
-        btc.type === type && 
-        btc.date === transactionDate &&
-        !matchedTransactionIds.value.has(btc.id)
-      )
-
-      if (matchingBuyToClose) {
-        // Found a matching Buy to Close - create a roll
-        // Mark as matched
-        matchingBuyToClose.matched = true
-        matchedTransactionIds.value.add(matchingBuyToClose.id)
-        matchedTransactionIds.value.add(t.id)
-        
-        const netAmount = (sellAmount + matchingBuyToClose.amount).toFixed(2)
-        const combinedFees = totalFees + matchingBuyToClose.totalFees
-        
-        // Calculate cost basis and ROR
-        const costBasis = (quantity * strikePrice * 100) + combinedFees
-        const ror = ((parseFloat(netAmount) / costBasis) * 100).toFixed(2)
-        
-        // Determine strike display based on whether it changed
-        const strikeDisplay = matchingBuyToClose.strike === strikePrice 
-          ? strike 
-          : `${matchingBuyToClose.strike} to ${strike}`
-        
-        summaryData.value.push({
-          type: 'Roll',
-          ticker,
-          description: `Rolled from ${matchingBuyToClose.fromDate} to ${expDate}`,
-          premium: netAmount,
-          strike: strikeDisplay,
-          contractType: type,
-          quantity,
-          ror: ror,
-          date: transactionDate,
-          account: t.accountName
-        })
-      } else {
-        // See if this transaction is part of a roll chain
-        // Check if there's a Buy to Close on the same day for the same symbol with the same expiry
-        const isPartOfRollChain = transactions.value.some(otherT => 
-          otherT.Action === 'Buy to Close' && 
-          otherT.Date === transactionDate && 
-          otherT.Symbol.split(' ')[0] === ticker &&
-          otherT.Symbol.split(' ')[3] === type &&
-          otherT.Symbol.split(' ')[1] === expDate &&
-          matchedTransactionIds.value.has(otherT.id)
-        )
-
-        if (isPartOfRollChain) {
-          matchedTransactionIds.value.add(t.id)
-        } else {
-          // New open position
-          const costBasis = (quantity * strikePrice * 100) + totalFees
-          const ror = ((sellAmount / costBasis) * 100).toFixed(2)
-          
-          openTransactions.value.set(`${ticker}-${type}-${expDate}`, {
-            type: 'Open',
-            ticker,
-            description: `New position expiring ${expDate}`,
-            premium: sellAmount.toFixed(2),
-            strike,
-            contractType: type,
-            quantity,
-            ror: ror,
-            date: transactionDate,
-            account: t.accountName
+  const filterActive = !!symbolFilter.value
+  if (!selectedWeek.value || !endWeek.value) {
+    summaryData.value = []
+    return
+  }
+  let actualsToProcess = []
+  if (selectedAccount.value === 'all') {
+    if (store.db && Array.isArray(store.db.accounts)) {
+      store.db.accounts.forEach(acc => {
+        if (Array.isArray(acc.actuals)) {
+          acc.actuals.forEach(a => {
+            if (a.week >= selectedWeek.value && a.week <= endWeek.value) actualsToProcess.push({ actual: a, accountName: acc.name })
           })
         }
+      })
+    }
+  } else {
+    const acc = store.db.accounts[selectedAccount.value]
+    if (acc && Array.isArray(acc.actuals)) {
+      acc.actuals.forEach(a => {
+        if (a.week >= selectedWeek.value && a.week <= endWeek.value) actualsToProcess.push({ actual: a, accountName: acc.name })
+      })
+    }
+  }
+  console.log(actualsToProcess.length)
+  // Combine all transactions for this week from all selected accounts
+  let allRows = []
+  actualsToProcess.forEach(({ actual, accountName }) => {
+    if (Array.isArray(actual.data)) {
+      allRows.push(...actual.data.map(txn => {
+        // Exclude 'buy' and 'sell' actions from the summary
+        if (txn.action && (txn.action.toLowerCase() === 'buy' || txn.action.toLowerCase() === 'sell')) {
+          return null
+        }
+        let ticker = txn.symbol
+        let contractType = '-'
+        let strike = '-'
+        let qty = txn.quantity
+        const optMatch = txn.symbol.match(/^([\w.-]+) (\d{2}\/\d{2}\/\d{4}) ([\d.]+) ([CP])$/)
+        if (optMatch) {
+          ticker = optMatch[1]
+          strike = optMatch[3]
+          contractType = optMatch[4]
+        } else if (txn.symbol && txn.symbol.match(/^[A-Z.\-]+$/)) {
+          ticker = txn.symbol
+          contractType = 'Stock'
+          strike = '-'
+        }
+        // Symbol filter logic (enforced at data level)
+        if (symbolFilter.value) {
+          if (!ticker || ticker.toUpperCase() !== symbolFilter.value) {
+            return null
+          }
+        }
+        // Only collect expired contracts for the section if no filter is active
+        if (txn.action && txn.action.toLowerCase() === 'expired') {
+          // If showRawData is false, add to expiredContracts and skip adding to summary
+          if (!showRawData.value) {
+            expiredContracts.value.push(txn.symbol)
+            return null
+          }
+        }
+        let type = txn.action
+        if (type === 'Sell to Open') type = 'Open'
+        if (type === 'Buy to Close') type = 'Close'
+        return {
+          date: txn.date,
+          account: accountName,
+          ticker,
+          contractType,
+          strike,
+          quantity: qty,
+          description: txn.description,
+          premium: txn.amount,
+          ror: '-',
+          type,
+          symbol: txn.symbol,
+          action: txn.action
+        }
+      }).filter(Boolean))
+    }
+  })
+  if (showRawData.value) {
+    summaryData.value = allRows
+    return
+  }
+  // Group rolls (Open/Close can be in any order)
+  let groupedRows = []
+  let usedIndexes = new Set()
+  for (let i = 0; i < allRows.length; i++) {
+    if (usedIndexes.has(i)) continue
+    const curr = allRows[i]
+    let foundPair = false
+    for (let j = i + 1; j < allRows.length; j++) {
+      if (usedIndexes.has(j)) continue
+      const next = allRows[j]
+      // Must be one Open, one Close, same ticker, quantity, contractType
+      const isRollPair =
+        ((curr.type === 'Open' && next.type === 'Close') || (curr.type === 'Close' && next.type === 'Open')) &&
+        curr.ticker === next.ticker &&
+        curr.quantity === next.quantity &&
+        curr.contractType === next.contractType
+      if (isRollPair) {
+        // Parse dates from symbol
+        const currDateMatch = curr.symbol.match(/\d{2}\/\d{2}\/\d{4}/)
+        const nextDateMatch = next.symbol.match(/\d{2}\/\d{2}\/\d{4}/)
+        const fromDate = curr.type === 'Close' ? (currDateMatch ? currDateMatch[0] : curr.date) : (nextDateMatch ? nextDateMatch[0] : next.date)
+        const toDate = curr.type === 'Open' ? (currDateMatch ? currDateMatch[0] : curr.date) : (nextDateMatch ? nextDateMatch[0] : next.date)
+        // Set strike column for roll
+        let rollStrike = curr.type === 'Close' ? next.strike : curr.strike
+        if (curr.strike !== next.strike && curr.strike !== '-' && next.strike !== '-') {
+          rollStrike = `${curr.strike} to ${next.strike}`
+        }
+        // Calculate ROR for roll
+        let ror = '-'
+        let strikeForROR = (curr.strike !== '-' && !isNaN(curr.strike)) ? parseFloat(curr.strike) : (next.strike !== '-' && !isNaN(next.strike) ? parseFloat(next.strike) : null)
+        if (strikeForROR && curr.quantity) {
+          const cost = Math.abs(curr.quantity * strikeForROR * 100)
+          if (cost > 0) {
+            const premium = parseFloat(curr.premium) + parseFloat(next.premium)
+            ror = ((premium / cost) * 100).toFixed(2)
+          }
+        }
+        groupedRows.push({
+          ...(curr.type === 'Open' ? curr : next),
+          description: `Rolled from ${fromDate} to ${toDate}`,
+          premium: (parseFloat(curr.premium) + parseFloat(next.premium)).toFixed(2),
+          rollFrom: fromDate,
+          rollTo: toDate,
+          strike: rollStrike,
+          ror: ror !== '-' ? ror : '-'
+        })
+        usedIndexes.add(i)
+        usedIndexes.add(j)
+        foundPair = true
+        break
       }
     }
-  })
-
-  // Add remaining open transactions
-  openTransactions.value.forEach(t => {
-    summaryData.value.push(t)
-  })
-
-  // Add any unmatched Buy to Close transactions
-  buyToCloseTransactions.value.filter(btc => !btc.matched).forEach(buyToClose => {
-    summaryData.value.push({
-      type: 'Close',
-      ticker: buyToClose.ticker,
-      description: `Closed position expiring ${buyToClose.fromDate}`,
-      premium: buyToClose.amount.toFixed(2),
-      strike: buyToClose.strike,
-      contractType: buyToClose.type,
-      quantity: buyToClose.quantity,
-      ror: '-',
-      date: buyToClose.date,
-      account: buyToClose.account
-    })
-  })
-
-  // Sort the summary data by date, then account, then description
-  summaryData.value.sort((a, b) => {
-    if (a.date !== b.date) {
-      return a.date.localeCompare(b.date)
+    if (!foundPair) {
+      // If this is a buy to close, set description
+      if (curr.type === 'Close') {
+        const dateMatch = curr.symbol.match(/\d{2}\/\d{2}\/\d{4}/)
+        curr.description = dateMatch ? `Closed position expiring ${dateMatch[0]}` : `Bought to close on ${curr.date}`
+      }
+      // If this is a sell to open, set description
+      if (curr.type === 'Open') {
+        const dateMatch = curr.symbol.match(/\d{2}\/\d{2}\/\d{4}/)
+        curr.description = dateMatch ? `New position expiring ${dateMatch[0]}` : `Sold to open on ${curr.date}`
+      }
+      // Calculate ROR for single leg
+      let ror = '-'
+      if (curr.strike !== '-' && !isNaN(curr.strike) && curr.quantity) {
+        const cost = Math.abs(curr.quantity * parseFloat(curr.strike) * 100)
+        if (cost > 0) {
+          ror = ((parseFloat(curr.premium) / cost) * 100).toFixed(2)
+        }
+      }
+      groupedRows.push({ ...curr, ror: ror !== '-' ? ror : '-' })
     }
-    if (a.account !== b.account) {
-      return a.account.localeCompare(b.account)
-    }
-    return a.description.localeCompare(b.description)
-  })
-  
-  // Trigger tooltip initialization
-  store.initTooltips()
+  }
+  // Sort by account, then date ascending
+  groupedRows.sort((a, b) => {
+    if (a.account < b.account) return -1;
+    if (a.account > b.account) return 1;
+    // If accounts are equal, sort by date
+    return new Date(a.date) - new Date(b.date);
+  });
+  summaryData.value = groupedRows
 }
 
 async function copyAsImage() {
@@ -354,24 +304,61 @@ async function copyAsImage() {
             <h4>Schwab Transaction Summarizer</h4>
           </div>
           <div class="card-body">
-            <div class="mb-3">
-              <label for="fileUpload" class="form-label">Upload Schwab Transaction JSON Files</label>
-              <input type="file" 
-                class="form-control" 
-                id="fileUpload" 
-                @change="handleFileUpload" 
-                accept=".json"
-                multiple
-                :disabled="isLoading">
-              <div class="form-text text-muted ms-2">*Upload one or more JSON files exported from Schwab. Files will be processed together.</div>
-              <div v-if="errorMessage" class="alert alert-danger mt-2">
-                {{ errorMessage }}
+            <div class="mb-3 row align-items-end">
+              <!-- Account selector (50%) -->
+              <div class="col-12 col-md-4 mb-3 mb-md-0">
+                <label for="accountSelector" class="form-label">Select Account</label>
+                <select id="accountSelector" class="form-select w-100" v-model="selectedAccount">
+                  <option v-for="option in accountOptions" :key="option.value" :value="option.value">
+                    {{ option.label }}
+                  </option>
+                </select>
               </div>
-              <div v-if="isLoading" class="mt-2">
-                <div class="spinner-border spinner-border-sm" role="status">
-                  <span class="visually-hidden">Loading...</span>
+              <!-- Show Raw Data checkbox (top left) -->
+              <div class="col-12 col-md-4 d-flex align-items-center mb-3 mb-md-0">
+                <div class="form-check">
+                  <input class="form-check-input" type="checkbox" id="showRawData" v-model="showRawData">
+                  <label class="form-check-label" for="showRawData">Show Raw Data</label>
                 </div>
-                <span class="ms-2">Processing file...</span>
+              </div>
+              <!-- Symbol filter input -->
+              <div class="col-12 col-md-4 mb-3 mb-md-0">
+                <label for="symbolFilter" class="form-label">Filter by Symbol</label>
+                <input
+                  id="symbolFilter"
+                  type="text"
+                  class="form-control"
+                  v-model="symbolFilter"
+                  placeholder="Enter symbol..."
+                  @input="symbolFilter = symbolFilter.toUpperCase()"
+                />
+              </div>
+            </div>
+            <!-- Start/End Week selectors row -->
+            <div class="mb-3 row align-items-end">
+              <div class="col-12 col-md-6 mb-3 mb-md-0">
+                <label for="weekSelector" class="form-label">Start Week</label>
+                <select id="weekSelector" class="form-select w-100" v-model="selectedWeek">
+                  <option :value="null">Select Week</option>
+                  <option v-for="week in availableWeeks" :key="week" :value="week">
+                    Week {{ week }} ({{ store.weekRange(week, true) }})
+                  </option>
+                </select>
+              </div>
+              <div class="col-12 col-md-6">
+                <label for="endWeekSelector" class="form-label">End Week</label>
+                <select id="endWeekSelector" class="form-select w-100" v-model="endWeek">
+                  <option :value="null">Select Week</option>
+                  <option v-for="week in availableWeeks.filter(w => w >= selectedWeek)" :key="week" :value="week">
+                    Week {{ week }} ({{ store.weekRange(week, true) }})
+                  </option>
+                </select>
+              </div>
+            </div>
+            <!-- Calculate Summary button -->
+            <div class="mb-3 row">
+              <div class="col-12">
+                <button class="btn btn-primary w-100" @click="calculateSummary">Calculate Summary</button>
               </div>
             </div>
           </div>
@@ -384,20 +371,8 @@ async function copyAsImage() {
         <div class="card">
           <div class="card-header d-flex justify-content-between align-items-center">
             <h5 class="mb-0">Transaction Summary</h5>
-            
             <!-- Add Symbol filter alongside Copy button -->
             <div class="d-flex align-items-center gap-3">
-              <div class="d-flex align-items-center" v-if="summaryData.length > 0">
-                <label for="symbolFilter" class="me-2">Filter by Symbol:</label>
-                <input
-                  id="symbolFilter"
-                  type="text"
-                  class="form-control form-control-sm"
-                  v-model="symbolFilter"
-                  placeholder="Enter symbol..."
-                />
-              </div>
-              
               <button 
                 class="btn btn-sm btn-outline-primary" 
                 @click="copyAsImage"
@@ -429,11 +404,11 @@ async function copyAsImage() {
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="(item, index) in filteredSummaryData" :key="index">
+                <tr v-for="(item, index) in summaryData" :key="index">
                   <td>{{ item.date }}</td>
                   <td>{{ item.account }}</td>
                   <td>{{ item.ticker }}</td>
-                  <td>{{ item.contractType }}</td>
+                  <td>{{ showRawData ? item.type : item.contractType }}</td>
                   <td>{{ item.quantity }}</td>
                   <td>{{ item.strike === '-' ? '-' : '$' + item.strike }}</td>
                   <td>{{ item.description }}</td>
@@ -449,16 +424,15 @@ async function copyAsImage() {
                 </tr>
               </tfoot>
             </table>
-
             <!-- Expired contracts section -->
-            <div v-if="expiredContracts.length > 0" class="mt-4">
-              <br/>
-              <p style="font-size: 18pt;">Expired Contracts:</p>
-              <p>The following contracts expired worthless: <b>{{ expiredContracts.join(', ') }}</b></p>
+            <div class="mt-0" v-if="!symbolFilter && expiredContracts.length > 0">
+              <p style="font-size: 18pt;">Contracts Expired Worthless: <span class="fw-bold small" v-if="expiredContracts.length == 0">None</span></p>
+              <div class="d-flex flex-wrap gap-2">
+                <span v-for="(symbol, idx) in expiredContracts" :key="idx" class="expired-pill">{{ symbol }}</span>
+              </div>
             </div>
-            
             <!-- No results message when filtered -->
-            <div v-if="summaryData.length > 0 && filteredSummaryData.length === 0" 
+            <div v-if="summaryData.length > 0 && summaryData.length === 0" 
                  class="alert alert-info mt-3">
               No transactions match your filter criteria.
             </div>
@@ -480,6 +454,18 @@ async function copyAsImage() {
 /* Style the Symbol filter */
 #symbolFilter {
   width: 150px;
+}
+
+.expired-pill {
+  display: inline-block;
+  background: #d4edda;
+  color: #155724;
+  border-radius: 999px;
+  padding: 0.4em 1em;
+  font-weight: 500;
+  margin-bottom: 0.25em;
+  border: 1px solid #c3e6cb;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.04);
 }
 
 @media (max-width: 768px) {

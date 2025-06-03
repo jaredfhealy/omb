@@ -1,10 +1,10 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { useAppStore } from '@/stores/app'
-import BalanceGrowthChart from '@/components/BalanceGrowthChart.vue'
-import ActualGrowthChart from '@/components/ActualGrowthChart.vue'
-import RORChart from '@/components/RORChart.vue'
-import TrailingIncomeChart from '@/components/TrailingIncomeChart.vue'
+import BalanceGrowthChart from '@/components/charts/BalanceGrowthChart.vue'
+import ActualGrowthChart from '@/components/charts/ActualGrowthChart.vue'
+import RORChart from '@/components/charts/RORChart.vue'
+import TrailingIncomeChart from '@/components/charts/TrailingIncomeChart.vue'
 
 const store = useAppStore()
 const activeTab = ref('growth')

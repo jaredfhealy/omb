@@ -28,7 +28,7 @@ const getAssignmentsTooltip = (projection, type) => {
     const soldPositions = getSoldPositionsForWeek(projection.week)
     if (soldPositions.length > 0)
       return `Positions Sold This Week:<br>` +
-      `${soldPositions.map(p2 => `${p2.symbol}: ${p2.shares} shares @ ${store.currency(p2.strikePrice)}`).join('<br>')}` +
+      `${soldPositions.map(p2 => `${p2.symbol}: ${p2.shares} shares}`).join('<br>')}` +
       `<br>Total: ${store.currency(projection.sharesSold)}`
     else
       console.log("No sold positions for week", projection.week)
@@ -38,7 +38,7 @@ const getAssignmentsTooltip = (projection, type) => {
 
     if (assignments.length > 0)
       return `New Assignments This Week:<br>` +
-      `${assignments.map(p => `${p.symbol}: ${p.shares} shares @ ${store.currency(p.strikePrice)}`).join('<br>')}` + 
+      `${assignments.map(p => `${p.symbol}: ${p.shares} shares}`).join('<br>')}` + 
       `<br>Total: ${store.currency(projection.sharesBought)}`
     else
       console.log("No assigned positions for week", projection.week)
@@ -472,7 +472,7 @@ const dataTableRef = ref(null)
                 @click="store.showWeeklyRowModal(item.week)">
           <i class="bi bi-pencil-square"></i>
         </button>
-        {{ store.activeAccount.actuals.some(a => Number(a.week) === item.week && a.notes) ? '*' : '' }}
+        {{ store.activeAccount.notes?.some(a => Number(a.week) === item.week && a.note) ? '*' : '' }}
       </template>
 
       <!-- Net Transaction column with edit icon -->

@@ -82,51 +82,47 @@ store.clearFilters = clearFilters
 </script>
 
 <template>
-  <!-- Header section with filters - simplified structure -->
-  <div class="p-2 filter-div">
-    <!-- Combined row: Type filters, New button, and Week filter -->
-    <div class="d-flex flex-wrap align-items-center justify-content-between">
-      <div class="d-flex align-items-center">
-        <div class="btn-group me-3">
-          <button class="btn" :class="[
-            store.transactionFilter === 'all' ? 'btn-primary' : 'btn-outline-primary', 
-            store.isBelowXL ? 'btn-sm' : ''
-          ]" @click="store.transactionFilter = 'all'">All</button>
-          <button class="btn" :class="[
-            store.transactionFilter === 'deposit' ? 'btn-primary' : 'btn-outline-primary',
-            store.isBelowXL ? 'btn-sm' : ''
-          ]" @click="store.transactionFilter = 'deposit'">Deposits</button>
-          <button class="btn" :class="[
-            store.transactionFilter === 'withdrawal' ? 'btn-primary' : 'btn-outline-primary',
-            store.isBelowXL ? 'btn-sm' : ''
-          ]" @click="store.transactionFilter = 'withdrawal'">Withdrawals</button>
-        </div>
-        <button class="btn btn-primary me-3" :class="store.isBelowXL ? 'btn-sm' : ''" @click="store.addNewTransaction">
-          <i class="bi bi-plus"></i> New
-        </button>
-      </div>
-      
-      <div class="d-flex align-items-center mt-2 mt-md-0">
-        <label class="me-2">Filter:</label>
-        <select class="form-select me-2" :class="store.isBelowXL ? 'form-select-sm' : ''" style="max-width: 250px;" v-model="store.selectedWeek">
-          <option :value="null">All Weeks</option>
-          <option v-for="p in store.projections" :key="p.week" :value="p.week">
-            Week {{ p.week }} ({{ store.weekRange(p.week, true) }})
-          </option>
-        </select>
-        <button type="button" class="btn btn-warning" :class="store.isBelowXL ? 'btn-sm' : ''" @click="clearFilters()"
-          v-show="store.selectedWeek || store.transactionFilter !== 'all'">
-          <i class="bi bi-x-circle"></i>
-        </button>
-      </div>
-    </div>
-  </div>
-
-  <!-- DataTable without unnecessary container -->
   <DataTable 
     :items="filteredTransactions"
     :columns="columns"
     :striped="true">
+    <template #header-actions>
+      <div class="d-flex flex-wrap align-items-center justify-content-between w-100">
+        <div class="d-flex align-items-center">
+          <div class="btn-group me-3">
+            <button class="btn" :class=" [
+              store.transactionFilter === 'all' ? 'btn-primary' : 'btn-outline-primary', 
+              store.isBelowXL ? 'btn-sm' : ''
+            ]" @click="store.transactionFilter = 'all'">All</button>
+            <button class="btn" :class=" [
+              store.transactionFilter === 'deposit' ? 'btn-primary' : 'btn-outline-primary',
+              store.isBelowXL ? 'btn-sm' : ''
+            ]" @click="store.transactionFilter = 'deposit'">Deposits</button>
+            <button class="btn" :class=" [
+              store.transactionFilter === 'withdrawal' ? 'btn-primary' : 'btn-outline-primary',
+              store.isBelowXL ? 'btn-sm' : ''
+            ]" @click="store.transactionFilter = 'withdrawal'">Withdrawals</button>
+          </div>
+          <button class="btn btn-primary me-3" :class="store.isBelowXL ? 'btn-sm' : ''" @click="store.addNewTransaction">
+            <i class="bi bi-plus"></i> New
+          </button>
+        </div>
+        <div class="d-flex align-items-center mt-2 mt-md-0">
+          <label class="me-2">Filter:</label>
+          <select class="form-select me-2" :class="store.isBelowXL ? 'form-select-sm' : ''" style="max-width: 250px;" v-model="store.selectedWeek">
+            <option :value="null">All Weeks</option>
+            <option v-for="p in store.projections" :key="p.week" :value="p.week">
+              Week {{ p.week }} ({{ store.weekRange(p.week, true) }})
+            </option>
+          </select>
+          <button type="button" class="btn btn-warning" :class="store.isBelowXL ? 'btn-sm' : ''" @click="clearFilters()"
+            v-show="store.selectedWeek || store.transactionFilter !== 'all'">
+            <i class="bi bi-x-circle"></i>
+          </button>
+        </div>
+      </div>
+    </template>
+
     <!-- Type column -->
     <template #type="{ item }">
       <div class="transaction-type">

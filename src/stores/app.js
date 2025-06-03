@@ -124,34 +124,37 @@ export const useAppStore = defineStore('app', {
       for (let week = 1; week <= this.weeks; week++) {
         const transactions = this._getTransactionsForWeek(week)
 
-        // Single pass over positions for all share/cash calculations
+        // Calculate shares sold this week and previous week
         let sharesSold = 0
-        let sharesBought = 0
         let startSharesBalance = 0
         let sharesSoldPreviousWeek = 0
+        const sells = this.activeAccount.sells || []
+        for (let i = 0; i < sells.length; i++) {
+          const sell = sells[i]
+          if (sell.week === week) {
+            sharesSold += sell.amount || 0
+          } else if (sell.week === week - 1) {
+            sharesSoldPreviousWeek += sell.amount || 0
+          }
+        }
+
+        // Calculate shares bought this week and previous week, and shares held at start of week
+        let sharesBought = 0
         let sharesBoughtPreviousWeek = 0
         const positions = this.activeAccount.positions || []
         for (let i = 0; i < positions.length; i++) {
           const position = positions[i]
-          // Sold this week
-          if (position.soldWeek === week) {
-            sharesSold += (position.sellAmount || 0)
-          }
-          // Sold previous week
-          if (position.soldWeek === week - 1) {
-            sharesSoldPreviousWeek += (position.sellAmount || 0)
-          }
           // Bought (assigned) this week
           if (position.assignedWeek === week) {
-            sharesBought += (position.strikePrice * position.shares)
+            sharesBought += Math.abs(position.costBasis || 0)
           }
           // Bought (assigned) previous week
           if (position.assignedWeek === week - 1) {
-            sharesBoughtPreviousWeek += (position.strikePrice * position.shares)
+            sharesBoughtPreviousWeek += Math.abs(position.costBasis || 0)
           }
           // Shares held at start of week (assigned before this week, not yet sold)
           if (position.assignedWeek < week && (!position.soldWeek || position.soldWeek >= week)) {
-            startSharesBalance += (position.strikePrice * position.shares)
+            startSharesBalance += Math.abs(position.costBasis || 0)
           }
         }
 
@@ -407,6 +410,19 @@ export const useAppStore = defineStore('app', {
       return () => window.removeEventListener('resize', handleResize)
     },
 
-    // Remove the CSV import functions that were moved to the ImportTransactionsModal component
+    getPositionKey(pos, action) {
+      return `${pos.symbol}_${pos.shares}_${action}_${pos.date}_${Math.abs(pos.costBasis || pos.amount)}`
+    },
+
+    calculateWeekStartEnd(weekNumber) {
+      const startDate = new Date(this.activeAccount.settings.startDate)
+      startDate.setDate(startDate.getDate() + (weekNumber - 1) * 7)
+      const endDate = new Date(startDate)
+      endDate.setDate(startDate.getDate() + 6)
+      return {
+        weekStart: startDate.toISOString().slice(0, 10),
+        weekEnd: endDate.toISOString().slice(0, 10)
+      }
+    }
   }
 })

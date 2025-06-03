@@ -11,8 +11,7 @@ const importResults = ref(null)
 const hasError = ref(false)
 const errorMessage = ref('')
 const discardFirstWeek = ref(true) // Default to true for this option
-const deleteAndReloadTransactions = ref(false) // Default to false for this option
-const forceRecalculateAll = ref(false) // Default to false for recalculation option
+const deleteAllData = ref(false) // Default to false for this option
 
 // Modal control methods
 const show = () => {
@@ -32,7 +31,7 @@ const resetForm = () => {
   hasError.value = false
   errorMessage.value = ''
   discardFirstWeek.value = true // Reset to default
-  deleteAndReloadTransactions.value = false // Reset to default
+  deleteAllData.value = false // Reset to default
   forceRecalculateAll.value = false // Reset to default
   
   // Reset the file input element to clear the selected file
@@ -100,6 +99,13 @@ async function importTransactionsFromCSV(file) {
   // Ensure we have an account to import to
   if (!store.activeAccount) {
     throw new Error('No active account found')
+  }
+  
+  // If delete all data is selected, clear all data arrays before import
+  if (deleteAllData.value) {
+    store.activeAccount.actuals = []
+    store.activeAccount.positions = []
+    store.activeAccount.sells = []
   }
   
   try {
@@ -461,7 +467,7 @@ function _processTransactions(transactionsImport) {
   const startDate = new Date(store.activeAccount.settings.startDate);
   
   // Delete existing transactions if requested (for deposits/withdrawals)
-  if (deleteAndReloadTransactions.value) {
+  if (deleteAllData.value) {
     if (store.activeAccount.transactions && store.activeAccount.transactions.length) {
       // Calculate the current week based on today's date
       const today = new Date();
@@ -525,37 +531,18 @@ function _processTransactions(transactionsImport) {
 function _calculateWeekTotal(weekData, brokerMap) {
   // Use broker map to identify types that contribute to weekly total
   const weeklyTotalTypes = brokerMap.weeklyTotalTypes || [];
-  
   let total = 0;
-  let detailedAmounts = [];
-  let deposits = [];
-  let withdrawals = [];
-  
   if (!weekData || !weekData.length) {
-    return { total: 0, detailedAmounts: [], deposits, withdrawals };
+    return 0;
   }
-  
-  // Process each transaction
   weekData.forEach(dataRow => {
     const action = dataRow.action.toLowerCase();
-    
-    // Only include transactions that should affect weekly total
     if (weeklyTotalTypes.includes(action)) {
-      // Regular transaction - add to weekly total
       total += dataRow.amount;
-      detailedAmounts.push(dataRow.amount);
     }
   });
-  
   // Round the final amount to 2 decimal places
-  total = Math.round(total * 100) / 100;
-  
-  return { 
-    total, 
-    detailedAmounts,
-    deposits,
-    withdrawals
-  };
+  return Math.round(total * 100) / 100;
 }
 
 // Function to recalculate week totals for actuals that need it
@@ -711,35 +698,19 @@ store.showImportTransactionsModal = show
               </div>
             </div>
 
-            <!-- Delete and reload transactions option -->
+            <!-- Delete all data option -->
             <div class="form-check mb-3">
               <input 
                 class="form-check-input" 
                 type="checkbox" 
-                id="deleteAndReloadOption" 
-                v-model="deleteAndReloadTransactions"
+                id="deleteAllDataOption" 
+                v-model="deleteAllData"
               >
-              <label class="form-check-label" for="deleteAndReloadOption">
-                Delete and reload transactions
+              <label class="form-check-label" for="deleteAllDataOption">
+                Delete all data before import
               </label>
               <div class="form-text">
-                When checked, all deposit/withdrawal entries before the current will be deleted and recreated from the import.
-              </div>
-            </div>
-            
-            <!-- Force recalculate all weeks option -->
-            <div class="form-check mb-3">
-              <input 
-                class="form-check-input" 
-                type="checkbox" 
-                id="forceRecalculateAllOption" 
-                v-model="forceRecalculateAll"
-              >
-              <label class="form-check-label" for="forceRecalculateAllOption">
-                Force recalculate all weeks
-              </label>
-              <div class="form-text">
-                When checked, all weeks will be recalculated after the import, regardless of changes.
+                When checked, all transactions, positions, and weekly transaction data will be deleted before importing new data.
               </div>
             </div>
             
