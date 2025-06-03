@@ -117,8 +117,8 @@ async function importTransactionsFromCSV(file) {
     const brokerMap = _getBrokerageMap(meta.headers.toString());
     
     // Step 2: Process data rows and assign to actuals array by week
-    // Returns arrays of transactions and positions for further processing
-    const { transactionsImport, positionsImport, processDataResults } = 
+    // Returns arrays of transactions, positions, and sells for further processing
+    const { transactionsImport, positionsImport, sellsImport, processDataResults } = 
       _processData(dataRows, brokerMap);
     
     // Step 3: Process transactions into account transactions array
@@ -137,7 +137,7 @@ async function importTransactionsFromCSV(file) {
     };
     
     // After processing the import, recalculate any weeks that need it
-    const recalculationResults = recalculateWeekTotals();
+    const recalculationResults = calculateWeeklyTotals();
     results.recalculation = recalculationResults;
     
     return results;
@@ -169,9 +169,10 @@ function _getBrokerageMap(keySearch) {
         fees: 6,
         amount: 7
       },
-      weeklyTotalTypes: ['sell to open', 'buy to close', 'bank interest'],
-      transactionTypes: ['moneylink transfer', 'journal'],
-      positionTypes: ['buy', 'sell']
+      weeklyTotalTypes: ['sell to open', 'buy to close'],
+      transactionTypes: ['moneylink transfer', 'journal', 'qualified dividend', 'bank interest', 'dividend'],
+      positionTypes: ['buy'],
+      sellTypes: ['sell'],
     }
   }
   
@@ -332,6 +333,7 @@ function _processData(dataRows, brokerMap) {
   let rowsProcessed = 0;
   let transactionsImport = [];
   let positionsImport = [];
+  let sellsImport = [];
   let smallestWeek = Infinity;
   let weeksChanged = [];
   
@@ -366,7 +368,7 @@ function _processData(dataRows, brokerMap) {
     // Add this row to the week's array
     dataByWeek[week].push(dataRow);
     
-    // Identify if this is a transaction or position based on action
+    // Identify if this is a transaction, position, or sell based on action
     const action = dataRow.action.toLowerCase();
     
     // Categorize based on broker map types
@@ -377,8 +379,14 @@ function _processData(dataRows, brokerMap) {
         week: week
       });
     } else if (brokerMap.positionTypes.includes(action)) {
-      // Add to positions import for later processing
+      // Add to positions import for later processing (only buys)
       positionsImport.push({
+        ...dataRow,
+        week: week
+      });
+    } else if (brokerMap.sellTypes && brokerMap.sellTypes.includes(action)) {
+      // Add to sells import for later processing (only sells)
+      sellsImport.push({
         ...dataRow,
         week: week
       });
@@ -402,42 +410,14 @@ function _processData(dataRows, brokerMap) {
   Object.entries(dataByWeek).forEach(([week, weekData]) => {
     const weekNumber = parseInt(week);
     
-    // Generate hash for this week's data - update to use renamed function
-    const dataHash = _generateImportDataHash(weekData);
-    
     // Find existing entry for this week
     const existingEntry = store.activeAccount.actuals.find(a => parseInt(a.week) === weekNumber);
     
-    if (existingEntry) {
-      // Make sure the data array is reactive
-      if (!existingEntry.data) {
-        existingEntry.data = [];
-      }
-      
-      // Check if data has changed using the hash
-      const dataChanged = !existingEntry.transactionHash || 
-                         existingEntry.transactionHash !== dataHash;
-      
-      // Create a new array to ensure reactivity
-      const dataArray = [...weekData];
-      
-      // Force reactivity by replacing the entire property
-      existingEntry.data = dataArray;
-      
-      // Update the transaction hash
-      existingEntry.transactionHash = dataHash;
-      
-      // Flag for recalculation if transactions have changed OR force recalculate is enabled
-      if (dataChanged || forceRecalculateAll.value) {
-        existingEntry.needsRecalculation = true;
-        weeksChanged.push(weekNumber);
-      }
-    } else {
+    if (!existingEntry) {
       // Create new entry with data array and hash
       store.activeAccount.actuals.push({
         week: weekNumber,
         growth: 0, // Will be calculated during recalculation
-        notes: `Imported from CSV on ${new Date().toLocaleDateString()}`,
         data: [...weekData],
         transactionHash: dataHash,
         needsRecalculation: true
@@ -450,6 +430,7 @@ function _processData(dataRows, brokerMap) {
   return {
     transactionsImport,
     positionsImport,
+    sellsImport,
     processDataResults: {
       rowsProcessed,
       weeksProcessed,
@@ -527,10 +508,52 @@ function _processTransactions(transactionsImport) {
   };
 }
 
+// Function to recalculate week totals for actuals that need it
+function calculateWeeklyTotals() {
+  if (!store.activeAccount || !store.activeAccount.actuals) {
+    return { weeksProcessed: 0, weeksUpdated: 0 };
+  }
+
+  // Get the brokerage map for the current account
+  const brokerMap = _getBrokerageMap();
+
+  // Find weeks that need recalculation
+  const weeksToRecalculate = store.activeAccount.actuals
+    .filter(actual => (!actual.amount || actual.amount === 0) && actual.data.length > 0)
+    .sort((a, b) => a.week - b.week);
+
+  if (weeksToRecalculate.length === 0) {
+    // No weeks need recalculation
+    return { weeksProcessed: 0, weeksUpdated: 0 };
+  }
+
+  // Process each week that needs recalculation
+  weeksToRecalculate.forEach(actual => {
+    // Use the calculation function to get new values
+    const { total } = _calculateWeekTotal(actual.data || [], brokerMap);
+    
+    // Update the week's growth value if changed
+    if (Number(actual.growth) !== total) {
+      actual.growth = total;
+      weeksUpdated++;
+    }
+  });
+  
+  // Recalculate projections if any week was updated
+  if (weeksUpdated > 0) {
+    store.calculateProjections();
+  }
+  
+  return {
+    weeksProcessed: weeksToRecalculate.length,
+    weeksUpdated
+  };
+}
+
 // Isolated function to calculate weekly total from transactions
 function _calculateWeekTotal(weekData, brokerMap) {
   // Use broker map to identify types that contribute to weekly total
-  const weeklyTotalTypes = brokerMap.weeklyTotalTypes || [];
+  const weeklyTotalTypes = brokerMap.weeklyTotalTypes;
   let total = 0;
   if (!weekData || !weekData.length) {
     return 0;
@@ -545,110 +568,10 @@ function _calculateWeekTotal(weekData, brokerMap) {
   return Math.round(total * 100) / 100;
 }
 
-// Function to recalculate week totals for actuals that need it
-function recalculateWeekTotals() {
-  if (!store.activeAccount || !store.activeAccount.actuals) {
-    return { weeksProcessed: 0, weeksUpdated: 0 };
-  }
-
-  // Get the brokerage map for the current account
-  const brokerMap = _getBrokerageMap();
-
-  // Find weeks that need recalculation
-  const weeksToRecalculate = store.activeAccount.actuals
-    .filter(actual => actual.needsRecalculation === true)
-    .sort((a, b) => a.week - b.week);
-
-  if (weeksToRecalculate.length === 0) {
-    // No weeks need recalculation
-    return { weeksProcessed: 0, weeksUpdated: 0 };
-  }
-
-  // Check for weeks with missing transaction data
-  const weeksWithoutData = weeksToRecalculate
-    .filter(actual => !actual.data || actual.data.length === 0)
-    .map(actual => actual.week);
-
-  if (weeksWithoutData.length > 0) {
-    // Alert user about weeks without transaction data
-    store.confirm(
-      `Warning: Weeks ${weeksWithoutData.join(', ')} have no transaction data. Do you want to continue with recalculation?`,
-      // On confirm
-      () => _performRecalculation(weeksToRecalculate, brokerMap),
-      // On cancel
-      () => console.log('Recalculation canceled due to missing transaction data')
-    );
-    return { weeksProcessed: 0, weeksUpdated: 0, weeksWithoutData };
-  } else {
-    // No missing data issues, proceed with recalculation
-    return _performRecalculation(weeksToRecalculate, brokerMap);
-  }
+// Stub for processing sell data
+function _processSellData(sellsImport) {
+  // TODO: Implement sell processing logic
 }
-
-// Internal helper to perform the actual recalculation
-function _performRecalculation(weeksToRecalculate, brokerMap) {
-  let weeksUpdated = 0;
-  
-  // Process each week that needs recalculation
-  weeksToRecalculate.forEach(actual => {
-    // Use the calculation function to get new values
-    const { total } = _calculateWeekTotal(actual.data || [], brokerMap);
-    
-    // Update the week's growth value if changed
-    if (Number(actual.growth) !== total) {
-      actual.growth = total;
-      weeksUpdated++;
-    }
-    
-    // Clear the recalculation flag after processing
-    actual.needsRecalculation = false;
-  });
-  
-  // Recalculate projections if any week was updated
-  if (weeksUpdated > 0) {
-    store.calculateProjections();
-  }
-  
-  return {
-    weeksProcessed: weeksToRecalculate.length,
-    weeksUpdated
-  };
-}
-
-// Function to generate a hash for an array of data rows
-function _generateImportDataHash(dataRows) {
-  if (!dataRows || !dataRows.length) {
-    return 'empty';
-  }
-  
-  // Sort the array to ensure consistent ordering (still important for stable hash)
-  const sortedDataRows = [...dataRows].sort((a, b) => {
-    if (a.date && b.date) {
-      const dateA = a.date.getTime();
-      const dateB = b.date.getTime();
-      if (dateA !== dateB) return dateA - dateB;
-    }
-    // Secondary sort by amount if dates are equal
-    return a.amount - b.amount;
-  });
-  
-  // Convert to string for hashing
-  const dataString = JSON.stringify(sortedDataRows);
-  
-  // Use a more efficient FNV-1a hashing algorithm
-  let hash = 2166136261; // FNV offset basis
-  for (let i = 0; i < dataString.length; i++) {
-    hash ^= dataString.charCodeAt(i);
-    // Multiply by the FNV prime
-    hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
-  }
-  
-  // Convert to unsigned 32-bit integer then to hex
-  return (hash >>> 0).toString(16);
-}
-
-// Expose the recalculate method to the app store
-store.recalculateActuals = recalculateWeekTotals;
 
 // Expose the show method to the app store
 store.showImportTransactionsModal = show

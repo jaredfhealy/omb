@@ -60,20 +60,8 @@ watch(() => position.assignedWeek, (newVal) => {
   }
 })
 
-// Function to toggle showing all weeks
-const toggleShowAllWeeks = () => {
-  showAllWeeks.value = !showAllWeeks.value
-}
-
 // Reset showAllWeeks when modal is opened
 const show = (existingPosition = null, index = null) => {
-  // If editing and soldWeek is set, show all weeks by default
-  if (existingPosition && existingPosition.soldWeek) {
-    showAllWeeks.value = true
-  } else {
-    showAllWeeks.value = false
-  }
-  
   if (existingPosition) {
     isEdit.value = true
     editIndex.value = index
