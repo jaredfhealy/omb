@@ -15,6 +15,7 @@ const deleteAllData = ref(false) // Default to false for this option
 
 // Modal control methods
 const show = () => {
+  migrateNotesToArray(); // Trigger migration when modal is displayed
   isVisible.value = true
   resetForm()
 }
@@ -101,17 +102,19 @@ async function importTransactionsFromCSV(file) {
     throw new Error('No active account found')
   }
   
-  // If delete all data is selected, clear all data arrays before import
-  if (deleteAllData.value) {
-    store.activeAccount.actuals = []
-    store.activeAccount.positions = []
-    store.activeAccount.sells = []
-  }
-  
   try {
     // Step 1: Parse CSV file and extract structured data
     const text = await file.text();
     const { dataRows, errors, meta } = parseCSV(text);
+
+    if (errors.length === 0) {
+      // If delete all data is selected, clear all data arrays before import
+      if (deleteAllData.value) {
+        store.activeAccount.actuals = []
+        store.activeAccount.positions = []
+        store.activeAccount.sells = []
+      }
+    }
     
     // Get broker map for type categorization
     const brokerMap = _getBrokerageMap(meta.headers.toString());
@@ -123,6 +126,12 @@ async function importTransactionsFromCSV(file) {
     
     // Step 3: Process transactions into account transactions array
     const transactionResults = _processTransactions(transactionsImport);
+
+    // Step 4: Process positions data
+    const positionsResults = _processPositions(positionsImport, brokerMap);
+
+    // Step 5: Process sell data if any
+    const sellResults = _processSellData(sellsImport);
     
     // Combine all results for display
     const results = {
@@ -293,12 +302,12 @@ function parseCSV(csvText) {
 
     // Create a data object with all available data
     const dataObj = {
-      date: transactionDate,
+      date: transactionDate.toISOString().split('T')[0], // Store as YYYY-MM-DD
       description: values[columnMap.description] || '',
       amount: values[columnMap.amount] ? _parseAmount(values[columnMap.amount]) : 0,
       action: values[columnMap.action] || '',
       symbol: values[columnMap.symbol] || '',
-      quantity: values[columnMap.quantity] ? parseInt(values[columnMap.quantity]) : 0,
+      quantity: values[columnMap.quantity] ? parseInt(values[columnMap.quantity].replace(/,/g, ''), 10) : 0,
       price: values[columnMap.price] ? _parseAmount(values[columnMap.price]) : 0,
       fees: values[columnMap.fees] ? _parseAmount(values[columnMap.fees]) : 0
     };
@@ -417,10 +426,8 @@ function _processData(dataRows, brokerMap) {
       // Create new entry with data array and hash
       store.activeAccount.actuals.push({
         week: weekNumber,
-        growth: 0, // Will be calculated during recalculation
-        data: [...weekData],
-        transactionHash: dataHash,
-        needsRecalculation: true
+        growth: 0,
+        data: [...weekData]
       });
       
       weeksChanged.push(weekNumber);
@@ -508,6 +515,39 @@ function _processTransactions(transactionsImport) {
   };
 }
 
+function _processPositions(positionsImport, brokerMap) {
+  if (!Array.isArray(positionsImport) || positionsImport.length === 0) return;
+  if (!store.activeAccount.positions) store.activeAccount.positions = [];
+
+  positionsImport.forEach(pos => {
+    // Generate positionKey using the store's helper
+    const positionKey = store.getPositionKey(pos, 'buy');
+    // Check if this positionKey already exists
+    const exists = store.activeAccount.positions.some(p => p.positionKey === positionKey);
+    if (exists) return;
+
+    // Build the position object
+    const position = {
+      positionKey,
+      startWeek: pos.week,
+      date: pos.date,
+      strikePrice: pos.price || null,
+      offsettingProfits: null, // Can be calculated elsewhere if needed
+      shares: pos.quantity,
+      assignedWeek: pos.week, // Assuming assignedWeek is the same as week
+      soldWeek: null,
+      symbol: pos.symbol,
+      currentPrice: null // Can be filled in elsewhere if needed
+    };
+    store.activeAccount.positions.push(position);
+  });
+}
+
+// Stub for processing sell data
+function _processSellData(sellsImport) {
+  // TODO: Implement sell processing logic
+}
+
 // Function to recalculate week totals for actuals that need it
 function calculateWeeklyTotals() {
   if (!store.activeAccount || !store.activeAccount.actuals) {
@@ -527,6 +567,7 @@ function calculateWeeklyTotals() {
     return { weeksProcessed: 0, weeksUpdated: 0 };
   }
 
+  let weeksUpdated = 0;
   // Process each week that needs recalculation
   weeksToRecalculate.forEach(actual => {
     // Use the calculation function to get new values
@@ -568,9 +609,30 @@ function _calculateWeekTotal(weekData, brokerMap) {
   return Math.round(total * 100) / 100;
 }
 
-// Stub for processing sell data
-function _processSellData(sellsImport) {
-  // TODO: Implement sell processing logic
+// Migration: Move notes from actuals to a separate notes array
+function migrateNotesToArray() {
+  const account = store.activeAccount;
+  if (!account || !Array.isArray(account.actuals) || account.actuals.length === 0) return;
+  // Only run if the first actual has a 'notes' attribute
+  if (!('notes' in account.actuals[0])) return;
+
+  if (!Array.isArray(account.notes)) account.notes = [];
+
+  account.actuals.forEach(actual => {
+    if (actual.notes && typeof actual.notes === 'string' && actual.notes.trim() !== '') {
+      // Calculate week start date
+      const startDate = new Date(account.settings.startDate);
+      startDate.setDate(startDate.getDate() + (Number(actual.week) - 1) * 7);
+      const isoDate = startDate.toISOString().split('T')[0];
+      account.notes.push({
+        week: Number(actual.week),
+        date: isoDate,
+        note: actual.notes
+      });
+    }
+    // Remove the notes attribute from actual
+    delete actual.notes;
+  });
 }
 
 // Expose the show method to the app store
