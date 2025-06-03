@@ -9,11 +9,12 @@ const editIndex = ref(null)
 let position = reactive({
   symbol: '',
   shares: 100,
-  strikePrice: 0,
+  costBasis: 0,
   currentPrice: 0,
   assignedWeek: null,
   soldWeek: null,
-  offsettingProfits: 0, // Renamed from putProfits
+  sellAmount: null,
+  offsettingProfits: 0,
   startWeek: null
 })
 
@@ -66,34 +67,30 @@ const toggleShowAllWeeks = () => {
 
 // Reset showAllWeeks when modal is opened
 const show = (existingPosition = null, index = null) => {
-  // Reset to default state - only show current and future weeks
-  showAllWeeks.value = false
+  // If editing and soldWeek is set, show all weeks by default
+  if (existingPosition && existingPosition.soldWeek) {
+    showAllWeeks.value = true
+  } else {
+    showAllWeeks.value = false
+  }
   
   if (existingPosition) {
     isEdit.value = true
     editIndex.value = index
-    
-    // Handle migration of old profit fields if necessary
-    if (existingPosition.putProfits !== undefined || existingPosition.callProfits !== undefined) {
-      Object.assign(position, {
-        ...existingPosition,
-        offsettingProfits: (existingPosition.putProfits || 0) + (existingPosition.callProfits || 0)
-      })
-    } else {
-      Object.assign(position, existingPosition)
-    }
+    Object.assign(position, existingPosition)
   } else {
     isEdit.value = false
     editIndex.value = null
     Object.assign(position, {
       symbol: '',
       shares: 100,
-      strikePrice: 0,
+      costBasis: 0,
       currentPrice: 0,
       assignedWeek: null,
       soldWeek: null,
       offsettingProfits: 0,
-      startWeek: null
+      startWeek: null,
+      sellAmount: null
     })
   }
   
@@ -109,33 +106,48 @@ const save = () => {
     alert('Symbol is required')
     return
   }
-  
-  // Validate price inputs
-  if (isNaN(position.strikePrice) || position.strikePrice <= 0) {
-    alert('Strike Price must be a positive number')
+
+  // Validate costBasis input
+  if (isNaN(position.costBasis) || position.costBasis <= 0) {
+    alert('Cost Basis must be a positive number')
     return
   }
-  
+
   // Ensure currentPrice is 0 or positive
   if (isNaN(position.currentPrice) || position.currentPrice < 0) {
     position.currentPrice = 0
   }
-  
+
   // Ensure startWeek is set
   if (!position.startWeek) {
     position.startWeek = position.assignedWeek
   }
-  
-  if (isEdit.value && editIndex.value !== null) {
-    // Update existing position
-    store.activeAccount.positions[editIndex.value] = { ...position }
-  } else {
-    // Add new position
-    store.activeAccount.positions.push({ ...position })
+
+  // If soldWeek is set, require sellAmount
+  if (position.soldWeek && (position.sellAmount === null || isNaN(position.sellAmount) || position.sellAmount === '')) {
+    alert('Sell Amount is required when Sold Week is set')
+    return
   }
-  
-  close()
+
+  // If sellAmount is set, ensure it's a number
+  if (position.sellAmount !== null && position.sellAmount !== '' && isNaN(position.sellAmount)) {
+    alert('Sell Amount must be a number')
+    return
+  }
+  const posCopy = { ...position }
+  if (!posCopy.positionKey) {
+    posCopy.positionKey = store.getPositionKey(posCopy)
+  }
+  if (isEdit.value && editIndex.value !== null) {
+    store.activeAccount.positions[editIndex.value] = { ...posCopy }
+  } else {
+    store.activeAccount.positions.push({ ...posCopy })
+
+    // Sort positions by assignedWeek after adding
+    store.activeAccount.positions.sort((a, b) => (a.assignedWeek || 0) - (b.assignedWeek || 0))
+  }
   store.saveBacon()
+  close()
 }
 
 // Expose the show function to the store
@@ -143,30 +155,28 @@ store.showPositionModal = (existingPosition = null, index = null) => show(existi
 
 // Add real-time P/L calculations as computed properties
 const perSharePL = computed(() => {
-  const currentPrice = position.currentPrice || position.strikePrice
-  return currentPrice - position.strikePrice
+  if (!position.shares || position.shares === 0) return 0
+  const currentPrice = position.currentPrice
+  const perShareCost = position.costBasis / position.shares
+  return currentPrice - perShareCost
 })
 
 const rawPL = computed(() => {
-  const currentValue = position.currentPrice 
-    ? position.currentPrice * position.shares 
-    : position.strikePrice * position.shares
-  const costBasis = position.strikePrice * position.shares
+  const currentValue = position.currentPrice ? position.currentPrice * position.shares : position.costBasis
+  const costBasis = position.costBasis
   return currentValue - costBasis
 })
 
 const netPL = computed(() => {
-  const currentValue = position.currentPrice 
-    ? position.currentPrice * position.shares 
-    : position.strikePrice * position.shares
-  const costBasis = position.strikePrice * position.shares
+  const currentValue = position.currentPrice ? position.currentPrice * position.shares : position.costBasis
+  const costBasis = position.costBasis
   const totalProfits = position.offsettingProfits || 0
   return currentValue - costBasis + totalProfits
 })
 
 const totalROR = computed(() => {
-  if (!position.strikePrice || position.strikePrice <= 0) return 0
-  const costBasis = position.strikePrice * position.shares
+  if (!position.costBasis || position.costBasis <= 0) return 0
+  const costBasis = position.costBasis
   return (netPL.value / costBasis) * 100
 })
 
@@ -188,11 +198,34 @@ const weeklyROR = computed(() => {
   if (weeksHeld.value <= 0) return 0
   return totalROR.value / weeksHeld.value
 })
+
+// Add watcher for startWeek to recalculate offsettingProfits
+watch(() => position.startWeek, (newVal) => {
+  if (!newVal) return
+  // Calculate offsettingProfits: sum all rows for this symbol from startWeek and after, excluding buy/sell
+  let total = 0
+  const actuals = store.activeAccount.actuals || []
+  actuals.forEach(a => {
+    if (Array.isArray(a.data) && parseInt(a.week) >= parseInt(newVal)) {
+      a.data.forEach(txn => {
+        if (
+          txn.symbol &&
+          txn.symbol.toUpperCase().split(" ")[0].includes(position.symbol.toUpperCase()) &&
+          txn.action &&
+          !['buy', 'sell'].includes(txn.action.toLowerCase())
+        ) {
+          total += parseFloat(txn.amount || 0)
+        }
+      })
+    }
+  })
+  position.offsettingProfits = parseFloat(total.toFixed(2))
+})
 </script>
 
 <template>
   <div class="modal" id="edit-position-modal" tabindex="-1" :class="{ 'd-block': isVisible }" v-show="isVisible">
-    <div class="modal-dialog modal-xl"> <!-- Changed to modal-xl for a wider dialog -->
+    <div class="modal-dialog modal-xl">
       <div class="modal-content">
         <div class="modal-header">
           <h5 class="modal-title">{{ isEdit ? 'Edit' : 'Add' }} Position</h5>
@@ -209,7 +242,7 @@ const weeklyROR = computed(() => {
                 
                 <div class="summary-item mb-4">
                   <label class="fw-bold">Cost Basis</label>
-                  <div class="value">{{ store.currency(position.strikePrice * position.shares) }}</div>
+                  <div class="value">{{ store.currency(position.costBasis) }}</div>
                 </div>
                 
                 <!-- P/L per share and P/L Total side by side -->
@@ -285,90 +318,85 @@ const weeklyROR = computed(() => {
             <!-- Form column - now second -->
             <div class="col-md-8">
               <form @submit.prevent="save">
-                <!-- Assigned Week -->
+                <!-- Manual entry info block -->
+                <div v-if="position.manual" class="alert alert-info mb-4">
+                  All stock positions after the start date specified for the account will be created during import. Manual entry is intended to record open positions and their cost basis that were acquired before starting LSO.
+                </div>
+                <!-- Symbol (full width, editable for manual) -->
                 <div class="mb-3">
-                  <label for="position-assignedWeek" class="form-label">Assigned Week</label>
-                  <select class="form-select" id="position-assignedWeek" v-model="position.assignedWeek" required>
+                  <label for="position-symbol" class="form-label">Symbol</label>
+                  <input type="text" class="form-control" id="position-symbol" v-model="position.symbol" :disabled="!position.manual" @input="position.symbol = position.symbol.toUpperCase()">
+                </div>
+                <!-- Assigned Week | Sold Week (50/50 split, always disabled) -->
+                <div class="row">
+                  <div class="col-md-6 mb-3">
+                    <label for="position-assignedWeek" class="form-label">Assigned Week</label>
+                    <input type="text" class="form-control" id="position-assignedWeek" :value="position.assignedWeek ? store.weekRange(position.assignedWeek, true) : ''" disabled>
+                  </div>
+                  <div class="col-md-6 mb-3">
+                    <label for="position-soldWeek" class="form-label">Sold Week <small class="text-muted">(if sold)</small></label>
+                    <input type="text" class="form-control" id="position-soldWeek" :value="position.soldWeek ? store.weekRange(position.soldWeek, true) : ''" disabled>
+                  </div>
+                </div>
+                <!-- Shares | Cost Basis (50/50 split, editable for manual) -->
+                <div class="row">
+                  <div class="col-md-6 mb-3">
+                    <label for="position-shares" class="form-label">Shares</label>
+                    <input type="number" class="form-control" id="position-shares" v-model.number="position.shares" min="1" :disabled="!position.manual">
+                  </div>
+                  <div class="col-md-6 mb-3">
+                    <label for="position-costBasis" class="form-label">Cost Basis (Including Fees)</label>
+                    <div class="input-group">
+                      <span class="input-group-text">$</span>
+                      <input type="number" class="form-control" id="position-costBasis" v-model.number="position.costBasis" min="0.01" step="0.01" :disabled="!position.manual">
+                    </div>
+                  </div>
+                </div>
+                <!-- Start Week (full width, editable) -->
+                <div class="mb-3">
+                  <label for="position-startWeek" class="form-label">Start Week</label>
+                  <select class="form-select" id="position-startWeek" v-model="position.startWeek">
                     <option :value="null">Select Week</option>
                     <option v-for="p in store.projections" :key="p.week" :value="p.week">
                       Week {{ p.week }} ({{ store.weekRange(p.week, true) }})
                     </option>
                   </select>
+                  <div class="form-text">
+                    The first week premiums were collected (defaults to Assigned Week, but can be set earlier for migrated/edited positions).
+                  </div>
                 </div>
-                
-                <!-- Position Basic Info -->
-                <div class="mb-3">
-                  <label for="position-symbol" class="form-label">Symbol</label>
-                  <input type="text" class="form-control" id="position-symbol" v-model="position.symbol" required>
-                </div>
-                
-                <div class="mb-3">
-                  <label for="position-shares" class="form-label">Shares</label>
-                  <input type="number" class="form-control" id="position-shares" v-model.number="position.shares" min="1" required>
-                </div>
-                
-                <!-- Price Info -->
+                <!-- Offsetting Profits | Current Price (50/50 split, editable) -->
                 <div class="row">
                   <div class="col-md-6 mb-3">
-                    <label for="position-strikePrice" class="form-label">Strike Price</label>
+                    <label for="position-offsettingProfits" class="form-label">Offsetting Profits</label>
                     <div class="input-group">
                       <span class="input-group-text">$</span>
-                      <input type="number" class="form-control" id="position-strikePrice" v-model.number="position.strikePrice" 
-                             min="0.01" step="0.01" required>
+                      <input type="number" class="form-control" id="position-offsettingProfits" 
+                             v-model.number="position.offsettingProfits" min="0" step="0.01">
+                    </div>
+                    <div class="form-text">
+                      Total PUT/CALL premium income collected to offset this position's cost basis
                     </div>
                   </div>
-                  
                   <div class="col-md-6 mb-3">
                     <label for="position-currentPrice" class="form-label">Current Price <small class="text-muted">(if still held)</small></label>
                     <div class="input-group">
                       <span class="input-group-text">$</span>
-                      <input type="number" class="form-control" id="position-currentPrice" v-model.number="position.currentPrice" 
-                             min="0" step="0.01">
+                      <input type="number" class="form-control" id="position-currentPrice" v-model.number="position.currentPrice" min="0" step="0.01" :disabled="!!position.soldWeek">
                     </div>
                   </div>
                 </div>
-                
-                <!-- Profits - now a single field -->
-                <div class="mb-3">
-                  <label for="position-offsettingProfits" class="form-label">Offsetting Profits</label>
+                <!-- Sell Amount input, only show if soldWeek is set (disabled) -->
+                <div class="mb-3" v-if="position.soldWeek">
+                  <label for="position-sellAmount" class="form-label">Sell Amount <span class="text-danger">*</span></label>
                   <div class="input-group">
                     <span class="input-group-text">$</span>
-                    <input type="number" class="form-control" id="position-offsettingProfits" 
-                           v-model.number="position.offsettingProfits" min="0" step="0.01">
+                    <input type="number" class="form-control" id="position-sellAmount" v-model.number="position.sellAmount" min="0" step="0.01" disabled>
                   </div>
                   <div class="form-text">
-                    Total PUT/CALL premium income collected to offset this position's cost basis
+                    Enter the total proceeds from the sale (after fees/commissions). Required when Sold Week is set.
                   </div>
                 </div>
-                
-                <!-- Sold week - filtered based on assigned week and current week -->
-                <div class="mb-3">
-                  <label for="position-soldWeek" class="form-label d-flex justify-content-between align-items-center">
-                    <span>Sold Week <small class="text-muted">(if sold)</small></span>
-                    <button 
-                      type="button" 
-                      class="btn btn-sm btn-link p-0" 
-                      @click="toggleShowAllWeeks"
-                      v-if="position.assignedWeek"
-                    >
-                      {{ showAllWeeks ? 'Show Recent Weeks' : 'Show All Weeks' }}
-                    </button>
-                  </label>
-                  <select class="form-select" id="position-soldWeek" v-model="position.soldWeek" :disabled="!position.assignedWeek">
-                    <option :value="null">Not Sold</option>
-                    <option v-for="p in availableSoldWeeks" :key="p.week" :value="p.week">
-                      Week {{ p.week }} ({{ store.weekRange(p.week, true) }})
-                      {{ p.week === currentWeek ? '(Current)' : '' }}
-                    </option>
-                  </select>
-                  <div class="form-text" v-if="!position.assignedWeek">
-                    Please select an assigned week first
-                  </div>
-                  <div class="form-text" v-else-if="availableSoldWeeks.length === 0 && !showAllWeeks">
-                    No valid weeks available. Try "Show All Weeks" to see past weeks.
-                  </div>
-                </div>
-                
                 <div class="d-flex justify-content-end mt-4">
                   <button type="button" class="btn btn-secondary me-2" @click="close">Cancel</button>
                   <button type="submit" class="btn btn-primary">Save</button>
@@ -435,5 +463,35 @@ const weeklyROR = computed(() => {
 
 .text-danger {
   color: #dc3545 !important;
+}
+
+/* Modal styles for Pick Start Week */
+.table th, .table td {
+  vertical-align: middle;
+}
+
+.table th {
+  background-color: #f1f1f1;
+  font-weight: 500;
+}
+
+.table td {
+  font-size: 0.9rem;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* Pick Start Modal styles */
+.modal[tabindex="-1"].d-block {
+  display: block;
+  background: rgba(0,0,0,0.2);
+  z-index: 2000;
+}
+
+.modal .modal-dialog {
+  z-index: 2100;
 }
 </style>

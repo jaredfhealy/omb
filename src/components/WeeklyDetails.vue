@@ -6,7 +6,7 @@ import DataTable from '@/components/custom/DataTable.vue'
 const store = useAppStore()
 const selectedRows = ref({})
 const selectionSummary = ref(null)
-const scrollableContainer = ref(null)
+const scrollableWindow = ref(null)
 const currentWeekRef = ref(null)
 const summaryExpanded = ref(false)
 
@@ -17,11 +17,34 @@ function getAssignmentsForWeek(week) {
   )
 }
 
-const getAssignmentsTooltip = (projection) => {
-  const assignments = getAssignmentsForWeek(projection.week)
-  return `New Assignments This Week:<br>
-    ${assignments.map(p => `${p.symbol}: ${p.shares} shares @ ${store.currency(p.strikePrice)}`).join('<br>')}
-    <br>Total: ${store.currency(projection.sharesBalanceAddedThisWeek)}`
+function getSoldPositionsForWeek(week) {
+  return (store.activeAccount.positions || []).filter(position => 
+    position.soldWeek === week
+  )
+}
+
+const getAssignmentsTooltip = (projection, type) => {
+  if (type === 'sold') {
+    const soldPositions = getSoldPositionsForWeek(projection.week)
+    if (soldPositions.length > 0)
+      return `Positions Sold This Week:<br>` +
+      `${soldPositions.map(p2 => `${p2.symbol}: ${p2.shares} shares}`).join('<br>')}` +
+      `<br>Total: ${store.currency(projection.sharesSold)}`
+    else
+      console.log("No sold positions for week", projection.week)
+  }
+  else if (type === 'bought') {
+    const assignments = getAssignmentsForWeek(projection.week)
+
+    if (assignments.length > 0)
+      return `New Assignments This Week:<br>` +
+      `${assignments.map(p => `${p.symbol}: ${p.shares} shares}`).join('<br>')}` + 
+      `<br>Total: ${store.currency(projection.sharesBought)}`
+    else
+      console.log("No assigned positions for week", projection.week)
+  }
+  
+  return "";
 }
 
 // Add function to determine current week
@@ -52,14 +75,30 @@ const columns = [
     value: (item) => store.currency(item.startBalance)
   },
   {
-    key: 'sharesBalance',
+    key: 'startShares',
     header: {
-      text: 'Start: Shares',
-      tooltip: 'Total cost basis of assigned positions'
+      text: 'Start: Shares Bal.',
+      tooltip: 'Total cost basis (balance) of assigned positions at week start'
     },
     class: 'col-6 col-xl',
-    getTooltip: (item) => item.sharesBalanceAddedThisWeek > 0 ? getAssignmentsTooltip(item) : null,
-    value: (item) => store.currency(item.sharesBalance)
+    value: (item) => store.currency(item.startSharesBalance)
+  },
+  {
+    key: 'netShares',
+    header: {
+      text: 'Net Shares',
+      tooltip: 'Net shares bought minus shares sold for this week.'
+    },
+    class: 'col-6 col-xl',
+    value: (item) => store.currency((item.sharesSold || 0) - (item.sharesBought || 0)),
+    getTooltip: (item) => {
+      if ((item.sharesBought || 0) > 0 || (item.sharesSold || 0) > 0) {
+        return `Shares Bought: ${store.currency(item.sharesBought || 0)}<br>Shares Sold: ${store.currency(item.sharesSold || 0)}`
+      }
+      return null;
+    },
+    tooltipHtml: true,
+    slot: 'netShares'
   },
   {
     key: 'netTransaction',
@@ -68,39 +107,29 @@ const columns = [
       tooltip: 'Rows marked with (*) have both deposits and withdrawals'
     },
     class: 'col-6 col-xl',
-    value: (item) => {
-      const result = formatNetTransaction(item.deposit, item.withdrawal)
-      return `${result.value}${result.indicator}`
-    },
     getTooltip: (item) => {
-      const result = formatNetTransaction(item.deposit, item.withdrawal, true)
-      return result.tooltip
+      return getNetTransactionTooltip(item.deposit, item.withdrawal)
     },
     tooltipHtml: true
   },
   {
-    key: 'projectedGrowth',
+    key: 'projectedActualGrowth',
     header: {
-      text: 'Projected',
-      tooltip: 'Expected growth based on estimated weekly % ROR from settings'
+      text: 'Projected/Actual',
+      tooltip: 'Shows actual growth if available, otherwise projected growth. Based on estimated weekly % ROR from settings.'
     },
     class: 'col-6 col-xl',
-    value: (item) => store.currency(item.projectedGrowth)
-  },
-  {
-    key: 'actualGrowth',
-    header: {
-      text: 'Actual',
-      tooltip: 'Realized growth for the current week'
+    value: (item) => store.currency(item.actualGrowth !== null && item.actualGrowth !== undefined ? item.actualGrowth : item.projectedGrowth),
+    getTooltip: (item) => {
+      if (item.actualGrowth !== null && item.actualGrowth !== undefined) {
+        // Preserve the detailed tooltip from the old Actual column
+        return `Avg All: ${store.currency(item.averageGrowth)}<br>` +
+          `Avg to Date: ${store.currency(item.trailingTotalGrowthAvg)}<br>` +
+          `Avg Last 8: ${store.currency(item.trailing8WeekGrowthAvg)}<br>` +
+          `Avg Last 4: ${store.currency(item.trailing4WeekGrowthAvg)}`;
+      }
     },
-    class: 'col-6 col-xl',
-    getTooltip: (item) => item.actualGrowth !== null ? 
-      `Avg All: ${store.currency(item.averageGrowth)}<br>
-       Avg to Date: ${store.currency(item.trailingTotalGrowth)}<br>
-       Avg Last 8: ${store.currency(item.trailing8WeekGrowth)}<br>
-       Avg Last 4: ${store.currency(item.trailing4WeekGrowth)}` : null,
-    tooltipHtml: true,
-    value: (item) => store.currency(item.actualGrowth || 0)
+    tooltipHtml: true
   },
   {
     key: 'ror',
@@ -111,9 +140,9 @@ const columns = [
     class: 'col-6 col-xl',
     getTooltip: (item) => item.actualROR ? 
       `Avg All: ${item.averageROR}%<br>
-       Avg to Date: ${item.trailingTotalROR}%<br>
-       Avg Last 8: ${item.trailing8WeekROR}%<br>
-       Avg Last 4: ${item.trailing4WeekROR}%` : null,
+       Avg to Date: ${item.trailingTotalRORAvg}%<br>
+       Avg Last 8: ${item.trailing8WeekRORAvg}%<br>
+       Avg Last 4: ${item.trailing4WeekRORAvg}%` : null,
     tooltipHtml: true,
     value: (item) => item.actualROR ? `${Number(item.actualROR).toFixed(2)}%` : '0%'
   },
@@ -176,7 +205,7 @@ const scrollToWeek = async (week) => {
   await nextTick()
   
   const element = document.querySelector(`.row-selected[data-week="${week}"]`)
-  if (element && scrollableContainer.value) {
+  if (element && scrollableWindow.value) {
     element.scrollIntoView({
       behavior: 'smooth',
       block: 'center'
@@ -226,7 +255,7 @@ const handleEscape = (e) => {
 const scrollToCurrentWeek = async () => {
   await nextTick()
   
-  if (currentWeekRef.value && dataTableRef.value?.scrollableContainer) {
+  if (currentWeekRef.value && dataTableRef.value?.scrollableWindow) {
     currentWeekRef.value.scrollIntoView({
       behavior: 'smooth',
       block: 'center' // Center the element in the viewport
@@ -277,23 +306,11 @@ function editNetTransactionFromRow(week) {
 }
 
 // Add local function (without exposing to store)
-function formatNetTransaction(deposit, withdrawal, tooltipOnly = false) {
-  const net = deposit - withdrawal
-  const hasMultiple = deposit && withdrawal
+function getNetTransactionTooltip(deposit, withdrawal) {
+  const hasMultiple = deposit > 0 && withdrawal > 0
 
-  if (tooltipOnly && hasMultiple) {
-    return {
-      tooltip: `Deposit: ${store.currency(deposit)}<br>
-                Withdrawal: ${store.currency(withdrawal)}`
-    }
-  }
-
-  return {
-    value: net < 0
-      ? `(${store.currency(Math.abs(net))})`
-      : store.currency(net),
-    style: { color: net < 0 ? 'red' : 'inherit' },
-    indicator: hasMultiple ? '*': ''
+  if (hasMultiple) {
+    return `Deposit: ${store.currency(deposit)}<br>Withdrawal: ${store.currency(withdrawal)}`
   }
 }
 
@@ -357,14 +374,16 @@ const dataTableRef = ref(null)
             <span class="help-text ms-2" v-if="!summaryExpanded">
               Select multiple rows and expand to see summary
             </span>
-            <span class="help-text ms-2 d-none d-xl-inline-block" v-else>Hit Esc to close</span>
+            <span class="help-text ms-2 d-none d-xl-inline-block" v-else>
+              Hit Esc to close ({{ Object.values(selectedRows).filter(Boolean).length }} weeks selected)
+            </span>
           </div>
           <button type="button" class="btn-close btn-close-sm" @click="closeSummary" aria-label="Close"></button>
         </div>
       </div>
       
       <!-- Only show summary when expanded - now with grid layout -->
-      <div v-if="summaryExpanded" class="summary-tables-container">
+      <div v-if="summaryExpanded" class="summary-tables-div">
         <!-- Actual Growth Section -->
         <div class="summary-table-section" v-if="selectionSummary.actualGrowth">
           <h6 class="table-title">Actual Growth</h6>
@@ -453,7 +472,7 @@ const dataTableRef = ref(null)
                 @click="store.showWeeklyRowModal(item.week)">
           <i class="bi bi-pencil-square"></i>
         </button>
-        {{ store.activeAccount.actuals.some(a => Number(a.week) === item.week && a.notes) ? '*' : '' }}
+        {{ store.activeAccount.notes?.some(a => Number(a.week) === item.week && a.note) ? '*' : '' }}
       </template>
 
       <!-- Net Transaction column with edit icon -->
@@ -461,11 +480,18 @@ const dataTableRef = ref(null)
         <div class="d-flex">
           <i class="bi bi-pencil-square cursor-pointer me-1"
              @click="editNetTransactionFromRow(item.week)"></i>
-          <span :style="formatNetTransaction(item.deposit, item.withdrawal).style">
-            {{ formatNetTransaction(item.deposit, item.withdrawal).value }}
-            {{ formatNetTransaction(item.deposit, item.withdrawal).indicator }}
+          <span :class="(item.deposit || 0) < (item.withdrawal || 0) ? 'text-danger' : ''">
+            {{ store.currency(item.deposit - item.withdrawal) }}
+            <span v-if="item.deposit > 0 && item.withdrawal > 0">*</span>
           </span>
         </div>
+      </template>
+
+      <!-- Net Shares column with conditional styling -->
+      <template #netShares="{ item }">
+        <span :class="(item.sharesBought || 0) > (item.sharesSold || 0) ? 'text-danger' : ''">
+          {{ store.currency((item.sharesSold || 0) - (item.sharesBought || 0)) }}
+        </span>
       </template>
     </DataTable>
   </div>
@@ -516,6 +542,7 @@ const dataTableRef = ref(null)
   box-shadow: 0 2px 8px rgba(0,0,0,0.15);
   z-index: 1050;
   transition: all 0.3s ease;
+  display: block;
 }
 
 .summary-header {
@@ -607,7 +634,7 @@ const dataTableRef = ref(null)
 }
 
 /* New styles for the two-table layout */
-.summary-tables-container {
+.summary-tables-div {
   display: flex;
   flex-wrap: wrap;
   gap: 15px;

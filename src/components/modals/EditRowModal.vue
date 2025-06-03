@@ -5,13 +5,18 @@ import { useAppStore } from '@/stores/app'
 const store = useAppStore()
 const row = ref(null)
 const showModal = computed(() => row.value !== null)
+if (!Array.isArray(store.activeAccount.notes)) store.activeAccount.notes = []
 
 const show = (week) => {
-  const existingActual = store.activeAccount.actuals.find(a => Number(a.week) === week)
+  // Find the week in actuals to get the growth value
+  const actual = store.activeAccount.actuals.find(a => Number(a.week) === week)
+
+  // Find the note for this week in the notes array
+  const noteEntry = store.activeAccount.notes.find(n => Number(n.week) === week)
   row.value = {
     week,
-    growth: existingActual?.growth || null,
-    notes: existingActual?.notes || ''
+    growth: actual?.growth ?? null,
+    note: noteEntry?.note || ''
   }
 }
 
@@ -20,28 +25,23 @@ const close = () => {
 }
 
 const save = () => {
-  const weekIndex = store.activeAccount.actuals.findIndex(a => Number(a.week) === row.value.week)
-  const hasData = row.value.growth || row.value.notes.trim()
+  const week = row.value.week
 
-  if (weekIndex === -1 && hasData) {
-    store.activeAccount.actuals.push({
-      week: row.value.week.toString(),
-      growth: row.value.growth,
-      notes: row.value.notes.trim() || null
+  // Find the actual for this week to get the weekStart date
+  const actual = store.activeAccount.actuals.find(a => Number(a.week) === week)
+  const weekStart = actual?.weekStart || null
+
+  // Remove any existing note for this week
+  store.activeAccount.notes = store.activeAccount.notes.filter(n => Number(n.week) !== week)
+  // Only save if note is not empty
+  if (row.value.note && row.value.note.trim()) {
+    store.activeAccount.notes.push({
+      week,
+      weekStart,
+      note: row.value.note.trim()
     })
-  } else if (weekIndex !== -1) {
-    if (hasData) {
-      store.activeAccount.actuals[weekIndex] = {
-        week: row.value.week.toString(),
-        growth: row.value.growth,
-        notes: row.value.notes.trim() || null
-      }
-    } else {
-      store.activeAccount.actuals.splice(weekIndex, 1)
-    }
   }
-
-  store.calculateProjections()
+  store.saveBacon()
   close()
 }
 
@@ -60,11 +60,11 @@ store.showWeeklyRowModal = (week) => show(week)
         <div class="modal-body">
           <div class="mb-3">
             <label class="form-label">Actual Growth ($)</label>
-            <input type="number" class="form-control" v-model.number="row.growth" step="0.01">
+            <input type="number" class="form-control" v-model.number="row.growth" step="0.01" disabled>
           </div>
           <div class="mb-3">
             <label class="form-label">Notes</label>
-            <textarea class="form-control" v-model="row.notes" rows="5"
+            <textarea class="form-control" v-model="row.note" rows="5"
               placeholder="Enter notes for this week..."></textarea>
           </div>
         </div>

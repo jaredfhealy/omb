@@ -35,6 +35,7 @@ export const useAppStore = defineStore('app', {
     activeTab: 'yearly',
     transactionFilter: 'all',
     selectedWeek: null,
+    windowWidth: window.innerWidth,
   }),
 
   getters: {
@@ -52,7 +53,9 @@ export const useAppStore = defineStore('app', {
 
     activeAccount(state) {
       return state.db.accounts.find(a => a.id === state.db.selectedAccountId)
-    }
+    },
+
+    isBelowXL: (state) => state.windowWidth < 1200,
   },
 
   actions: {
@@ -120,34 +123,46 @@ export const useAppStore = defineStore('app', {
 
       for (let week = 1; week <= this.weeks; week++) {
         const transactions = this._getTransactionsForWeek(week)
-        const projectedGrowth = startBalance * (this.activeAccount.settings.weeklyReturn / 100)
 
-        // Calculate positions being sold this week
-        const positionsSoldThisWeek = (this.activeAccount.positions || []).reduce((sum, position) => {
-          if (position.soldWeek === week) {
-            return sum + (position.strikePrice * position.shares)
+        // Calculate shares sold this week and previous week
+        let sharesSold = 0
+        let startSharesBalance = 0
+        let sharesSoldPreviousWeek = 0
+        const sells = this.activeAccount.sells || []
+        for (let i = 0; i < sells.length; i++) {
+          const sell = sells[i]
+          if (sell.week === week) {
+            sharesSold += sell.amount || 0
+          } else if (sell.week === week - 1) {
+            sharesSoldPreviousWeek += sell.amount || 0
           }
-          return sum
-        }, 0)
+        }
 
-        // Calculate newly assigned positions for this week
-        const sharesBalanceAddedThisWeek = (this.activeAccount.positions || []).reduce((sum, position) => {
+        // Calculate shares bought this week and previous week, and shares held at start of week
+        let sharesBought = 0
+        let sharesBoughtPreviousWeek = 0
+        const positions = this.activeAccount.positions || []
+        for (let i = 0; i < positions.length; i++) {
+          const position = positions[i]
+          // Bought (assigned) this week
           if (position.assignedWeek === week) {
-            return sum + (position.strikePrice * position.shares)
+            sharesBought += Math.abs(position.costBasis || 0)
           }
-          return sum
-        }, 0)
+          // Bought (assigned) previous week
+          if (position.assignedWeek === week - 1) {
+            sharesBoughtPreviousWeek += Math.abs(position.costBasis || 0)
+          }
+          // Shares held at start of week (assigned before this week, not yet sold)
+          if (position.assignedWeek < week && (!position.soldWeek || position.soldWeek >= week)) {
+            startSharesBalance += Math.abs(position.costBasis || 0)
+          }
+        }
 
-        // Calculate total shares balance including previously assigned positions, excluding sold positions
-        const sharesBalance = (this.activeAccount.positions || []).reduce((sum, position) => {
-          if (position.assignedWeek <= week && (!position.soldWeek || position.soldWeek > week)) {
-            return sum + (position.strikePrice * position.shares)
-          }
-          return sum
-        }, 0)
+        // Calculate projected growth based on total account value (cash + shares)
+        const projectedGrowth = (startBalance + startSharesBalance) * (this.activeAccount.settings.weeklyReturn / 100)
 
         // Add sold positions back to cash balance and subtract newly assigned positions
-        startBalance = startBalance + positionsSoldThisWeek - sharesBalanceAddedThisWeek
+        startBalance = startBalance + sharesSoldPreviousWeek - sharesBoughtPreviousWeek
 
         // Calculate week's end date
         const weekStartDate = new Date(this.activeAccount.settings.startDate)
@@ -179,21 +194,26 @@ export const useAppStore = defineStore('app', {
         const last4WeeksGrowth = actualGrowths.slice(-4)
         const last8WeeksGrowth = actualGrowths.slice(-8)
         
-        const trailing4WeekGrowth = last4WeeksGrowth.length > 0
-          ? last4WeeksGrowth.reduce((sum, g) => sum + g, 0) / last4WeeksGrowth.length
+        // Add calculation for trailing 4-week growth total (sum)
+        const trailing4WeekGrowthTotal = last4WeeksGrowth.length > 0
+          ? last4WeeksGrowth.reduce((sum, g) => sum + g, 0)
           : null
         
-        const trailing8WeekGrowth = last8WeeksGrowth.length > 0
+        const trailing4WeekGrowthAvg = last4WeeksGrowth.length > 0
+          ? trailing4WeekGrowthTotal / last4WeeksGrowth.length
+          : null
+        
+        const trailing8WeekGrowthAvg = last8WeeksGrowth.length > 0
           ? last8WeeksGrowth.reduce((sum, g) => sum + g, 0) / last8WeeksGrowth.length
           : null
 
         // Calculate trailing total growth
-        const trailingTotalGrowth = actualGrowths.length > 0
+        const trailingTotalGrowthAvg = actualGrowths.length > 0
           ? actualGrowths.reduce((sum, g) => sum + g, 0) / actualGrowths.length
           : null
 
         // Calculate this week's actual ROR if available
-        const weekROR = actualEntry && actualEntry.growth > 0 ? (Number(actualEntry.growth) / (startBalance + sharesBalance) * 100) : null
+        const weekROR = actualEntry ? (Number(actualEntry.growth) / (startBalance + startSharesBalance) * 100) : null
 
         // Track RORs when available
         if (weekROR !== null) {
@@ -204,27 +224,30 @@ export const useAppStore = defineStore('app', {
         const last4Weeks = actualRORs.slice(-4)
         const last8Weeks = actualRORs.slice(-8)
         
-        const trailing4WeekROR = last4Weeks.length > 0 
+        const trailing4WeekRORAvg = last4Weeks.length > 0 
           ? last4Weeks.reduce((sum, ror) => sum + ror, 0) / last4Weeks.length 
           : null
         
-        const trailing8WeekROR = last8Weeks.length > 0 
+        const trailing8WeekRORAvg = last8Weeks.length > 0 
           ? last8Weeks.reduce((sum, ror) => sum + ror, 0) / last8Weeks.length 
           : null
 
         // Calculate trailing total ROR
-        const trailingTotalROR = actualRORs.length > 0
+        const trailingTotalRORAvg = actualRORs.length > 0
           ? actualRORs.reduce((sum, ror) => sum + ror, 0) / actualRORs.length
           : null
 
-        // Adjust end balance calculation - ADD sharesBalance here for total assets
-        const endBalance = startBalance + growth + transactions.deposits - transactions.totalWithdrawals + sharesBalance
+        // Adjust end balance calculation - ADD startSharesBalance here for total assets
+        const endBalance = startBalance + growth + transactions.deposits - transactions.totalWithdrawals + startSharesBalance
 
         this.projections.push({
           week,
           startBalance,
-          sharesBalanceAddedThisWeek,
-          sharesBalance,
+          startSharesBalance,
+          sharesBought,
+          sharesSold,
+          sharesBoughtPreviousWeek,
+          sharesSoldPreviousWeek,
           deposit: transactions.deposits,
           withdrawal: transactions.totalWithdrawals,
           withdrawalsByCategory: transactions.withdrawals,
@@ -232,18 +255,19 @@ export const useAppStore = defineStore('app', {
           actualGrowth: actualEntry ? Number(actualEntry.growth) : null,
           actualROR: weekROR,
           averageROR: 0,
-          trailing4WeekROR: trailing4WeekROR?.toFixed(2),
-          trailing8WeekROR: trailing8WeekROR?.toFixed(2),
-          trailingTotalROR: trailingTotalROR?.toFixed(2),
+          trailing4WeekRORAvg: trailing4WeekRORAvg?.toFixed(2),
+          trailing8WeekRORAvg: trailing8WeekRORAvg?.toFixed(2),
+          trailingTotalRORAvg: trailingTotalRORAvg?.toFixed(2),
           averageGrowth: 0,
-          trailing4WeekGrowth: trailing4WeekGrowth?.toFixed(2),
-          trailing8WeekGrowth: trailing8WeekGrowth?.toFixed(2),
-          trailingTotalGrowth: trailingTotalGrowth?.toFixed(2),
+          trailing4WeekGrowthAvg: trailing4WeekGrowthAvg?.toFixed(2),
+          trailing8WeekGrowthAvg: trailing8WeekGrowthAvg?.toFixed(2),
+          trailingTotalGrowthAvg: trailingTotalGrowthAvg?.toFixed(2),
+          trailing4WeekGrowthTotal: trailing4WeekGrowthTotal?.toFixed(2),
           endBalance
         })
 
-        // Next week's start balance should be cash only (endBalance minus sharesBalance)
-        startBalance = endBalance - sharesBalance
+        // Next week's start balance should be cash only (endBalance minus startSharesBalance)
+        startBalance = endBalance - startSharesBalance
       }
 
       // Calculate growth average all time, must be calculated after all projections are done
@@ -303,8 +327,15 @@ export const useAppStore = defineStore('app', {
 
     // Utility and formatting Methods
     currency(value) {
-      if (!value) return '$0.00'
-      return '$' + Number(value).toFixed(2).replace(/\d(?=(\d{3})+\.)/g, '$&,')
+      const num = Number(value)
+      if (!value || isNaN(num)) return '$0.00'
+      if (num < 0) {
+        // Format negative numbers with parentheses
+        return '($' + Math.abs(num).toFixed(2).replace(/\d(?=(\d{3})+\.)/g, '$&,') + ')'
+      } else {
+        // Format positive numbers normally
+        return '$' + num.toFixed(2).replace(/\d(?=(\d{3})+\.)/g, '$&,')
+      }
     },
 
     weekRange(weekNum, plainText = false) {
@@ -368,5 +399,30 @@ export const useAppStore = defineStore('app', {
       })
     },
 
+    setupWindowResizeListener() {
+      const handleResize = () => {
+        this.windowWidth = window.innerWidth
+      }
+      
+      window.addEventListener('resize', handleResize)
+      
+      // To ensure proper cleanup, we can return a function that removes the event listener
+      return () => window.removeEventListener('resize', handleResize)
+    },
+
+    getPositionKey(pos, action) {
+      return `${pos.symbol}_${pos.shares}_${action}_${pos.date}_${Math.abs(pos.costBasis || pos.amount)}`
+    },
+
+    calculateWeekStartEnd(weekNumber) {
+      const startDate = new Date(this.activeAccount.settings.startDate)
+      startDate.setDate(startDate.getDate() + (weekNumber - 1) * 7)
+      const endDate = new Date(startDate)
+      endDate.setDate(startDate.getDate() + 6)
+      return {
+        weekStart: startDate.toISOString().slice(0, 10),
+        weekEnd: endDate.toISOString().slice(0, 10)
+      }
+    }
   }
 })

@@ -27,7 +27,8 @@ function editTransaction(transaction) {
     startWeek: transaction.startWeek,
     endWeek: transaction.endWeek || null,
     amount: Number(transaction.amount),
-    category: transaction.category || null
+    category: transaction.category || null,
+    positionKey: transaction.positionKey || null // Ensure positionKey is copied
   }
   editingIndex.value = transaction.originalIndex
 }
@@ -131,7 +132,12 @@ store.editTransaction = editTransaction
               <option value="taxes">Taxes</option>
               <option value="transfer">Transfer</option>
               <option value="adjustment">Adjustment</option>
+              <option value="realized_PL">Realized Profit/Loss</option>
             </select>
+          </div>
+          <div class="form-group mb-3" v-if="editingTransaction.positionKey">
+            <label>Position Key</label>
+            <input type="text" class="form-control" :value="editingTransaction.positionKey" disabled>
           </div>
           <div class="form-group mb-3">
             <label class="me-2">Start Week</label>

@@ -3,22 +3,27 @@ import { ref, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import AppNavigation from '@/components/AppNavigation.vue'
-import { ConfirmModal, ChangePasswordModal } from '@/components/modals'
+import {
+  ConfirmModal, 
+  ChangePasswordModal,
+  EditAccountModal,
+  SettingsModal,
+  ManageAccountModal,
+  ImportTransactionsModal
+} from '@/components/modals'
 
 const store = useAppStore()
 const route = useRoute()
-const confirmModalRef = ref(null)
-
-const containerStyle = computed(() => {
-  return route.path !== '/summarizer' ? {} : {}
-})
-// temp, removed from containerStyle function: height: 'calc(100vh - 115px)'
-
+const confirmModal = ref(null)
 const isOnSummarizer = computed(() => route.path === '/summarizer')
 
-// Expose confirm modal methods to the store
-store.confirm = (message, callback) => {
-  confirmModalRef.value?.show(message, callback)
+// Set up the confirm method
+store.confirm = (message, callback, cancelCallback) => {
+  if (confirmModal.value) {
+    confirmModal.value.show(message, callback, cancelCallback);
+  } else {
+    console.error('ConfirmModal ref is not available');
+  }
 }
 </script>
 
@@ -27,13 +32,19 @@ store.confirm = (message, callback) => {
   <div :class="[
     store.user ? 'container-fluid' : 'container',
     { 'fixed-nav': isOnSummarizer }
-  ]" :style="containerStyle" v-cloak>
+  ]" v-cloak>
     <router-view/>
   </div>
   
-  <!-- Global Modals -->
-  <ConfirmModal ref="confirmModalRef" v-if="store.user" />
+  <!-- Global Modals - fix the ref name -->
+  <ConfirmModal ref="confirmModal" v-if="store.user" />
   <ChangePasswordModal v-if="store.user" />
+  
+  <!-- Account Level Modals -->
+  <SettingsModal />
+  <ManageAccountModal />
+  <EditAccountModal />
+  <ImportTransactionsModal />
 </template>
 
 <style>
@@ -61,5 +72,9 @@ store.confirm = (message, callback) => {
 
 .fixed-nav {
   padding-top: 72px;
+}
+
+#confirm-modal {
+  z-index: 1060 !important;
 }
 </style>
