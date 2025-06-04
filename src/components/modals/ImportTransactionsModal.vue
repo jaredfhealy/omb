@@ -15,7 +15,7 @@ const deleteAllData = ref(false) // Default to false for this option
 
 // Modal control methods
 const show = () => {
-  migrateNotesToArray(); // Trigger migration when modal is displayed
+  migrateNotesToArray() // Trigger migration when modal is displayed
   isVisible.value = true
   resetForm()
 }
@@ -33,7 +33,6 @@ const resetForm = () => {
   errorMessage.value = ''
   discardFirstWeek.value = true // Reset to default
   deleteAllData.value = false // Reset to default
-  forceRecalculateAll.value = false // Reset to default
   
   // Reset the file input element to clear the selected file
   const fileInput = document.querySelector('#csvFile')
@@ -63,11 +62,18 @@ const processImport = async () => {
     errorMessage.value = 'Please select a CSV file first'
     return
   }
-  
-  // Call confirm with both success and cancel callbacks
+
+  // Get the filename and replace underscores with spaces
+  const fileName = csvFile.value.name.replace(/_/g, ' ')
+  const accountName = store.activeAccount.name.trim()
+  // Check if the filename starts with the account name (case-insensitive)
+  let confirmMessage = `Are you sure you want to import transactions into the "${store.activeAccount.name}" account?`
+  if (!fileName.toLowerCase().startsWith(accountName.toLowerCase())) {
+    confirmMessage = `WARNING: The file you selected ("${fileName}") does not appear to match the current account ("${accountName}"). Are you sure you want to import this file?`
+  }
+
   store.confirm(
-    `Are you sure you want to import transactions into the "${store.activeAccount.name}" account?`,
-    // Success callback
+    confirmMessage,
     async () => {
       // User confirmed, proceed with import
       isProcessing.value = true
@@ -80,6 +86,9 @@ const processImport = async () => {
         const results = await importTransactionsFromCSV(fileToProcess)
         importResults.value = results
         hasError.value = false
+        
+        // Trigger projections and save
+        store.calculateProjections()
       } catch (error) {
         hasError.value = true
         errorMessage.value = error.message || 'An error occurred during import'
@@ -88,11 +97,8 @@ const processImport = async () => {
         isProcessing.value = false
       }
     },
-    // Cancel callback - close the import modal
-    () => {
-      close();
-    }
-  );
+    () => { close() }
+  )
 }
 
 // CSV import function - moved from store
@@ -104,34 +110,32 @@ async function importTransactionsFromCSV(file) {
   
   try {
     // Step 1: Parse CSV file and extract structured data
-    const text = await file.text();
-    const { dataRows, errors, meta } = parseCSV(text);
+    const text = await file.text()
+    const { dataRows, errors, meta } = parseCSV(text)
 
-    if (errors.length === 0) {
-      // If delete all data is selected, clear all data arrays before import
-      if (deleteAllData.value) {
-        store.activeAccount.actuals = []
-        store.activeAccount.positions = []
-        store.activeAccount.sells = []
-      }
+    // If delete all data is selected, clear all data arrays before import
+    if (deleteAllData.value) {
+      store.activeAccount.actuals = []
+      store.activeAccount.positions = []
+      store.activeAccount.sells = []
     }
     
     // Get broker map for type categorization
-    const brokerMap = _getBrokerageMap(meta.headers.toString());
+    const brokerMap = _getBrokerageMap(meta.headers.toString())
     
     // Step 2: Process data rows and assign to actuals array by week
     // Returns arrays of transactions, positions, and sells for further processing
     const { transactionsImport, positionsImport, sellsImport, processDataResults } = 
-      _processData(dataRows, brokerMap);
+      _processData(dataRows, brokerMap)
     
     // Step 3: Process transactions into account transactions array
-    const transactionResults = _processTransactions(transactionsImport);
+    const transactionResults = _processTransactions(transactionsImport)
 
     // Step 4: Process positions data
-    const positionsResults = _processPositions(positionsImport, brokerMap);
+    const positionsResults = _processPositions(positionsImport)
 
     // Step 5: Process sell data if any
-    const sellResults = _processSellData(sellsImport);
+    const sellResults = _processSellData(sellsImport)
     
     // Combine all results for display
     const results = {
@@ -143,25 +147,25 @@ async function importTransactionsFromCSV(file) {
       transfersAdded: transactionResults.transactionsAdded, // Map to template expected property
       errors: errors,
       skippedRows: errors.length
-    };
+    }
     
     // After processing the import, recalculate any weeks that need it
-    const recalculationResults = calculateWeeklyTotals();
-    results.recalculation = recalculationResults;
+    const recalculationResults = calculateWeeklyTotals()
+    results.recalculation = recalculationResults
     
-    return results;
+    return results
   } catch (error) {
-    console.error('Import transaction error:', error);
-    throw error;
+    console.error('Import transaction error:', error)
+    throw error
   }
 }
 
 // Brokerage format detection and mapping function
 function _getBrokerageMap(keySearch) {
   // If keySearch is empty, check for active account's formatKey
-  keySearch = store.activeAccount?.formatKey || keySearch;
+  keySearch = store.activeAccount?.formatKey || keySearch
   if (!keySearch || keySearch.length === 0) {
-    throw new Error('No brokerage format specified');
+    throw new Error('No brokerage format specified')
   }
 
   // Define known brokerage formats with their header patterns and column mappings
@@ -186,57 +190,57 @@ function _getBrokerageMap(keySearch) {
   }
   
   // Try direct lookup first (header string as key)
-  let brokerMap = knownFormats[keySearch];
+  let brokerMap = knownFormats[keySearch]
   
   // If not found, search by formatKey
   if (!brokerMap) {
     // Loop through all formats and find one with matching formatKey
     for (const key in knownFormats) {
       if (knownFormats[key].headerRow === keySearch) {
-        brokerMap = knownFormats[key];
+        brokerMap = knownFormats[key]
   
         // Store the brokerage name in our account data for recalculation purposes
-        store.activeAccount.formatKey = key;
-        break;
+        store.activeAccount.formatKey = key
+        break
       }
     }
   }
   
   // If still not found, default to the first format
   if (!brokerMap) {
-    const firstHeader = Object.keys(knownFormats)[0];
-    brokerMap = knownFormats[firstHeader];
+    const firstHeader = Object.keys(knownFormats)[0]
+    brokerMap = knownFormats[firstHeader]
   }
   
   // Return the current map
-  return brokerMap;
+  return brokerMap
 }
 
 // Helper function to parse financial values from string
 function _parseAmount(amountStr, defaultValue = 0) {
   if (!amountStr || amountStr.length === 0) {
-    return defaultValue;
+    return defaultValue
   }
   
   // Check if the value is in parentheses (negative)
-  const isNegative = amountStr.includes('(') && amountStr.includes(')');
+  const isNegative = amountStr.includes('(') && amountStr.includes(')')
   
   // Remove all non-numeric characters except decimal point and minus sign
-  amountStr = amountStr.replace(/[^\d.-]/g, '');
+  amountStr = amountStr.replace(/[^\d.-]/g, '')
   
   // Apply negative sign if needed (for values in parentheses)
   if (isNegative && !amountStr.startsWith('-')) {
-    amountStr = `-${amountStr}`;
+    amountStr = `-${amountStr}`
   }
   
   // Parse to float
-  const parsedValue = parseFloat(amountStr);
+  const parsedValue = parseFloat(amountStr)
   if (isNaN(parsedValue)) {
-    return defaultValue;
+    return defaultValue
   }
   
   // Round to 2 decimal places for financial values
-  return Math.round(parsedValue * 100) / 100;
+  return Math.round(parsedValue * 100) / 100
 }
 
 // CSV parser function
@@ -245,75 +249,80 @@ function parseCSV(csvText) {
   const parseResult = Papa.parse(csvText, {
     skipEmptyLines: true,
     header: false
-  });
+  })
   
-  const lines = parseResult.data;
+  const lines = parseResult.data
   if (!lines || lines.length === 0) {
-    throw new Error('CSV file appears to be empty');
+    throw new Error('CSV file appears to be empty')
   }
   
-  const headerRow = lines[0];
+  const headerRow = lines[0]
   
   // Detect brokerage format and get column mapping
-  const brokerageMap = _getBrokerageMap(headerRow.toString());
-  const columnMap = brokerageMap.columns;
+  const brokerageMap = _getBrokerageMap(headerRow.toString())
+  const columnMap = brokerageMap.columns
   
   // Check that required columns exist
-  const requiredColumns = ['date', 'action', 'symbol', 'amount'];
+  const requiredColumns = ['date', 'action', 'symbol', 'amount']
   for (const col of requiredColumns) {
     if (columnMap[col] === undefined) {
-      throw new Error(`CSV must contain ${requiredColumns.join(', ')} columns`);
+      throw new Error(`CSV must contain ${requiredColumns.join(', ')} columns`)
     }
   }
   
   // Parse data rows - store all transaction data
-  const dataRows = [];
-  const errors = [];
+  const dataRows = []
+  const errors = []
   
   // Start from index 1 to skip the header
   for (let i = 1; i < lines.length; i++) {
-    const values = lines[i];
-    if (!values || values.length === 0) continue;
+    const values = lines[i]
+    if (!values || values.length === 0) continue
 
     // Parse date and amount but don't skip any transaction types yet
-    let transactionDate;
+    let transactionDate
     
     // Parse date
     try {
-      const dateStr = values[columnMap.date];
-      let dateToUse = dateStr;
+      const dateStr = values[columnMap.date]
+      let dateToUse = dateStr
       
       // Check if the date has the special "as of" format
       if (dateStr && dateStr.includes(' as of ')) {
-        dateToUse = dateStr.split(' as of ')[0].trim();
+        dateToUse = dateStr.split(' as of ')[0].trim()
       }
       
-      transactionDate = new Date(dateToUse);
+      transactionDate = new Date(dateToUse)
       if (isNaN(transactionDate.getTime())) {
-        throw new Error('Invalid date');
+        throw new Error('Invalid date')
       }
     } catch (e) {
       errors.push({
         message: `Invalid date format at line ${i+1}: "${values[columnMap.date]}"`,
         line: i+1
-      });
-      continue;
+      })
+      continue
     }
 
     // Create a data object with all available data
+    const actionValue = (values[columnMap.action] || '').trim()
+    const amountValue = values[columnMap.amount] ? _parseAmount(values[columnMap.amount]) : 0
+    // Skip any action of "journal" with amount 0
+    if (actionValue.toLowerCase() === 'journal' && amountValue === 0) continue
+
     const dataObj = {
       date: transactionDate.toISOString().split('T')[0], // Store as YYYY-MM-DD
       description: values[columnMap.description] || '',
-      amount: values[columnMap.amount] ? _parseAmount(values[columnMap.amount]) : 0,
-      action: values[columnMap.action] || '',
+      amount: amountValue,
+      action: actionValue,
       symbol: values[columnMap.symbol] || '',
       quantity: values[columnMap.quantity] ? parseInt(values[columnMap.quantity].replace(/,/g, ''), 10) : 0,
       price: values[columnMap.price] ? _parseAmount(values[columnMap.price]) : 0,
       fees: values[columnMap.fees] ? _parseAmount(values[columnMap.fees]) : 0
-    };
+    }
 
     // Add to the data array (without filtering)
-    dataRows.push(dataObj);
+    dataRows.push(dataObj)
   }
   
   // Add any Papa Parse errors
@@ -322,8 +331,8 @@ function parseCSV(csvText) {
       errors.push({
         message: `CSV parsing error: ${error.message} at line ${error.row + 1}`,
         line: error.row + 1
-      });
-    });
+      })
+    })
   }
   
   return { 
@@ -333,52 +342,52 @@ function parseCSV(csvText) {
       headers: headerRow, 
       brokerageFormat: brokerageMap.name 
     } 
-  };
+  }
 }
 
 // Process data rows and organize into actuals and identify transactions/positions
 function _processData(dataRows, brokerMap) {
   // Variables used for processing
-  let rowsProcessed = 0;
-  let transactionsImport = [];
-  let positionsImport = [];
-  let sellsImport = [];
-  let smallestWeek = Infinity;
-  let weeksChanged = [];
+  let rowsProcessed = 0
+  let transactionsImport = []
+  let positionsImport = []
+  let sellsImport = []
+  let smallestWeek = Infinity
+  let weeksChanged = []
   
   // Get the account start date
-  const startDate = new Date(store.activeAccount.settings.startDate);
+  const startDate = new Date(store.activeAccount.settings.startDate)
   
   // Create a mapping of transactions by week
-  const dataByWeek = {};
+  const dataByWeek = {}
   
   // First pass: Group all data rows by their corresponding week
   dataRows.forEach(dataRow => {
     // Calculate which week this data row belongs to
-    const transactionDate = new Date(dataRow.date);
-    const diffTime = transactionDate - startDate;
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    const transactionDate = new Date(dataRow.date)
+    const diffTime = transactionDate - startDate
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
     
     // Skip rows before the start date
-    if (diffDays < 0) return;
+    if (diffDays < 0) return
     
-    const week = Math.floor(diffDays / 7) + 1;
+    const week = Math.floor(diffDays / 7) + 1
     
     // Track smallest week for potential discarding
     if (week < smallestWeek) {
-      smallestWeek = week;
+      smallestWeek = week
     }
     
     // Initialize the array for this week if it doesn't exist
     if (!dataByWeek[week]) {
-      dataByWeek[week] = [];
+      dataByWeek[week] = []
     }
     
     // Add this row to the week's array
-    dataByWeek[week].push(dataRow);
+    dataByWeek[week].push(dataRow)
     
     // Identify if this is a transaction, position, or sell based on action
-    const action = dataRow.action.toLowerCase();
+    const action = dataRow.action.toLowerCase()
     
     // Categorize based on broker map types
     if (brokerMap.transactionTypes.includes(action)) {
@@ -386,41 +395,41 @@ function _processData(dataRows, brokerMap) {
       transactionsImport.push({
         ...dataRow,
         week: week
-      });
+      })
     } else if (brokerMap.positionTypes.includes(action)) {
       // Add to positions import for later processing (only buys)
       positionsImport.push({
         ...dataRow,
         week: week
-      });
+      })
     } else if (brokerMap.sellTypes && brokerMap.sellTypes.includes(action)) {
       // Add to sells import for later processing (only sells)
       sellsImport.push({
         ...dataRow,
         week: week
-      });
+      })
     }
     
-    rowsProcessed++;
-  });
+    rowsProcessed++
+  })
   
   // If requested, discard the first week's data
   if (discardFirstWeek.value && smallestWeek !== Infinity) {
-    delete dataByWeek[smallestWeek];
+    delete dataByWeek[smallestWeek]
     // Adjust the processed count
     if (dataByWeek[smallestWeek]) {
-      rowsProcessed -= dataByWeek[smallestWeek].length;
+      rowsProcessed -= dataByWeek[smallestWeek].length
     }
   }
   
   // Process each week's data into the actuals array
-  const weeksProcessed = Object.keys(dataByWeek).length;
+  const weeksProcessed = Object.keys(dataByWeek).length
 
   Object.entries(dataByWeek).forEach(([week, weekData]) => {
-    const weekNumber = parseInt(week);
+    const weekNumber = parseInt(week)
     
     // Find existing entry for this week
-    const existingEntry = store.activeAccount.actuals.find(a => parseInt(a.week) === weekNumber);
+    const existingEntry = store.activeAccount.actuals.find(a => parseInt(a.week) === weekNumber)
     
     if (!existingEntry) {
       // Create new entry with data array and hash
@@ -428,11 +437,11 @@ function _processData(dataRows, brokerMap) {
         week: weekNumber,
         growth: 0,
         data: [...weekData]
-      });
+      })
       
-      weeksChanged.push(weekNumber);
+      weeksChanged.push(weekNumber)
     }
-  });
+  })
 
   return {
     transactionsImport,
@@ -444,54 +453,54 @@ function _processData(dataRows, brokerMap) {
       weeksUpdated: weeksChanged.length,
       weeksChanged
     }
-  };
+  }
 }
 
 function _processTransactions(transactionsImport) {
-  let transactionsAdded = 0;
-  let transactionsDeleted = 0;
+  let transactionsAdded = 0
+  let transactionsDeleted = 0
   
   // Get the account start date
-  const startDate = new Date(store.activeAccount.settings.startDate);
+  const startDate = new Date(store.activeAccount.settings.startDate)
   
   // Delete existing transactions if requested (for deposits/withdrawals)
   if (deleteAllData.value) {
     if (store.activeAccount.transactions && store.activeAccount.transactions.length) {
       // Calculate the current week based on today's date
-      const today = new Date();
-      const diffTime = today - startDate;
-      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-      const currentWeek = Math.floor(diffDays / 7) + 1;
+      const today = new Date()
+      const diffTime = today - startDate
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
+      const currentWeek = Math.floor(diffDays / 7) + 1
       
       // Count transactions to be deleted (those at or before current week)
       const transactionsToDelete = store.activeAccount.transactions.filter(t => 
         t.startWeek <= currentWeek
-      );
+      )
       
-      transactionsDeleted = transactionsToDelete.length;
+      transactionsDeleted = transactionsToDelete.length
       
       // Filter out transactions for weeks at or before the current week
       store.activeAccount.transactions = store.activeAccount.transactions.filter(t => 
         t.startWeek > currentWeek
-      );
+      )
     }
   }
   
   // Process each transaction
   transactionsImport.forEach(transaction => {
     // Create a proper transaction object
-    const week = transaction.week;
+    const week = transaction.week
     
     // Determine if it's a deposit or withdrawal based on amount
-    const isDeposit = transaction.amount >= 0;
+    const isDeposit = transaction.amount >= 0
     const transactionObject = {
       category: isDeposit ? '' : 'Income',
       amount: Math.abs(transaction.amount),
       type: isDeposit ? 'deposit' : 'withdrawal',
       description: transaction.description,
-      startWeek: week,
-      endWeek: week
-    };
+      startWeek: parseInt(week),
+      endWeek: parseInt(week)
+    }
     
     // Check if a matching transaction already exists
     const existingTransaction = store.activeAccount.transactions.find(t => 
@@ -499,48 +508,52 @@ function _processTransactions(transactionsImport) {
       t.startWeek === week && 
       (t.endWeek === week || t.endWeek == "") && 
       t.amount === transactionObject.amount
-    );
+    )
     
     // Only add if no matching transaction exists
     if (!existingTransaction) {
-      store.activeAccount.transactions.push(transactionObject);
-      transactionsAdded++;
+      store.activeAccount.transactions.push(transactionObject)
+      transactionsAdded++
     }
-  });
+  })
   
   return {
     transactionsProcessed: transactionsImport.length,
     transactionsAdded,
     transactionsDeleted
-  };
+  }
 }
 
-function _processPositions(positionsImport, brokerMap) {
-  if (!Array.isArray(positionsImport) || positionsImport.length === 0) return;
-  if (!store.activeAccount.positions) store.activeAccount.positions = [];
+function _processPositions(positionsImport) {
+  if (!Array.isArray(positionsImport) || positionsImport.length === 0) return
+  if (!store.activeAccount.positions) store.activeAccount.positions = []
 
-  positionsImport.forEach(pos => {
-    // Generate positionKey using the store's helper
-    const positionKey = store.getPositionKey(pos, 'buy');
-    // Check if this positionKey already exists
-    const exists = store.activeAccount.positions.some(p => p.positionKey === positionKey);
-    if (exists) return;
-
+  positionsImport.forEach(data => {
     // Build the position object
     const position = {
-      positionKey,
-      startWeek: pos.week,
-      date: pos.date,
-      strikePrice: pos.price || null,
-      offsettingProfits: null, // Can be calculated elsewhere if needed
-      shares: pos.quantity,
-      assignedWeek: pos.week, // Assuming assignedWeek is the same as week
+      positionKey: '',
+      startWeek: data.week,
+      date: data.date,
+      costBasis: Math.abs(data.amount),
+      offsettingProfits: 0,
+      shares: data.quantity,
+      assignedWeek: data.week,
       soldWeek: null,
-      symbol: pos.symbol,
-      currentPrice: null // Can be filled in elsewhere if needed
-    };
-    store.activeAccount.positions.push(position);
-  });
+      symbol: data.symbol,
+      currentPrice: 0
+    }
+    position.currentPrice = (Number(position.costBasis / data.quantity) * 100) / 100
+
+    // Add the position to the account's positions array
+    position.positionKey = store.getPositionKey(position, 'buy')
+
+    // Check if this positionKey already exists
+    const exists = store.activeAccount.positions.some(p => p.positionKey === position.positionKey)
+    if (exists) return
+
+    // Add the position to the active account's positions
+    store.activeAccount.positions.push(position)
+  })
 }
 
 // Stub for processing sell data
@@ -551,88 +564,83 @@ function _processSellData(sellsImport) {
 // Function to recalculate week totals for actuals that need it
 function calculateWeeklyTotals() {
   if (!store.activeAccount || !store.activeAccount.actuals) {
-    return { weeksProcessed: 0, weeksUpdated: 0 };
+    return { weeksProcessed: 0, weeksUpdated: 0 }
   }
 
   // Get the brokerage map for the current account
-  const brokerMap = _getBrokerageMap();
+  const brokerMap = _getBrokerageMap()
 
   // Find weeks that need recalculation
   const weeksToRecalculate = store.activeAccount.actuals
     .filter(actual => (!actual.amount || actual.amount === 0) && actual.data.length > 0)
-    .sort((a, b) => a.week - b.week);
+    .sort((a, b) => a.week - b.week)
 
   if (weeksToRecalculate.length === 0) {
     // No weeks need recalculation
-    return { weeksProcessed: 0, weeksUpdated: 0 };
+    return { weeksProcessed: 0, weeksUpdated: 0 }
   }
 
-  let weeksUpdated = 0;
+  let weeksUpdated = 0
   // Process each week that needs recalculation
   weeksToRecalculate.forEach(actual => {
     // Use the calculation function to get new values
-    const { total } = _calculateWeekTotal(actual.data || [], brokerMap);
+    const total = _calculateWeekTotal(actual.data || [], brokerMap)
     
     // Update the week's growth value if changed
     if (Number(actual.growth) !== total) {
-      actual.growth = total;
-      weeksUpdated++;
+      actual.growth = total
+      weeksUpdated++
     }
-  });
-  
-  // Recalculate projections if any week was updated
-  if (weeksUpdated > 0) {
-    store.calculateProjections();
-  }
+  })
   
   return {
     weeksProcessed: weeksToRecalculate.length,
     weeksUpdated
-  };
+  }
 }
 
 // Isolated function to calculate weekly total from transactions
 function _calculateWeekTotal(weekData, brokerMap) {
   // Use broker map to identify types that contribute to weekly total
-  const weeklyTotalTypes = brokerMap.weeklyTotalTypes;
-  let total = 0;
+  const weeklyTotalTypes = brokerMap.weeklyTotalTypes
+  let total = 0
   if (!weekData || !weekData.length) {
-    return 0;
+    return 0
   }
   weekData.forEach(dataRow => {
-    const action = dataRow.action.toLowerCase();
+    const action = dataRow.action.toLowerCase()
     if (weeklyTotalTypes.includes(action)) {
-      total += dataRow.amount;
+      total += dataRow.amount
     }
-  });
+  })
   // Round the final amount to 2 decimal places
-  return Math.round(total * 100) / 100;
+  return Math.round(total * 100) / 100
 }
 
 // Migration: Move notes from actuals to a separate notes array
 function migrateNotesToArray() {
-  const account = store.activeAccount;
-  if (!account || !Array.isArray(account.actuals) || account.actuals.length === 0) return;
+  const account = store.activeAccount
+  if (!account || !Array.isArray(account.actuals) || account.actuals.length === 0) return
   // Only run if the first actual has a 'notes' attribute
-  if (!('notes' in account.actuals[0])) return;
+  if (!('notes' in account.actuals[0])) return
 
-  if (!Array.isArray(account.notes)) account.notes = [];
+  if (!Array.isArray(account.notes)) account.notes = []
 
   account.actuals.forEach(actual => {
     if (actual.notes && typeof actual.notes === 'string' && actual.notes.trim() !== '') {
       // Calculate week start date
-      const startDate = new Date(account.settings.startDate);
-      startDate.setDate(startDate.getDate() + (Number(actual.week) - 1) * 7);
-      const isoDate = startDate.toISOString().split('T')[0];
+      const startDate = new Date(account.settings.startDate)
+      startDate.setDate(startDate.getDate() + (Number(actual.week) - 1) * 7)
+      const isoDate = startDate.toISOString().split('T')[0]
       account.notes.push({
         week: Number(actual.week),
         date: isoDate,
         note: actual.notes
-      });
+      })
     }
     // Remove the notes attribute from actual
-    delete actual.notes;
-  });
+    delete actual.notes
+  })
 }
 
 // Expose the show method to the app store
