@@ -182,8 +182,8 @@ function _getBrokerageMap(keySearch) {
         fees: 6,
         amount: 7
       },
-      weeklyTotalTypes: ['sell to open', 'buy to close'],
-      transactionTypes: ['moneylink transfer', 'journal', 'qualified dividend', 'bank interest', 'dividend'],
+      weeklyTotalTypes: ['sell to open', 'buy to close', 'qualified dividend', 'bank interest', 'dividend'],
+      transactionTypes: ['moneylink transfer', 'journal'],
       positionTypes: ['buy'],
       sellTypes: ['sell'],
     }
@@ -538,6 +538,8 @@ function _processPositions(positionsImport) {
       offsettingProfits: 0,
       shares: data.quantity,
       assignedWeek: data.week,
+      soldShares: 0,
+      sellAmount: 0,
       soldWeek: null,
       symbol: data.symbol,
       currentPrice: 0
@@ -554,11 +556,73 @@ function _processPositions(positionsImport) {
     // Add the position to the active account's positions
     store.activeAccount.positions.push(position)
   })
+
+  // After adding all positions, sort by assignedWeek
+  store.activeAccount.positions.sort((a, b) => a.assignedWeek - b.assignedWeek)
 }
 
 // Stub for processing sell data
 function _processSellData(sellsImport) {
-  // TODO: Implement sell processing logic
+  if (!Array.isArray(sellsImport) || sellsImport.length === 0) return
+  if (!store.activeAccount.sells) store.activeAccount.sells = []
+  if (!store.activeAccount.positions) store.activeAccount.positions = []
+
+  // Step 1: Add new sells to the account's sells array
+  sellsImport.forEach(data => {
+    const sell = {
+      positionKey: '',
+      week: data.week,
+      date: data.date,
+      amount: Math.abs(data.amount),
+      shares: data.quantity,
+      symbol: data.symbol,
+      allocated: []
+    }
+    sell.positionKey = store.getPositionKey(sell, 'sell')
+    // Check if this sell already exists
+    const exists = store.activeAccount.sells.some(s => s.positionKey === sell.positionKey)
+    if (exists) return
+    store.activeAccount.sells.push(sell)
+  })
+
+  // Step 2: Allocate sells to open positions (FIFO)
+  store.activeAccount.sells.forEach(sell => {
+    if (sell.allocated && sell.allocated.length > 0) return // Already allocated
+    let sharesToAllocate = sell.shares
+    // Find open positions for this symbol, FIFO order (by date, then by startWeek)
+    const openPositions = store.activeAccount.positions
+      .filter(pos => pos.symbol === sell.symbol && (pos.soldShares || 0) < pos.shares)
+      .sort((a, b) => {
+        // FIFO: by date, then by startWeek
+        if (a.date < b.date) return -1
+        if (a.date > b.date) return 1
+        return a.startWeek - b.startWeek
+      })
+    for (const pos of openPositions) {
+      // Ensure soldShares is initialized
+      if (typeof pos.soldShares !== 'number') pos.soldShares = 0
+      const available = pos.shares - pos.soldShares
+      if (available <= 0) continue
+      const allocateQty = Math.min(available, sharesToAllocate)
+      // Record allocation
+      sell.allocated.push({
+        positionKey: pos.positionKey,
+        shares: allocateQty,
+        buyWeek: pos.startWeek,
+        sellWeek: sell.week
+      })
+      pos.soldShares += allocateQty
+      // If all shares sold, set soldWeek and accumulate sellAmount
+      if (pos.soldShares === pos.shares) {
+        pos.soldWeek = sell.week
+        if (!pos.sellAmount) pos.sellAmount = 0
+        pos.sellAmount += sell.amount
+      }
+      sharesToAllocate -= allocateQty
+      if (sharesToAllocate <= 0) break
+    }
+    // If not all shares could be allocated, leave the remainder unallocated
+  })
 }
 
 // Function to recalculate week totals for actuals that need it
