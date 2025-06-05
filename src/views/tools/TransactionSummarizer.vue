@@ -15,6 +15,8 @@ const copyStatus = ref('')
 const isLoading = ref(false)
 const showRawData = ref(false)
 
+const brokerMap = store.getBrokerageMap()
+
 const accountOptions = computed(() => {
   if (store.db && Array.isArray(store.db.accounts)) {
     return [

@@ -121,7 +121,7 @@ async function importTransactionsFromCSV(file) {
     }
     
     // Get broker map for type categorization
-    const brokerMap = _getBrokerageMap(meta.headers.toString())
+    const brokerMap = store.getBrokerageMap(meta.headers.toString())
     
     // Step 2: Process data rows and assign to actuals array by week
     // Returns arrays of transactions, positions, and sells for further processing
@@ -160,62 +160,6 @@ async function importTransactionsFromCSV(file) {
   }
 }
 
-// Brokerage format detection and mapping function
-function _getBrokerageMap(keySearch) {
-  // If keySearch is empty, check for active account's formatKey
-  keySearch = store.activeAccount?.formatKey || keySearch
-  if (!keySearch || keySearch.length === 0) {
-    throw new Error('No brokerage format specified')
-  }
-
-  // Define known brokerage formats with their header patterns and column mappings
-  const knownFormats = {
-    'schwab': {
-      headerRow: 'Date,Action,Symbol,Description,Quantity,Price,Fees & Comm,Amount',
-      columns: {
-        date: 0,
-        action: 1,
-        symbol: 2,
-        description: 3,
-        quantity: 4,
-        price: 5,
-        fees: 6,
-        amount: 7
-      },
-      weeklyTotalTypes: ['sell to open', 'buy to close', 'qualified dividend', 'bank interest', 'dividend'],
-      transactionTypes: ['moneylink transfer', 'journal'],
-      positionTypes: ['buy'],
-      sellTypes: ['sell'],
-    }
-  }
-  
-  // Try direct lookup first (header string as key)
-  let brokerMap = knownFormats[keySearch]
-  
-  // If not found, search by formatKey
-  if (!brokerMap) {
-    // Loop through all formats and find one with matching formatKey
-    for (const key in knownFormats) {
-      if (knownFormats[key].headerRow === keySearch) {
-        brokerMap = knownFormats[key]
-  
-        // Store the brokerage name in our account data for recalculation purposes
-        store.activeAccount.formatKey = key
-        break
-      }
-    }
-  }
-  
-  // If still not found, default to the first format
-  if (!brokerMap) {
-    const firstHeader = Object.keys(knownFormats)[0]
-    brokerMap = knownFormats[firstHeader]
-  }
-  
-  // Return the current map
-  return brokerMap
-}
-
 // Helper function to parse financial values from string
 function _parseAmount(amountStr, defaultValue = 0) {
   if (!amountStr || amountStr.length === 0) {
@@ -250,16 +194,13 @@ function parseCSV(csvText) {
     skipEmptyLines: true,
     header: false
   })
-  
   const lines = parseResult.data
   if (!lines || lines.length === 0) {
     throw new Error('CSV file appears to be empty')
   }
-  
   const headerRow = lines[0]
-  
   // Detect brokerage format and get column mapping
-  const brokerageMap = _getBrokerageMap(headerRow.toString())
+  const brokerageMap = store.getBrokerageMap(headerRow.toString())
   const columnMap = brokerageMap.columns
   
   // Check that required columns exist
@@ -644,7 +585,7 @@ function calculateWeeklyTotals() {
   }
 
   // Get the brokerage map for the current account
-  const brokerMap = _getBrokerageMap()
+  const brokerMap = store.getBrokerageMap()
 
   // Find weeks that need recalculation
   const weeksToRecalculate = store.activeAccount.actuals

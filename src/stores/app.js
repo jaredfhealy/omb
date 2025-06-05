@@ -430,6 +430,54 @@ export const useAppStore = defineStore('app', {
       const diffTime = date - startDate
       const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24))
       return diffDays < 0 ? null : Math.floor(diffDays / 7) + 1
-    }
+    },
+
+    getBrokerageMap(keySearch) {
+      // If keySearch is empty, check for active account's formatKey
+      keySearch = this.activeAccount?.formatKey || keySearch
+      if (!keySearch || keySearch.length === 0) {
+        throw new Error('No brokerage format specified')
+      }
+
+      // Define known brokerage formats with their header patterns and column mappings
+      const knownFormats = {
+        'schwab': {
+          headerRow: 'Date,Action,Symbol,Description,Quantity,Price,Fees & Comm,Amount',
+          columns: {
+            date: 0,
+            action: 1,
+            symbol: 2,
+            description: 3,
+            quantity: 4,
+            price: 5,
+            fees: 6,
+            amount: 7
+          },
+          weeklyTotalTypes: ['sell to open', 'buy to close', 'qualified dividend', 'bank interest', 'dividend'],
+          transactionTypes: ['moneylink transfer', 'journal'],
+          positionTypes: ['buy'],
+          sellTypes: ['sell'],
+        }
+      }
+      // Try direct lookup first (header string as key)
+      let brokerMap = knownFormats[keySearch]
+      // If not found, search by formatKey
+      if (!brokerMap) {
+        for (const key in knownFormats) {
+          if (knownFormats[key].headerRow === keySearch) {
+            brokerMap = knownFormats[key]
+            // Store the brokerage name in our account data for recalculation purposes
+            this.activeAccount.formatKey = key
+            break
+          }
+        }
+      }
+      // If still not found, default to the first format
+      if (!brokerMap) {
+        const firstHeader = Object.keys(knownFormats)[0]
+        brokerMap = knownFormats[firstHeader]
+      }
+      return brokerMap
+    },
   }
 })
