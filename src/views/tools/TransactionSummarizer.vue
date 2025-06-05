@@ -14,8 +14,8 @@ const selectedAccount = ref('all')
 const copyStatus = ref('')
 const isLoading = ref(false)
 const showRawData = ref(false)
-
-const brokerMap = store.getBrokerageMap()
+const summaryRef = ref(null)
+let brokerMap = null
 
 const accountOptions = computed(() => {
   if (store.db && Array.isArray(store.db.accounts)) {
@@ -60,6 +60,7 @@ const availableWeeks = computed(() => {
 onMounted(() => {
   if (availableWeeks.value.length > 0) {
     selectedWeek.value = availableWeeks.value[availableWeeks.value.length - 1]
+    console.log('Default selected week:', selectedWeek.value)
   }
 })
 
@@ -72,8 +73,12 @@ const filteredTotalPremium = computed(() => {
 
 watch(
   () => availableWeeks.value,
-  (weeks) => {
-    if (weeks.length > 0) {
+  (weeks, oldWeeks) => {
+    // Only reset selectedWeek if the available weeks set actually changed (e.g. account switch)
+    if (
+      (!oldWeeks || oldWeeks.length !== weeks.length || weeks.some((w, i) => w !== oldWeeks[i])) &&
+      weeks.length > 0
+    ) {
       selectedWeek.value = weeks[weeks.length - 1]
     }
   }
@@ -84,8 +89,15 @@ watch(selectedWeek, (newVal) => {
   endWeek.value = newVal
 })
 
+// Clear summary data when any form value changes
+watch([selectedAccount, symbolFilter, selectedWeek, endWeek, showRawData], () => {
+  summaryData.value = []
+})
+
 // Moved summary calculation logic to calculateSummary function
 const calculateSummary = () => {
+  // Update the brokerMap
+  brokerMap = store.getBrokerageMap()
   // Only populate expiredContracts if no symbol filter is applied
   expiredContracts.value = []
   const filterActive = !!symbolFilter.value
@@ -112,14 +124,13 @@ const calculateSummary = () => {
       })
     }
   }
-  console.log(actualsToProcess.length)
   // Combine all transactions for this week from all selected accounts
   let allRows = []
   actualsToProcess.forEach(({ actual, accountName }) => {
     if (Array.isArray(actual.data)) {
       allRows.push(...actual.data.map(txn => {
-        // Exclude 'buy' and 'sell' actions from the summary
-        if (txn.action && (txn.action.toLowerCase() === 'buy' || txn.action.toLowerCase() === 'sell')) {
+        // Only include actions in brokerMap.weeklyTotalTypes
+        if (!brokerMap.weeklyTotalTypes.includes(txn.action.toLowerCase())) {
           return null
         }
         let ticker = txn.symbol
@@ -151,8 +162,6 @@ const calculateSummary = () => {
           }
         }
         let type = txn.action
-        if (type === 'Sell to Open') type = 'Open'
-        if (type === 'Buy to Close') type = 'Close'
         return {
           date: txn.date,
           account: accountName,
@@ -186,7 +195,7 @@ const calculateSummary = () => {
       const next = allRows[j]
       // Must be one Open, one Close, same ticker, quantity, contractType
       const isRollPair =
-        ((curr.type === 'Open' && next.type === 'Close') || (curr.type === 'Close' && next.type === 'Open')) &&
+        ((curr.type === 'Sell to Open' && next.type === 'Buy to Close') || (curr.type === 'Buy to Close' && next.type === 'Open')) &&
         curr.ticker === next.ticker &&
         curr.quantity === next.quantity &&
         curr.contractType === next.contractType
@@ -194,10 +203,10 @@ const calculateSummary = () => {
         // Parse dates from symbol
         const currDateMatch = curr.symbol.match(/\d{2}\/\d{2}\/\d{4}/)
         const nextDateMatch = next.symbol.match(/\d{2}\/\d{2}\/\d{4}/)
-        const fromDate = curr.type === 'Close' ? (currDateMatch ? currDateMatch[0] : curr.date) : (nextDateMatch ? nextDateMatch[0] : next.date)
-        const toDate = curr.type === 'Open' ? (currDateMatch ? currDateMatch[0] : curr.date) : (nextDateMatch ? nextDateMatch[0] : next.date)
+        const fromDate = curr.type === 'Buy to Close' ? (currDateMatch ? currDateMatch[0] : curr.date) : (nextDateMatch ? nextDateMatch[0] : next.date)
+        const toDate = curr.type === 'Sell to Open' ? (currDateMatch ? currDateMatch[0] : curr.date) : (nextDateMatch ? nextDateMatch[0] : next.date)
         // Set strike column for roll
-        let rollStrike = curr.type === 'Close' ? next.strike : curr.strike
+        let rollStrike = curr.type === 'Buy to Close' ? next.strike : curr.strike
         if (curr.strike !== next.strike && curr.strike !== '-' && next.strike !== '-') {
           rollStrike = `${curr.strike} to ${next.strike}`
         }
@@ -212,7 +221,7 @@ const calculateSummary = () => {
           }
         }
         groupedRows.push({
-          ...(curr.type === 'Open' ? curr : next),
+          ...(curr.type === 'Sell to Open' ? curr : next),
           description: `Rolled from ${fromDate} to ${toDate}`,
           premium: (parseFloat(curr.premium) + parseFloat(next.premium)).toFixed(2),
           rollFrom: fromDate,
@@ -228,12 +237,12 @@ const calculateSummary = () => {
     }
     if (!foundPair) {
       // If this is a buy to close, set description
-      if (curr.type === 'Close') {
+      if (curr.type === 'Buy to Close') {
         const dateMatch = curr.symbol.match(/\d{2}\/\d{2}\/\d{4}/)
         curr.description = dateMatch ? `Closed position expiring ${dateMatch[0]}` : `Bought to close on ${curr.date}`
       }
       // If this is a sell to open, set description
-      if (curr.type === 'Open') {
+      if (curr.type === 'Sell to Open') {
         const dateMatch = curr.symbol.match(/\d{2}\/\d{2}\/\d{4}/)
         curr.description = dateMatch ? `New position expiring ${dateMatch[0]}` : `Sold to open on ${curr.date}`
       }
@@ -289,6 +298,7 @@ async function copyAsImage() {
       copyStatus.value = ''
     }, 2000)
   } catch (error) {
+    console.error('Copy as image failed:', error)
     copyStatus.value = 'Copy failed'
     setTimeout(() => {
       copyStatus.value = ''
