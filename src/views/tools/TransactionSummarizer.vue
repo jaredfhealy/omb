@@ -308,7 +308,7 @@ async function copyAsImage() {
           <div class="card-body">
             <div class="mb-3 row align-items-end">
               <!-- Account selector (50%) -->
-              <div class="col-12 col-md-4 mb-3 mb-md-0">
+              <div class="col-12 col-md-6 mb-3 mb-md-0">
                 <label for="accountSelector" class="form-label">Select Account</label>
                 <select id="accountSelector" class="form-select w-100" v-model="selectedAccount">
                   <option v-for="option in accountOptions" :key="option.value" :value="option.value">
@@ -316,20 +316,13 @@ async function copyAsImage() {
                   </option>
                 </select>
               </div>
-              <!-- Show Raw Data checkbox (top left) -->
-              <div class="col-12 col-md-4 d-flex align-items-center mb-3 mb-md-0">
-                <div class="form-check">
-                  <input class="form-check-input" type="checkbox" id="showRawData" v-model="showRawData">
-                  <label class="form-check-label" for="showRawData">Show Raw Data</label>
-                </div>
-              </div>
-              <!-- Symbol filter input -->
-              <div class="col-12 col-md-4 mb-3 mb-md-0">
+              <!-- Symbol filter input (50%, full width) -->
+              <div class="col-12 col-md-6 mb-3 mb-md-0">
                 <label for="symbolFilter" class="form-label">Filter by Symbol</label>
                 <input
                   id="symbolFilter"
                   type="text"
-                  class="form-control"
+                  class="form-control w-100"
                   v-model="symbolFilter"
                   placeholder="Enter symbol..."
                   @input="symbolFilter = symbolFilter.toUpperCase()"
@@ -355,6 +348,18 @@ async function copyAsImage() {
                     Week {{ week }} ({{ store.weekRange(week, true) }})
                   </option>
                 </select>
+              </div>
+            </div>
+            <!-- Show Raw Data checkbox row -->
+            <div class="mb-3 row">
+              <div class="col-12 d-flex align-items-center">
+                <div class="form-check me-2">
+                  <input class="form-check-input" type="checkbox" id="showRawData" v-model="showRawData">
+                  <label class="form-check-label" for="showRawData">Show Raw Data</label>
+                </div>
+                <small class="text-muted ms-2">
+                  If the summarized data looks incorrect, show the raw data and the UI will not attempt to identify "Roll" transactions.
+                </small>
               </div>
             </div>
             <!-- Calculate Summary button -->
@@ -451,11 +456,6 @@ async function copyAsImage() {
 }
 .container {
   margin-bottom: 30px;
-}
-
-/* Style the Symbol filter */
-#symbolFilter {
-  width: 150px;
 }
 
 .expired-pill {
