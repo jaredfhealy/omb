@@ -51,10 +51,6 @@ export const useAppStore = defineStore('app', {
       return state.db.accounts.filter(a => a.id !== state.db.selectedAccountId)
     },
 
-    activeAccount(state) {
-      return state.db.accounts.find(a => a.id === state.db.selectedAccountId)
-    },
-
     isBelowXL: (state) => state.windowWidth < 1200,
   },
 
@@ -423,6 +419,17 @@ export const useAppStore = defineStore('app', {
         weekStart: startDate.toISOString().slice(0, 10),
         weekEnd: endDate.toISOString().slice(0, 10)
       }
+    },
+
+    getWeekNumber(dateString) {
+      // Returns the week number (1-based) for a given date string, relative to the account's startDate
+      if (!dateString) return null
+      const startDate = new Date(this.activeAccount.settings.startDate)
+      const date = new Date(dateString)
+      if (isNaN(date.getTime()) || isNaN(startDate.getTime())) return null
+      const diffTime = date - startDate
+      const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24))
+      return diffDays < 0 ? null : Math.floor(diffDays / 7) + 1
     }
   }
 })

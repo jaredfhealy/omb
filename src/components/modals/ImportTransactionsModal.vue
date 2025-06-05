@@ -421,7 +421,15 @@ function _processData(dataRows, brokerMap) {
       rowsProcessed -= dataByWeek[smallestWeek].length
     }
   }
-  
+
+  // Always discard the current week (in progress) from actuals, not from imported data
+  const today = new Date()
+  const startDateObj = new Date(store.activeAccount.settings.startDate)
+  const diffTime = today - startDateObj
+  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
+  const currentWeek = Math.floor(diffDays / 7) + 1
+  store.activeAccount.actuals = store.activeAccount.actuals.filter(a => parseInt(a.week) !== currentWeek)
+
   // Process each week's data into the actuals array
   const weeksProcessed = Object.keys(dataByWeek).length
 
@@ -617,6 +625,10 @@ function _processSellData(sellsImport) {
         pos.soldWeek = sell.week
         if (!pos.sellAmount) pos.sellAmount = 0
         pos.sellAmount += sell.amount
+        // Backfill currentPrice as sellAmount / soldShares rounded to 3 decimals
+        if (pos.soldShares > 0) {
+          pos.currentPrice = Math.round((pos.sellAmount / pos.soldShares) * 1000) / 1000
+        }
       }
       sharesToAllocate -= allocateQty
       if (sharesToAllocate <= 0) break

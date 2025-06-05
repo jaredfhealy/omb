@@ -1,12 +1,14 @@
 <script setup>
 import { ref, reactive, watch, computed } from 'vue'
 import { useAppStore } from '@/stores/app'
+import { perSharePL, rawPL, netPL } from '@/utils/positionUtils'
 
 const store = useAppStore()
 const isVisible = ref(false)
 const isEdit = ref(false)
-const editIndex = ref(null)
-let position = reactive({
+
+// Default position template
+const defaultPosition = {
   symbol: '',
   shares: 100,
   costBasis: 0,
@@ -16,10 +18,10 @@ let position = reactive({
   sellAmount: null,
   offsettingProfits: 0,
   startWeek: null
-})
+}
 
-// Add state to track whether to show all weeks or just current and future
-const showAllWeeks = ref(false)
+// Use a local reactive position for editing
+const position = reactive({ ...defaultPosition })
 
 // Get the current week number
 const currentWeek = computed(() => {
@@ -32,20 +34,6 @@ const currentWeek = computed(() => {
   const weekNumber = Math.ceil(diffDays / 7)
 
   return Math.min(weekNumber, store.projections.length)
-})
-
-// Add computed property to filter available sold weeks
-const availableSoldWeeks = computed(() => {
-  if (!position.assignedWeek) return []
-  
-  let filteredWeeks = store.projections.filter(p => p.week >= position.assignedWeek)
-  
-  // If not showing all weeks, filter to only show current week and beyond
-  if (!showAllWeeks.value) {
-    filteredWeeks = filteredWeeks.filter(p => p.week >= currentWeek.value)
-  }
-  
-  return filteredWeeks
 })
 
 // Watch for assignedWeek changes to update startWeek and validate soldWeek
@@ -61,29 +49,19 @@ watch(() => position.assignedWeek, (newVal) => {
 })
 
 // Reset showAllWeeks when modal is opened
-const show = (existingPosition = null, index = null) => {
-  if (existingPosition) {
+const show = (posObj = null) => {
+  if (posObj) {
     isEdit.value = true
-    editIndex.value = index
-    Object.assign(position, existingPosition)
+    Object.assign(position, posObj)
   } else {
     isEdit.value = false
-    editIndex.value = null
-    Object.assign(position, {
-      symbol: '',
-      shares: 100,
-      costBasis: 0,
-      currentPrice: 0,
-      assignedWeek: null,
-      soldWeek: null,
-      offsettingProfits: 0,
-      startWeek: null,
-      sellAmount: null
-    })
+    Object.assign(position, defaultPosition)
   }
-  
   isVisible.value = true
 }
+
+// Expose the show function to the store for external use
+store.showPositionModal = show
 
 const close = () => {
   isVisible.value = false
@@ -122,50 +100,32 @@ const save = () => {
     alert('Sell Amount must be a number')
     return
   }
-  const posCopy = { ...position }
-  if (!posCopy.positionKey) {
-    posCopy.positionKey = store.getPositionKey(posCopy)
-  }
-  if (isEdit.value && editIndex.value !== null) {
-    store.activeAccount.positions[editIndex.value] = { ...posCopy }
-  } else {
-    store.activeAccount.positions.push({ ...posCopy })
 
-    // Sort positions by assignedWeek after adding
+  // If this is a new position, add to array
+  if (!isEdit.value) {
+    store.activeAccount.positions.push({ ...position })
     store.activeAccount.positions.sort((a, b) => (a.assignedWeek || 0) - (b.assignedWeek || 0))
+  }
+  else {
+    // Save the object to the store using the positionKey
+    const idx = store.activeAccount.positions.findIndex(p => p.positionKey === position.positionKey)
+    if (idx !== -1) {
+      store.activeAccount.positions[idx] = { ...position }
+    }
   }
   store.saveBacon()
   close()
 }
 
-// Expose the show function to the store
-store.showPositionModal = (existingPosition = null, index = null) => show(existingPosition, index)
-
 // Add real-time P/L calculations as computed properties
-const perSharePL = computed(() => {
-  if (!position.shares || position.shares === 0) return 0
-  const currentPrice = position.currentPrice
-  const perShareCost = position.costBasis / position.shares
-  return currentPrice - perShareCost
-})
-
-const rawPL = computed(() => {
-  const currentValue = position.currentPrice ? position.currentPrice * position.shares : position.costBasis
-  const costBasis = position.costBasis
-  return currentValue - costBasis
-})
-
-const netPL = computed(() => {
-  const currentValue = position.currentPrice ? position.currentPrice * position.shares : position.costBasis
-  const costBasis = position.costBasis
-  const totalProfits = position.offsettingProfits || 0
-  return currentValue - costBasis + totalProfits
-})
+const perSharePLValue = computed(() => perSharePL(position))
+const rawPLValue = computed(() => rawPL(position))
+const netPLValue = computed(() => netPL(position))
 
 const totalROR = computed(() => {
   if (!position.costBasis || position.costBasis <= 0) return 0
   const costBasis = position.costBasis
-  return (netPL.value / costBasis) * 100
+  return (netPLValue.value / costBasis) * 100
 })
 
 // Add weeks held calculation
@@ -238,16 +198,16 @@ watch(() => position.startWeek, (newVal) => {
                   <div class="col-6">
                     <div class="summary-item">
                       <label class="fw-bold">P/L per Share</label>
-                      <div class="value" :class="perSharePL >= 0 ? 'text-success' : 'text-danger'">
-                        {{ store.currency(perSharePL) }}
+                      <div class="value" :class="perSharePLValue >= 0 ? 'text-success' : 'text-danger'">
+                        {{ store.currency(perSharePLValue) }}
                       </div>
                     </div>
                   </div>
                   <div class="col-6">
                     <div class="summary-item">
                       <label class="fw-bold">P/L Total</label>
-                      <div class="value" :class="rawPL >= 0 ? 'text-success' : 'text-danger'">
-                        {{ store.currency(rawPL) }}
+                      <div class="value" :class="rawPLValue >= 0 ? 'text-success' : 'text-danger'">
+                        {{ store.currency(rawPLValue) }}
                       </div>
                     </div>
                   </div>
@@ -266,8 +226,8 @@ watch(() => position.startWeek, (newVal) => {
                   <div class="col-6">
                     <div class="summary-item">
                       <label class="fw-bold">P/L Net</label>
-                      <div class="value highlight" :class="netPL >= 0 ? 'text-success' : 'text-danger'">
-                        {{ store.currency(netPL) }}
+                      <div class="value highlight" :class="netPLValue >= 0 ? 'text-success' : 'text-danger'">
+                        {{ store.currency(netPLValue) }}
                       </div>
                     </div>
                   </div>
@@ -333,7 +293,7 @@ watch(() => position.startWeek, (newVal) => {
                     <input type="number" class="form-control" id="position-shares" v-model.number="position.shares" min="1" :disabled="!position.manual">
                   </div>
                   <div class="col-md-6 mb-3">
-                    <label for="position-costBasis" class="form-label">Cost Basis (Including Fees)</label>
+                    <label for="position-costBasis" class="form-label">Cost Basis <small class="text-muted">(Including Fees)</small></label>
                     <div class="input-group">
                       <span class="input-group-text">$</span>
                       <input type="number" class="form-control" id="position-costBasis" v-model.number="position.costBasis" min="0.01" step="0.01" :disabled="!position.manual">

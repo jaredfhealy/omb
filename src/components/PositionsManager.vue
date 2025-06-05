@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import { useAppStore } from '@/stores/app'
 import DataTable from '@/components/custom/DataTable.vue'
 import ConfirmModal from '@/components/modals/ConfirmModal.vue'
+import { perSharePL, rawPL, netPL } from '@/utils/positionUtils'
 
 const store = useAppStore()
 const confirmModalRef = ref(null)
@@ -18,8 +19,7 @@ const _getCurrentValue = (position) => {
 }
 
 const getNetPL = (position) => {
-  const currentValue = _getCurrentValue(position)
-  return currentValue - position.costBasis + (position.offsettingProfits || 0)
+  return netPL(position)
 }
 
 const getRawPL = (position) => {
