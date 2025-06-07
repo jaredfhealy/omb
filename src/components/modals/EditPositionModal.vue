@@ -36,19 +36,15 @@ const currentWeek = computed(() => {
   return Math.min(weekNumber, store.projections.length)
 })
 
-// Watch for assignedWeek changes to update startWeek and validate soldWeek
+// Watch for assignedWeek changes and validate soldWeek
 watch(() => position.assignedWeek, (newVal) => {
-  if (newVal && !position.startWeek) {
-    position.startWeek = newVal
-  }
-  
   // Reset soldWeek if it's now invalid (less than assigned week)
   if (position.soldWeek && position.soldWeek < newVal) {
     position.soldWeek = null
   }
 })
 
-// Reset showAllWeeks when modal is opened
+// Set position value when modal is shown
 const show = (posObj = null) => {
   if (posObj) {
     isEdit.value = true
@@ -58,13 +54,17 @@ const show = (posObj = null) => {
     Object.assign(position, defaultPosition)
   }
   isVisible.value = true
+  // Mark modal as initialized after opening
+  setTimeout(() => { modalInitialized = true }, 0)
 }
 
 // Expose the show function to the store for external use
 store.showPositionModal = show
 
+// When modal closes, reset modalInitialized
 const close = () => {
   isVisible.value = false
+  modalInitialized = false
 }
 
 const save = () => {
@@ -82,11 +82,6 @@ const save = () => {
   // Ensure currentPrice is 0 or positive
   if (isNaN(position.currentPrice) || position.currentPrice < 0) {
     position.currentPrice = 0
-  }
-
-  // Ensure startWeek is set
-  if (!position.startWeek) {
-    position.startWeek = position.assignedWeek
   }
 
   // If soldWeek is set, require sellAmount
@@ -148,8 +143,11 @@ const weeklyROR = computed(() => {
 })
 
 // Add watcher for startWeek to recalculate offsettingProfits
-watch(() => position.startWeek, (newVal) => {
-  if (!newVal) return
+let modalInitialized = false
+
+watch(() => position.startWeek, (newVal, oldVal) => {
+  if (!modalInitialized) return
+  if (!newVal || newVal === oldVal) return
   // Calculate offsettingProfits: sum all rows for this symbol from startWeek and after, excluding buy/sell
   let total = 0
   const actuals = store.activeAccount.actuals || []
@@ -270,10 +268,16 @@ watch(() => position.startWeek, (newVal) => {
                 <div v-if="position.manual" class="alert alert-info mb-4">
                   All stock positions after the start date specified for the account will be created during import. Manual entry is intended to record open positions and their cost basis that were acquired before starting LSO.
                 </div>
-                <!-- Symbol (full width, editable for manual) -->
-                <div class="mb-3">
-                  <label for="position-symbol" class="form-label">Symbol</label>
-                  <input type="text" class="form-control" id="position-symbol" v-model="position.symbol" :disabled="!position.manual" @input="position.symbol = position.symbol.toUpperCase()">
+                <!-- Symbol and Transaction Date (50/50 split) -->
+                <div class="row">
+                  <div class="col-md-6 mb-3">
+                    <label for="position-symbol" class="form-label">Symbol</label>
+                    <input type="text" class="form-control" id="position-symbol" v-model="position.symbol" :disabled="!position.manual" @input="position.symbol = position.symbol.toUpperCase()">
+                  </div>
+                  <div class="col-md-6 mb-3">
+                    <label for="position-date" class="form-label">Transaction Date</label>
+                    <input type="text" class="form-control" id="position-date" :value="position.date || ''" disabled>
+                  </div>
                 </div>
                 <!-- Assigned Week | Sold Week (50/50 split, always disabled) -->
                 <div class="row">
@@ -310,7 +314,8 @@ watch(() => position.startWeek, (newVal) => {
                     </option>
                   </select>
                   <div class="form-text">
-                    The first week premiums were collected (defaults to Assigned Week, but can be set earlier for migrated/edited positions).
+                    The first week premiums were collected (Offsetting Profits is automatically calculated on Start Week change).<br/>
+                    NOTE: You can use Transaction Summarizer to find the week you want to calculate from.
                   </div>
                 </div>
                 <!-- Offsetting Profits | Current Price (50/50 split, editable) -->

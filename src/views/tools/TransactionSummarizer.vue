@@ -195,7 +195,7 @@ const calculateSummary = () => {
       const next = allRows[j]
       // Must be one Open, one Close, same ticker, quantity, contractType
       const isRollPair =
-        ((curr.type === 'Sell to Open' && next.type === 'Buy to Close') || (curr.type === 'Buy to Close' && next.type === 'Open')) &&
+        ((curr.type === 'Sell to Open' && next.type === 'Buy to Close') || (curr.type === 'Buy to Close' && next.type === 'Sell to Open')) &&
         curr.ticker === next.ticker &&
         curr.quantity === next.quantity &&
         curr.contractType === next.contractType

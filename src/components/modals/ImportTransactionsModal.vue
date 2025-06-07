@@ -481,7 +481,7 @@ function _processPositions(positionsImport) {
     // Build the position object
     const position = {
       positionKey: '',
-      startWeek: data.week,
+      startWeek: null,
       date: data.date,
       costBasis: Math.abs(data.amount),
       offsettingProfits: 0,

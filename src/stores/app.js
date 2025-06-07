@@ -453,8 +453,8 @@ export const useAppStore = defineStore('app', {
             fees: 6,
             amount: 7
           },
-          weeklyTotalTypes: ['sell to open', 'buy to close', 'qualified dividend', 'bank interest', 'dividend'],
-          transactionTypes: ['moneylink transfer', 'journal'],
+          weeklyTotalTypes: ['sell to open', 'buy to close', 'qualified dividend', 'bank interest', 'dividend', 'cash dividend'],
+          transactionTypes: ['moneylink transfer', 'moneylink deposit', 'journal', 'funds received'],
           positionTypes: ['buy'],
           sellTypes: ['sell'],
         }
