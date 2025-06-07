@@ -8,16 +8,6 @@ import { getPerSharePL, getWeeksHeld, getTotalROR, getWeeklyROR, getNetPLPerShar
 const store = useAppStore()
 const confirmModalRef = ref(null)
 
-const _getCurrentValue = (position) => {
-  if (position.soldWeek && position.sellAmount != null) {
-    return position.sellAmount
-  } else {
-    return position.currentPrice 
-      ? position.currentPrice * position.shares 
-      : position.costBasis
-  }
-}
-
 // Define columns for DataTable
 const columns = [
   {
@@ -55,7 +45,7 @@ const columns = [
     key: 'perSharePL',
     header: {
       text: 'PL Total /<br/>Per Share',
-      tooltip: 'Profit or loss total & per share'
+      tooltip: 'Total profit/loss excluding offsetting profits & per share'
     },
     // value handled by slot below
   },
@@ -63,7 +53,7 @@ const columns = [
     key: 'netPL',
     header: {
       text: 'PL Net /<br/>Per Share',
-      tooltip: 'Net Profit/Loss including offsetting profits & per share'
+      tooltip: 'Net profit/loss including offsetting profits & per share'
     }
     // value handled by slot below
   },
@@ -328,13 +318,7 @@ const displayPositions = computed(() => {
           </template>
         </span>
         <span class="small text-muted">
-          <!-- Price per share: if sold, show N/A, else show price -->
-          <template v-if="item.soldWeek">
-            N/A
-          </template>
-          <template v-else>
-            {{ store.currency(item.currentPrice) }} / share
-          </template>
+          {{ store.currency(item.currentPrice) }} / share
         </span>
       </div>
     </template>

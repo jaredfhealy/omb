@@ -31,11 +31,6 @@ const defaultPosition = {
 // Use a local reactive position for editing
 const position = reactive({ ...defaultPosition })
 
-// Get the current week number
-const currentWeek = computed(() => {
-  return getWeeksHeld(position, store)
-})
-
 // Watch for assignedWeek changes and validate soldWeek
 watch(() => position.assignedWeek, (newVal) => {
   // Reset soldWeek if it's now invalid (less than assigned week)
@@ -111,36 +106,6 @@ const save = () => {
   close()
 }
 
-// Add real-time P/L calculations as computed properties
-const perSharePLValue = computed(() => getPerSharePL(position))
-const rawPLValue = computed(() => getRawPL(position))
-const netPLValue = computed(() => getNetPL(position))
-
-const totalROR = computed(() => {
-  if (!position.costBasis || position.costBasis <= 0) return 0
-  const costBasis = position.costBasis
-  return (netPLValue.value / costBasis) * 100
-})
-
-// Add weeks held calculation
-const weeksHeld = computed(() => {
-  if (!position.assignedWeek) return 0
-  
-  // If position has been sold, calculate weeks from assigned to sold
-  if (position.soldWeek) {
-    return position.soldWeek - position.assignedWeek + 1
-  }
-  
-  // If position is still held, calculate weeks from assigned to current
-  return currentWeek.value - position.assignedWeek + 1
-})
-
-// Add weekly ROR calculation
-const weeklyROR = computed(() => {
-  if (weeksHeld.value <= 0) return 0
-  return totalROR.value / weeksHeld.value
-})
-
 // Add watcher for startWeek to recalculate offsettingProfits
 let modalInitialized = false
 
@@ -169,76 +134,87 @@ watch(() => position.startWeek, (newVal, oldVal) => {
               <div class="position-summary h-100 d-flex flex-column">
                 <h5 class="border-bottom pb-2 mb-4">Position Summary</h5>
                 
-                <div class="summary-item mb-4">
-                  <label class="fw-bold">Cost Basis</label>
-                  <div class="value">{{ store.currency(position.costBasis) }}</div>
-                </div>
-                
-                <!-- P/L per share and P/L Total side by side -->
+                <!-- Cost Basis | Offsetting Profits -->
                 <div class="row mb-4">
-                  <div class="col-6">
-                    <div class="summary-item">
-                      <label class="fw-bold">P/L per Share</label>
-                      <div class="value" :class="perSharePLValue >= 0 ? 'text-success' : 'text-danger'">
-                        {{ store.currency(perSharePLValue) }}
-                      </div>
-                    </div>
+                  <div class="col-6 summary-item">
+                    <label class="fw-bold">Cost Basis</label>
+                    <div class="value">{{ store.currency(position.costBasis) }}</div>
                   </div>
-                  <div class="col-6">
-                    <div class="summary-item">
-                      <label class="fw-bold">P/L Total</label>
-                      <div class="value" :class="rawPLValue >= 0 ? 'text-success' : 'text-danger'">
-                        {{ store.currency(rawPLValue) }}
-                      </div>
-                    </div>
+                  <div class="col-6 summary-item">
+                    <label class="fw-bold">Offsetting Profits</label>
+                    <div class="value text-success">{{ store.currency(position.offsettingProfits || 0) }}</div>
                   </div>
                 </div>
-                
-                <!-- Offsetting Profits and P/L Net side by side -->
+                <!-- Current Value | Price per Share -->
                 <div class="row mb-4">
-                  <div class="col-6">
-                    <div class="summary-item">
-                      <label class="fw-bold">Offsetting Profits</label>
-                      <div class="value text-success">
-                        {{ store.currency(position.offsettingProfits || 0) }}
-                      </div>
+                  <div class="col-6 summary-item">
+                    <label class="fw-bold">Current Value</label>
+                    <div class="value">
+                      <template v-if="position.soldWeek && position.sellAmount != null">
+                        {{ store.currency(position.sellAmount) }}
+                      </template>
+                      <template v-else>
+                        {{ store.currency((position.currentPrice || 0) * (position.shares || 0)) }}
+                      </template>
                     </div>
                   </div>
-                  <div class="col-6">
-                    <div class="summary-item">
-                      <label class="fw-bold">P/L Net</label>
-                      <div class="value highlight" :class="netPLValue >= 0 ? 'text-success' : 'text-danger'">
-                        {{ store.currency(netPLValue) }}
-                      </div>
+                  <div class="col-6 summary-item">
+                    <label class="fw-bold">Price per Share</label>
+                    <div class="value">
+                      {{ store.currency(position.currentPrice) }}
                     </div>
                   </div>
                 </div>
-                
-                <!-- Weeks Held -->
+                <!-- PL Total | PL per Share -->
+                <div class="row mb-4">
+                  <div class="col-6 summary-item">
+                    <label class="fw-bold">P/L Total</label>
+                    <div class="value" :class="getRawPL(position) >= 0 ? 'text-success' : 'text-danger'">
+                      {{ store.currency(getRawPL(position)) }}
+                    </div>
+                  </div>
+                  <div class="col-6 summary-item">
+                    <label class="fw-bold">P/L per Share</label>
+                    <div class="value" :class="getPerSharePL(position) >= 0 ? 'text-success' : 'text-danger'">
+                      {{ store.currency(getPerSharePL(position)) }}
+                    </div>
+                  </div>
+                </div>
+                <!-- PL Net | Net per Share -->
+                <div class="row mb-4">
+                  <div class="col-6 summary-item">
+                    <label class="fw-bold">P/L Net</label>
+                    <div class="value highlight" :class="getNetPL(position) >= 0 ? 'text-success' : 'text-danger'">
+                      {{ store.currency(getNetPL(position)) }}
+                    </div>
+                  </div>
+                  <div class="col-6 summary-item">
+                    <label class="fw-bold">Net per Share</label>
+                    <div class="value" :class="getNetPLPerShare(position) >= 0 ? 'text-success' : 'text-danger'">
+                      {{ store.currency(getNetPLPerShare(position)) }}
+                    </div>
+                  </div>
+                </div>
+                <!-- Return on Risk | Weekly ROR -->
+                <div class="row mb-4">
+                  <div class="col-6 summary-item">
+                    <label class="fw-bold">Return on Risk</label>
+                    <div class="value highlight" :class="getTotalROR(position) >= 0 ? 'text-success' : 'text-danger'">
+                      {{ getTotalROR(position).toFixed(2) }}%
+                    </div>
+                  </div>
+                  <div class="col-6 summary-item">
+                    <label class="fw-bold">Weekly ROR</label>
+                    <div class="value" :class="getWeeklyROR(position, store) >= 0 ? 'text-success' : 'text-danger'">
+                      {{ getWeeklyROR(position, store).toFixed(2) }}%
+                    </div>
+                  </div>
+                </div>
+                <!-- Weeks Held (full width) -->
                 <div class="summary-item mb-4">
                   <label class="fw-bold">Weeks Held</label>
                   <div class="value">
-                    {{ weeksHeld }} {{ weeksHeld === 1 ? 'week' : 'weeks' }}
-                  </div>
-                </div>
-                
-                <!-- ROR and Weekly ROR side by side -->
-                <div class="row mb-4">
-                  <div class="col-6">
-                    <div class="summary-item">
-                      <label class="fw-bold">Return on Risk</label>
-                      <div class="value highlight" :class="totalROR >= 0 ? 'text-success' : 'text-danger'">
-                        {{ totalROR.toFixed(2) }}%
-                      </div>
-                    </div>
-                  </div>
-                  <div class="col-6">
-                    <div class="summary-item">
-                      <label class="fw-bold">Weekly ROR</label>
-                      <div class="value" :class="weeklyROR >= 0 ? 'text-success' : 'text-danger'">
-                        {{ weeklyROR.toFixed(2) }}%
-                      </div>
-                    </div>
+                    {{ getWeeksHeld(position, store) }} {{ getWeeksHeld(position, store) === 1 ? 'week' : 'weeks' }}
                   </div>
                 </div>
               </div>

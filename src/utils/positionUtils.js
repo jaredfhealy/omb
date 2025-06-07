@@ -7,6 +7,16 @@ export function getPerSharePL(position) {
   return currentPrice - perShareCost
 }
 
+export function _getCurrentValue(position) {
+  if (position.soldWeek && position.sellAmount != null) {
+    return position.sellAmount
+  } else {
+    return position.currentPrice 
+      ? position.currentPrice * position.shares 
+      : position.costBasis
+  }
+}
+
 export function getRawPL(position) {
   const currentValue = position.currentPrice ? position.currentPrice * position.shares : position.costBasis
   const costBasis = position.costBasis
@@ -14,7 +24,7 @@ export function getRawPL(position) {
 }
 
 export function getNetPL(position) {
-  const currentValue = position.currentPrice ? position.currentPrice * position.shares : position.costBasis
+  const currentValue = _getCurrentValue(position)
   const costBasis = position.costBasis
   const totalProfits = position.offsettingProfits || 0
   return currentValue - costBasis + totalProfits
