@@ -479,5 +479,55 @@ export const useAppStore = defineStore('app', {
       }
       return brokerMap
     },
+
+    /**
+     * Recalculate offsettingProfits for a given position object.
+     * Mutates the position.offsettingProfits property.
+     */
+    recalculateOffsettingProfits(position) {
+      if (!position || !position.startWeek || !position.symbol) {
+        position.offsettingProfits = 0
+        return
+      }
+      let total = 0
+      const actuals = this.activeAccount?.actuals || []
+      actuals.forEach(a => {
+        if (Array.isArray(a.data) && parseInt(a.week) >= parseInt(position.startWeek)) {
+          a.data.forEach(txn => {
+            if (
+              txn.symbol &&
+              txn.symbol.toUpperCase().split(" ")[0].includes(position.symbol.toUpperCase()) &&
+              txn.action &&
+              !['buy', 'sell'].includes(txn.action.toLowerCase())
+            ) {
+              total += parseFloat(txn.amount || 0)
+            }
+          })
+        }
+      })
+      position.offsettingProfits = parseFloat(total.toFixed(2))
+    },
+
+    /**
+     * Recalculate offsettingProfits for all positions on the active account.
+     */
+    recalculateAllOffsettingProfits() {
+      if (!this.activeAccount || !Array.isArray(this.activeAccount.positions)) return
+      this.activeAccount.positions.forEach(pos => {
+        this.recalculateOffsettingProfits(pos)
+      })
+    },
+
+    /**
+     * Get the current week number based on the active account's start date.
+     * Returns the week number as an integer.
+     */
+    getCurrentWeek() {
+      const today = new Date()
+      const startDate = new Date(this.activeAccount.settings.startDate)
+      const diffTime = today - startDate
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
+      return Math.ceil(diffDays / 7)
+    },
   }
 })

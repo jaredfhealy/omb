@@ -3,7 +3,7 @@ import { ref, computed } from 'vue'
 import { useAppStore } from '@/stores/app'
 import DataTable from '@/components/custom/DataTable.vue'
 import ConfirmModal from '@/components/modals/ConfirmModal.vue'
-import { perSharePL, rawPL, netPL } from '@/utils/positionUtils'
+import { getPerSharePL, getWeeksHeld, getTotalROR, getWeeklyROR, getNetPLPerShare, getRawPL, getNetPL } from '@/utils/positionUtils'
 
 const store = useAppStore()
 const confirmModalRef = ref(null)
@@ -18,124 +18,70 @@ const _getCurrentValue = (position) => {
   }
 }
 
-const getNetPL = (position) => {
-  return netPL(position)
-}
-
-const getRawPL = (position) => {
-  const currentValue = _getCurrentValue(position)
-  return currentValue - position.costBasis
-}
-
-const getTotalROR = (position) => {
-  const netPL = getNetPL(position)
-  return (netPL / position.costBasis) * 100
-}
-
-const getCurrentWeek = () => {
-  const today = new Date()
-  const startDate = new Date(store.activeAccount.settings.startDate)
-  
-  const diffTime = today - startDate
-  const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24))
-  const currentWeek = Math.floor(diffDays / 7) + 1
-
-  return Math.min(currentWeek, store.weeks)
-}
-
-const getPerSharePL = (position) => {
-  return (_getCurrentValue(position) - position.costBasis) / position.shares
-}
-
-const getWeeksHeld = (position) => {
-  const currentWeek = getCurrentWeek()
-  
-  if (position.soldWeek) {
-    return position.soldWeek - position.assignedWeek + 1
-  }
-  
-  return currentWeek - position.assignedWeek + 1
-}
-
-const getWeeklyROR = (position) => {
-  const totalROR = getTotalROR(position)
-  const weeksHeld = getWeeksHeld(position)
-  
-  if (weeksHeld <= 0) return 0
-  
-  return totalROR / weeksHeld
-}
-
 // Define columns for DataTable
 const columns = [
   {
     key: 'symbol',
     header: {
-      text: 'Symbol',
-      tooltip: 'Underlying symbol'
+      text: 'Symbol /<br/>Shares',
+      tooltip: 'Underlying symbol & shares held'
     },
     value: (position) => position.symbol
   },
   {
     key: 'weeks',
     header: {
-      text: 'Weeks',
-      tooltip: 'Assigned week (top) and sold week (bottom, or Not Yet Sold)'
+      text: 'Assigned /<br/> Sold Weeks',
+      tooltip: 'Assigned week & sold week (if sold)'
     }
   },
   {
-    key: 'costBasis',
+    key: 'costBasisProfits',
     header: {
-      text: 'Cost Basis',
-      tooltip: 'Total cost basis including fees'
-    },
-    value: (position) => store.currency(position.costBasis)
+      text: 'Cost Basis /<br/> Profits',
+      tooltip: 'Original cost basis & offsetting profits'
+    }
+    // value handled by slot below
   },
   {
-    key: 'currentPrice',
+    key: 'currentValuePrice',
     header: {
-      text: 'Current Price',
-      tooltip: 'Current market price per share'
-    },
-    value: (position) => position.soldWeek ? 'N/A' : store.currency(position.currentPrice)
+      text: 'Current Value /<br/> Price per Share',
+      tooltip: 'Current total value & value per share'
+    }
+    // value handled by slot below
   },
   {
     key: 'perSharePL',
     header: {
-      text: 'P/L per Share',
-      tooltip: 'Profit/Loss per share'
+      text: 'PL Total /<br/>Per Share',
+      tooltip: 'Profit or loss total & per share'
     },
-    value: (position) => store.currency(getPerSharePL(position))
-  },
-  {
-    key: 'rawPL',
-    header: {
-      text: 'P/L Total',
-      tooltip: 'Total Profit/Loss (excluding offsetting profits)'
-    },
-    value: (position) => store.currency(getRawPL(position))
+    // value handled by slot below
   },
   {
     key: 'netPL',
     header: {
-      text: 'P/L Net',
-      tooltip: 'Net Profit/Loss including offsetting profits'
-    },
-    value: (position) => store.currency(getNetPL(position))
+      text: 'PL Net /<br/>Per Share',
+      tooltip: 'Net Profit/Loss including offsetting profits & per share'
+    }
+    // value handled by slot below
   },
   {
     key: 'ror',
     header: {
-      text: 'ROR %',
-      tooltip: 'Return on Risk percentage based on net P/L'
+      text: 'ROR % /<br/>Weekly %',
+      tooltip: 'Return on Risk percentage based on net P/L total & per week'
     },
-    value: (position) => getTotalROR(position).toFixed(2) + '%'
+    // Remove getTooltip and tooltipHtml here, handle tooltip in slot below
+    // value handled by slot below
   },
   {
     key: 'actions',
     header: {
       text: 'Actions'
-    }
+    },
+    class: 'col-1'
   }
 ]
 
@@ -339,23 +285,57 @@ const displayPositions = computed(() => {
     
     <!-- Add slots for each value that needs conditional styling -->
     <template #perSharePL="{ item }">
-      <div :class="getPerSharePL(item) >= 0 ? 'text-success' : 'text-danger'">
-        {{ store.currency(getPerSharePL(item)) }}
-      </div>
-    </template>
-    <template #rawPL="{ item }">
-      <div :class="getRawPL(item) >= 0 ? 'text-success' : 'text-danger'">
-        {{ store.currency(getRawPL(item)) }}
+      <div class="d-flex flex-column">
+        <span :class="getPerSharePL(item) > 0 ? 'text-success' : 'text-danger'">{{ store.currency(getRawPL(item)) }}</span>
+        <span :class="getPerSharePL(item) > 0 ? 'text-success' : 'text-danger'">{{ store.currency(getPerSharePL(item)) }}  / share</span>
       </div>
     </template>
     <template #netPL="{ item }">
-      <div :class="getNetPL(item) >= 0 ? 'text-success' : 'text-danger'">
-        {{ store.currency(getNetPL(item)) }}
+      <div class="d-flex flex-column" :class="getNetPL(item) > 0 ? 'text-success' : 'text-danger'">
+        <span>{{ store.currency(getNetPL(item)) }}</span>
+        <span>{{ store.currency(getNetPLPerShare(item)) }} / share</span>
       </div>
     </template>
     <template #ror="{ item }">
-      <div :class="getTotalROR(item) >= 0 ? 'text-success' : 'text-danger'">
-        {{ getTotalROR(item).toFixed(2) }}%
+      <div
+        class="d-flex flex-column"
+        :class="getTotalROR(item) > 0 ? 'text-success' : 'text-danger'"
+        :title="`Held for ${getWeeksHeld(item, store)} week${getWeeksHeld(item, store) > 1 ? 's' : ''}`"
+      >
+        <span>{{ getTotalROR(item).toFixed(2) }}%</span>
+        <span>{{ getWeeklyROR(item, store).toFixed(2) }}% / week <i class="bi bi-info-circle ms-1"></i></span>
+      </div>
+    </template>
+    
+    <!-- Cost Basis & Profits column slot -->
+    <template #costBasisProfits="{ item }">
+      <div class="d-flex flex-column">
+        <span>{{ store.currency(item.costBasis) }}</span>
+        <span class="text-success small">{{ store.currency(item.offsettingProfits || 0) }}</span>
+      </div>
+    </template>
+
+    <!-- Current Value / Price per Share column slot -->
+    <template #currentValuePrice="{ item }">
+      <div class="d-flex flex-column">
+        <span>
+          <!-- Current Value: if sold, show sellAmount, else currentPrice * shares -->
+          <template v-if="item.soldWeek && item.sellAmount != null">
+            {{ store.currency(item.sellAmount) }}
+          </template>
+          <template v-else>
+            {{ store.currency(item.currentPrice * item.shares) }}
+          </template>
+        </span>
+        <span class="small text-muted">
+          <!-- Price per share: if sold, show N/A, else show price -->
+          <template v-if="item.soldWeek">
+            N/A
+          </template>
+          <template v-else>
+            {{ store.currency(item.currentPrice) }} / share
+          </template>
+        </span>
       </div>
     </template>
     

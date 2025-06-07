@@ -49,11 +49,7 @@ const getAssignmentsTooltip = (projection, type) => {
 
 // Add function to determine current week
 const getCurrentWeek = computed(() => {
-  const today = new Date()
-  const startDate = new Date(store.activeAccount.settings.startDate)
-  const diffTime = today - startDate
-  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
-  return Math.ceil(diffDays / 7)
+  return store.getCurrentWeek()
 })
 
 // Define columns for the DataTable

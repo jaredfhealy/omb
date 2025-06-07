@@ -1,7 +1,15 @@
 <script setup>
 import { ref, reactive, watch, computed } from 'vue'
 import { useAppStore } from '@/stores/app'
-import { perSharePL, rawPL, netPL } from '@/utils/positionUtils'
+import {
+  getPerSharePL,
+  getWeeksHeld,
+  getTotalROR,
+  getWeeklyROR,
+  getNetPLPerShare,
+  getRawPL,
+  getNetPL
+} from '@/utils/positionUtils'
 
 const store = useAppStore()
 const isVisible = ref(false)
@@ -25,15 +33,7 @@ const position = reactive({ ...defaultPosition })
 
 // Get the current week number
 const currentWeek = computed(() => {
-  const today = new Date()
-  const startDate = new Date(store.activeAccount.settings.startDate)
-  
-  // Find how many weeks have passed since the start date
-  const diffTime = today - startDate
-  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
-  const weekNumber = Math.ceil(diffDays / 7)
-
-  return Math.min(weekNumber, store.projections.length)
+  return getWeeksHeld(position, store)
 })
 
 // Watch for assignedWeek changes and validate soldWeek
@@ -54,7 +54,6 @@ const show = (posObj = null) => {
     Object.assign(position, defaultPosition)
   }
   isVisible.value = true
-  // Mark modal as initialized after opening
   setTimeout(() => { modalInitialized = true }, 0)
 }
 
@@ -113,9 +112,9 @@ const save = () => {
 }
 
 // Add real-time P/L calculations as computed properties
-const perSharePLValue = computed(() => perSharePL(position))
-const rawPLValue = computed(() => rawPL(position))
-const netPLValue = computed(() => netPL(position))
+const perSharePLValue = computed(() => getPerSharePL(position))
+const rawPLValue = computed(() => getRawPL(position))
+const netPLValue = computed(() => getNetPL(position))
 
 const totalROR = computed(() => {
   if (!position.costBasis || position.costBasis <= 0) return 0
@@ -148,24 +147,8 @@ let modalInitialized = false
 watch(() => position.startWeek, (newVal, oldVal) => {
   if (!modalInitialized) return
   if (!newVal || newVal === oldVal) return
-  // Calculate offsettingProfits: sum all rows for this symbol from startWeek and after, excluding buy/sell
-  let total = 0
-  const actuals = store.activeAccount.actuals || []
-  actuals.forEach(a => {
-    if (Array.isArray(a.data) && parseInt(a.week) >= parseInt(newVal)) {
-      a.data.forEach(txn => {
-        if (
-          txn.symbol &&
-          txn.symbol.toUpperCase().split(" ")[0].includes(position.symbol.toUpperCase()) &&
-          txn.action &&
-          !['buy', 'sell'].includes(txn.action.toLowerCase())
-        ) {
-          total += parseFloat(txn.amount || 0)
-        }
-      })
-    }
-  })
-  position.offsettingProfits = parseFloat(total.toFixed(2))
+  // Call store method to recalculate offsettingProfits
+  store.recalculateOffsettingProfits(position)
 })
 </script>
 
@@ -335,7 +318,7 @@ watch(() => position.startWeek, (newVal, oldVal) => {
                     <label for="position-currentPrice" class="form-label">Current Price <small class="text-muted">(if still held)</small></label>
                     <div class="input-group">
                       <span class="input-group-text">$</span>
-                      <input type="number" class="form-control" id="position-currentPrice" v-model.number="position.currentPrice" min="0" step="0.01" :disabled="!!position.soldWeek">
+                      <input type="number" class="form-control" id="position-currentPrice" v-model.number="position.currentPrice" min="0" step="0.001" :disabled="!!position.soldWeek">
                     </div>
                   </div>
                 </div>

@@ -508,6 +508,9 @@ function _processPositions(positionsImport) {
 
   // After adding all positions, sort by assignedWeek
   store.activeAccount.positions.sort((a, b) => a.assignedWeek - b.assignedWeek)
+
+  // Trigger the store to recalculate positions
+  store.recalculateAllOffsettingProfits()
 }
 
 // Stub for processing sell data

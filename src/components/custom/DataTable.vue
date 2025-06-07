@@ -65,7 +65,7 @@ defineExpose({
                          data-bs-toggle="tooltip"
                          :data-bs-html="column.header.tooltipHtml"
                          :data-bs-title="column.header.tooltip">
-                      {{ column.header.text }}
+                      <span v-html="column.header.text"></span>
                       <i v-if="column.header.tooltip" class="bi bi-info-circle ms-1"></i>
                     </div>
                     <div v-else :class="column.class || 'col'">
