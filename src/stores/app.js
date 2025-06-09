@@ -505,7 +505,7 @@ export const useAppStore = defineStore('app', {
           })
         }
       })
-      position.offsettingProfits = parseFloat(total.toFixed(2))
+      position.offsettingProfits = parseFloat((total * ((position.profitAllocation || 100) / 100)).toFixed(2))
     },
 
     /**

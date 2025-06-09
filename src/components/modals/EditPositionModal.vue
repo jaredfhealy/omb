@@ -25,7 +25,8 @@ const defaultPosition = {
   soldWeek: null,
   sellAmount: null,
   offsettingProfits: 0,
-  startWeek: null
+  startWeek: null,
+  profitAllocation: 100 // Percentage of Offsetting Profits to allocate
 }
 
 // Use a local reactive position for editing
@@ -44,6 +45,8 @@ const show = (posObj = null) => {
   if (posObj) {
     isEdit.value = true
     Object.assign(position, posObj)
+    // If profitAllocation is missing (old data), default to 100
+    if (typeof position.profitAllocation !== 'number') position.profitAllocation = 100
   } else {
     isEdit.value = false
     Object.assign(position, defaultPosition)
@@ -109,10 +112,15 @@ const save = () => {
 // Add watcher for startWeek to recalculate offsettingProfits
 let modalInitialized = false
 
-watch(() => position.startWeek, (newVal, oldVal) => {
+watch(() => position.startWeek, (newStartWeek, oldStartWeek) => {
   if (!modalInitialized) return
-  if (!newVal || newVal === oldVal) return
-  // Call store method to recalculate offsettingProfits
+  if (!newStartWeek || newStartWeek === oldStartWeek) return
+  store.recalculateOffsettingProfits(position)
+})
+
+watch(() => position.profitAllocation, (newProfitAllocation, oldProfitAllocation) => {
+  if (!modalInitialized) return
+  if (!position.startWeek || newProfitAllocation === oldProfitAllocation) return
   store.recalculateOffsettingProfits(position)
 })
 </script>
@@ -263,18 +271,28 @@ watch(() => position.startWeek, (newVal, oldVal) => {
                     </div>
                   </div>
                 </div>
-                <!-- Start Week (full width, editable) -->
-                <div class="mb-3">
-                  <label for="position-startWeek" class="form-label">Start Week</label>
-                  <select class="form-select" id="position-startWeek" v-model="position.startWeek">
-                    <option :value="null">Select Week</option>
-                    <option v-for="p in store.projections" :key="p.week" :value="p.week">
-                      Week {{ p.week }} ({{ store.weekRange(p.week, true) }})
-                    </option>
-                  </select>
-                  <div class="form-text">
-                    The first week premiums were collected (Offsetting Profits is automatically calculated on Start Week change).<br/>
-                    NOTE: You can use Transaction Summarizer to find the week you want to calculate from.
+                <!-- Start Week | Profit Allocation (%) (50/50 split, editable) -->
+                <div class="row">
+                  <div class="col-md-6 mb-3">
+                    <label for="position-startWeek" class="form-label">Start Week</label>
+                    <select class="form-select" id="position-startWeek" v-model="position.startWeek">
+                      <option :value="null">Select Week</option>
+                      <option v-for="p in store.projections" :key="p.week" :value="p.week">
+                        Week {{ p.week }} ({{ store.weekRange(p.week, true) }})
+                      </option>
+                    </select>
+                    <div class="form-text">
+                      The first week premiums were collected (Offsetting Profits is automatically calculated on Start Week change).<br/>
+                      NOTE: You can use Transaction Summarizer to find the week you want to calculate from.
+                    </div>
+                  </div>
+                  <div class="col-md-6 mb-3">
+                    <label for="position-profitAllocation" class="form-label">Profit Allocation (%)</label>
+                    <input type="number" class="form-control" id="position-profitAllocation"
+                           v-model.number="position.profitAllocation" min="0" max="100" step="0.01">
+                    <div class="form-text">
+                      Percentage of Offsetting Profits to allocate. When recalculating, only this percentage of the total will be used.
+                    </div>
                   </div>
                 </div>
                 <!-- Offsetting Profits | Current Price (50/50 split, editable) -->

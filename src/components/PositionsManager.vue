@@ -242,6 +242,7 @@ const displayPositions = computed(() => {
             class="form-check-input me-2"
             :checked="selectedIndexes.includes(index)"
             @change="toggleSelect(index)"
+            style="display: none"
           >
         </div>
         <div v-else-if="item.isMergedSummary">
