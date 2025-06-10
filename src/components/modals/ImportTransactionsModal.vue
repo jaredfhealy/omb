@@ -491,7 +491,8 @@ function _processPositions(positionsImport) {
       sellAmount: 0,
       soldWeek: null,
       symbol: data.symbol,
-      currentPrice: 0
+      currentPrice: 0,
+      profitAllocation: 100
     }
     position.currentPrice = (Number(position.costBasis / data.quantity) * 100) / 100
 

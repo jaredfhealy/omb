@@ -26,7 +26,7 @@ const defaultPosition = {
   sellAmount: null,
   offsettingProfits: 0,
   startWeek: null,
-  profitAllocation: 100 // Percentage of Offsetting Profits to allocate
+  profitAllocation: 100
 }
 
 // Use a local reactive position for editing

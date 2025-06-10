@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useAppStore } from '@/stores/app'
 import DataTable from '@/components/custom/DataTable.vue'
 import ConfirmModal from '@/components/modals/ConfirmModal.vue'
@@ -7,6 +7,26 @@ import { getPerSharePL, getWeeksHeld, getTotalROR, getWeeklyROR, getNetPLPerShar
 
 const store = useAppStore()
 const confirmModalRef = ref(null)
+
+// Migration: Ensure all positions have profitAllocation
+function migrateProfitAllocation() {
+  let migrated = false
+  if (!store.activeAccount || !Array.isArray(store.activeAccount.positions)) return
+  store.activeAccount.positions.forEach(pos => {
+    if (typeof pos.profitAllocation !== 'number') {
+      pos.profitAllocation = 100
+      migrated = true
+    }
+  })
+  if (migrated) {
+    store.saveBacon()
+  }
+}
+
+// Run migration on mount and whenever positions are loaded/refreshed
+onMounted(() => {
+  migrateProfitAllocation()
+})
 
 // Define columns for DataTable
 const columns = [
