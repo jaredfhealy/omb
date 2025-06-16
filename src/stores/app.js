@@ -209,7 +209,7 @@ export const useAppStore = defineStore('app', {
           : null
 
         // Calculate this week's actual ROR if available
-        const weekROR = actualEntry ? (Number(actualEntry.growth) / (startBalance + startSharesBalance) * 100) : null
+        const weekROR = (Number(growth) / (startBalance + startSharesBalance) * 100)
 
         // Track RORs when available
         if (weekROR !== null) {
@@ -248,7 +248,7 @@ export const useAppStore = defineStore('app', {
           withdrawal: transactions.totalWithdrawals,
           withdrawalsByCategory: transactions.withdrawals,
           projectedGrowth,
-          actualGrowth: actualEntry ? Number(actualEntry.growth) : null,
+          actualGrowth: growth,
           actualROR: weekROR,
           averageROR: 0,
           trailing4WeekRORAvg: trailing4WeekRORAvg?.toFixed(2),
@@ -453,7 +453,7 @@ export const useAppStore = defineStore('app', {
             fees: 6,
             amount: 7
           },
-          weeklyTotalTypes: ['sell to open', 'buy to close', 'qualified dividend', 'bank interest', 'dividend', 'cash dividend'],
+          weeklyTotalTypes: ['sell to open', 'sell to close', 'buy to open', 'buy to close', 'qualified dividend', 'bank interest', 'dividend', 'cash dividend', 'credit interest', 'foreign tax paid'],
           transactionTypes: ['moneylink transfer', 'moneylink deposit', 'journal', 'funds received'],
           positionTypes: ['buy'],
           sellTypes: ['sell'],

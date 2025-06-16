@@ -564,21 +564,50 @@ function _processSellData(sellsImport) {
         buyWeek: pos.startWeek,
         sellWeek: sell.week
       })
+      // Update position's soldShares and sellAmount
       pos.soldShares += allocateQty
-      // If all shares sold, set soldWeek and accumulate sellAmount
+      // Allocate proportional sellAmount for this position
+      pos.sellAmount += Math.round((sell.amount * (allocateQty / sell.shares)) * 1000) / 1000
+      // Backfill currentPrice as sellAmount / soldShares rounded to 3 decimals
+      if (pos.soldShares > 0) {
+        pos.currentPrice = Math.round((pos.sellAmount / pos.soldShares) * 1000) / 1000
+      }
+      // If all shares sold, set soldWeek
       if (pos.soldShares === pos.shares) {
         pos.soldWeek = sell.week
-        if (!pos.sellAmount) pos.sellAmount = 0
-        pos.sellAmount += sell.amount
-        // Backfill currentPrice as sellAmount / soldShares rounded to 3 decimals
-        if (pos.soldShares > 0) {
-          pos.currentPrice = Math.round((pos.sellAmount / pos.soldShares) * 1000) / 1000
-        }
       }
       sharesToAllocate -= allocateQty
       if (sharesToAllocate <= 0) break
     }
-    // If not all shares could be allocated, leave the remainder unallocated
+    /* If not all shares could be allocated, create a new position for the remainder
+    if (sharesToAllocate > 0) {
+      const unallocatedSellAmount = Math.round((sell.amount * (sharesToAllocate / sell.shares)) * 1000) / 1000
+      const startDate = store.activeAccount.settings.startDate
+      const newPosition = {
+        startWeek: sell.week,
+        date: startDate,
+        costBasis: unallocatedSellAmount,
+        offsettingProfits: 0,
+        shares: sharesToAllocate,
+        assignedWeek: 1,
+        soldShares: sharesToAllocate,
+        sellAmount: unallocatedSellAmount,
+        soldWeek: sell.week,
+        symbol: sell.symbol,
+        currentPrice: Math.round((sell.amount / sell.shares) * 1000) / 1000,
+        profitAllocation: 100,
+        manual: true // Mark as manual/unallocated
+      }
+      newPosition.positionKey = store.getPositionKey(newPosition, 'buy')
+      store.activeAccount.positions.push(newPosition)
+      sell.allocated.push({
+        positionKey: newPosition.positionKey,
+        shares: sharesToAllocate,
+        buyWeek: sell.week,
+        sellWeek: sell.week
+      })
+      console.warn(`Created new unallocated position for ${sharesToAllocate} shares of ${sell.symbol} on week ${sell.week}`)
+    }*/
   })
 }
 
