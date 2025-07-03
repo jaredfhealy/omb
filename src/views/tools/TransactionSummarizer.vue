@@ -153,17 +153,10 @@ const calculateSummary = () => {
             return null
           }
         }
-        // Only collect expired contracts for the section if no filter is active
-        if (txn.action && txn.action.toLowerCase() === 'expired') {
-          // If showRawData is false, add to expiredContracts and skip adding to summary
-          if (!showRawData.value) {
-            console.log('Adding expired contract:', txn.symbol)
-            expiredContracts.value.push(txn.symbol + " [" + txn.quantity + "]")
-            return null
-          }
-        }
-        else {
-          console.log('TXN is not expired:', txn.symbol, txn.action)
+        // Only collect expired contracts for the section if only one week is selected
+        if (txn.action && txn.action.toLowerCase() === 'expired' && !symbolFilter.value && selectedWeek.value === endWeek.value) {
+          expiredContracts.value.push(txn.symbol + " [" + txn.quantity + "]")
+          return null
         }
         let type = txn.action
         return {
@@ -445,7 +438,7 @@ async function copyAsImage() {
                 </tr>
               </tfoot>
             </table>
-            
+
             <!-- Expired contracts section (multi-week or filtered) -->
             <div class="mt-0" v-if="!symbolFilter && expiredContracts.length > 0 && (selectedWeek === endWeek)">
               <p style="font-size: 18pt;">Contracts Expired Worthless: <span class="fw-bold small" v-if="expiredContracts.length == 0">None</span></p>
