@@ -248,7 +248,7 @@ export const useAppStore = defineStore('app', {
           withdrawal: transactions.totalWithdrawals,
           withdrawalsByCategory: transactions.withdrawals,
           projectedGrowth,
-          actualGrowth: growth,
+          actualGrowth: weekEndDate <= today ? growth : null,
           actualROR: weekROR,
           averageROR: 0,
           trailing4WeekRORAvg: trailing4WeekRORAvg?.toFixed(2),

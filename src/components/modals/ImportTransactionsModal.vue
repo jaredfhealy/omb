@@ -579,7 +579,7 @@ function _processSellData(sellsImport) {
       sharesToAllocate -= allocateQty
       if (sharesToAllocate <= 0) break
     }
-    /* If not all shares could be allocated, create a new position for the remainder
+    // If not all shares could be allocated, create a new position for the remainder
     if (sharesToAllocate > 0) {
       const unallocatedSellAmount = Math.round((sell.amount * (sharesToAllocate / sell.shares)) * 1000) / 1000
       const startDate = store.activeAccount.settings.startDate
@@ -607,7 +607,7 @@ function _processSellData(sellsImport) {
         sellWeek: sell.week
       })
       console.warn(`Created new unallocated position for ${sharesToAllocate} shares of ${sell.symbol} on week ${sell.week}`)
-    }*/
+    }
   })
 }
 

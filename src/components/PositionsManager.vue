@@ -172,6 +172,7 @@ const removePosition = (index) => {
       const actualIndex = store.activeAccount.positions.findIndex(p => p === item)
       if (actualIndex !== -1) {
         store.activeAccount.positions.splice(actualIndex, 1)
+        store.saveBacon()
       }
     }
   )
