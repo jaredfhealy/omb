@@ -334,7 +334,7 @@ const expiredContractsSingleWeek = computed(() => {
     if (Array.isArray(actual.data)) {
       actual.data.forEach(txn => {
         if (txn.action && txn.action.toLowerCase() === 'expired' && txn.symbol) {
-          contracts.push(txn.symbol)
+          contracts.push(txn.symbol + " [" + txn.quantity + "]")
         }
       })
     }
