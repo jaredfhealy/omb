@@ -157,9 +157,13 @@ const calculateSummary = () => {
         if (txn.action && txn.action.toLowerCase() === 'expired') {
           // If showRawData is false, add to expiredContracts and skip adding to summary
           if (!showRawData.value) {
-            expiredContracts.value.push(txn.symbol)
+            console.log('Adding expired contract:', txn.symbol)
+            expiredContracts.value.push(txn.symbol + " [" + txn.quantity + "]")
             return null
           }
+        }
+        else {
+          console.log('TXN is not expired:', txn.symbol, txn.action)
         }
         let type = txn.action
         return {
@@ -305,43 +309,6 @@ async function copyAsImage() {
     }, 2000)
   }
 }
-
-// Compute expired contracts for single week selection
-const expiredContractsSingleWeek = computed(() => {
-  // Only show if exactly one week is selected and no symbol filter
-  if (!selectedWeek.value || !endWeek.value || selectedWeek.value !== endWeek.value || symbolFilter.value) return []
-  let contracts = []
-  let actualsToProcess = []
-  if (selectedAccount.value === 'all') {
-    if (store.db && Array.isArray(store.db.accounts)) {
-      store.db.accounts.forEach(acc => {
-        if (Array.isArray(acc.actuals)) {
-          acc.actuals.forEach(a => {
-            if (a.week === selectedWeek.value) actualsToProcess.push(a)
-          })
-        }
-      })
-    }
-  } else {
-    const acc = store.db.accounts[selectedAccount.value]
-    if (acc && Array.isArray(acc.actuals)) {
-      acc.actuals.forEach(a => {
-        if (a.week === selectedWeek.value) actualsToProcess.push(a)
-      })
-    }
-  }
-  actualsToProcess.forEach(actual => {
-    if (Array.isArray(actual.data)) {
-      actual.data.forEach(txn => {
-        if (txn.action && txn.action.toLowerCase() === 'expired' && txn.symbol) {
-          contracts.push(txn.symbol + " [" + txn.quantity + "]")
-        }
-      })
-    }
-  })
-  // Unique only
-  return [...new Set(contracts)]
-})
 </script>
 
 <template>
@@ -478,20 +445,15 @@ const expiredContractsSingleWeek = computed(() => {
                 </tr>
               </tfoot>
             </table>
+            
             <!-- Expired contracts section (multi-week or filtered) -->
-            <div class="mt-0" v-if="!symbolFilter && expiredContracts.length > 0 && (selectedWeek !== endWeek)">
+            <div class="mt-0" v-if="!symbolFilter && expiredContracts.length > 0 && (selectedWeek === endWeek)">
               <p style="font-size: 18pt;">Contracts Expired Worthless: <span class="fw-bold small" v-if="expiredContracts.length == 0">None</span></p>
               <div class="d-flex flex-wrap gap-2">
                 <span v-for="(symbol, idx) in expiredContracts" :key="idx" class="expired-pill">{{ symbol }}</span>
               </div>
             </div>
-            <!-- Expired contracts section (single week, no filter) -->
-            <div class="mt-0" v-if="!symbolFilter && expiredContractsSingleWeek.length > 0 && selectedWeek === endWeek">
-              <p style="font-size: 18pt;">Contracts Expired Worthless This Week:</p>
-              <ul>
-                <li v-for="(symbol, idx) in expiredContractsSingleWeek" :key="idx">{{ symbol }}</li>
-              </ul>
-            </div>
+
             <!-- No results message when filtered -->
             <div v-if="summaryData.length > 0 && summaryData.length === 0" 
                  class="alert alert-info mt-3">
