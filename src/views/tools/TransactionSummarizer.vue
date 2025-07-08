@@ -144,7 +144,10 @@ const calculateSummary = () => {
           contractType = optMatch[4]
         } else if (txn.symbol && txn.symbol.match(/^[A-Z.\-]+$/)) {
           ticker = txn.symbol
-          contractType = 'Stock'
+          // Use action in Title Case instead of 'Stock'
+          contractType = txn.action
+            ? txn.action.replace(/\w\S*/g, w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+            : '-'
           strike = '-'
         }
         // Symbol filter logic (enforced at data level)
