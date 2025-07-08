@@ -141,7 +141,7 @@ const calculateSummary = () => {
         if (optMatch) {
           ticker = optMatch[1]
           strike = optMatch[3]
-          contractType = optMatch[4]
+          contractType = optMatch[4] === 'C' ? 'Call' : 'Put'
         } else if (txn.symbol && txn.symbol.match(/^[A-Z.\-]+$/)) {
           ticker = txn.symbol
           // Use action in Title Case instead of 'Stock'
