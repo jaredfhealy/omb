@@ -40,8 +40,11 @@ watch(() => position.assignedWeek, (newVal) => {
   }
 })
 
+// Merged group ID for handling position groups
+const mergedGroupID = ref(null)
+
 // Set position value when modal is shown
-const show = (posObj = null) => {
+const show = (posObj = null, groupId = null) => {
   if (posObj) {
     isEdit.value = true
     Object.assign(position, posObj)
@@ -51,6 +54,7 @@ const show = (posObj = null) => {
     isEdit.value = false
     Object.assign(position, defaultPosition)
   }
+  mergedGroupID.value = groupId || (posObj && posObj.mergeGroup) || null
   isVisible.value = true
   setTimeout(() => { modalInitialized = true }, 0)
 }
@@ -62,9 +66,27 @@ store.showPositionModal = show
 const close = () => {
   isVisible.value = false
   modalInitialized = false
+  mergedGroupID.value = null
 }
 
 const save = () => {
+  // If editing a merged group, update all positions in the group
+  if (mergedGroupID.value) {
+    const groupId = mergedGroupID.value
+    const startWeek = position.startWeek
+    const currentPrice = position.currentPrice
+    store.activeAccount.positions.forEach(pos => {
+      if (pos.mergeGroup === groupId) {
+        pos.startWeek = startWeek
+        pos.currentPrice = currentPrice
+      }
+    })
+    store.recalculateAllOffsettingProfits()
+    store.saveBacon()
+    close()
+    return
+  }
+
   if (!position.symbol.trim()) {
     alert('Symbol is required')
     return
@@ -275,7 +297,7 @@ watch(() => position.profitAllocation, (newProfitAllocation, oldProfitAllocation
                 <div class="row">
                   <div class="col-md-6 mb-3">
                     <label for="position-startWeek" class="form-label">Start Week</label>
-                    <select class="form-select" id="position-startWeek" v-model="position.startWeek">
+                    <select class="form-select" id="position-startWeek" v-model="position.startWeek" :disabled="false">
                       <option :value="null">Select Week</option>
                       <option v-for="p in store.projections" :key="p.week" :value="p.week">
                         Week {{ p.week }} ({{ store.weekRange(p.week, true) }})
@@ -289,7 +311,8 @@ watch(() => position.profitAllocation, (newProfitAllocation, oldProfitAllocation
                   <div class="col-md-6 mb-3">
                     <label for="position-profitAllocation" class="form-label">Profit Allocation (%)</label>
                     <input type="number" class="form-control" id="position-profitAllocation"
-                           v-model.number="position.profitAllocation" min="0" max="100" step="0.01">
+                           v-model.number="position.profitAllocation" min="0" max="100" step="0.01"
+                           :disabled="mergedGroupID">
                     <div class="form-text">
                       Percentage of Offsetting Profits to allocate. When recalculating, only this percentage of the total will be used.
                     </div>
@@ -302,7 +325,8 @@ watch(() => position.profitAllocation, (newProfitAllocation, oldProfitAllocation
                     <div class="input-group">
                       <span class="input-group-text">$</span>
                       <input type="number" class="form-control" id="position-offsettingProfits" 
-                             v-model.number="position.offsettingProfits" min="0" step="0.01">
+                             v-model.number="position.offsettingProfits" min="0" step="0.01"
+                             :disabled="!!mergedGroupID">
                     </div>
                     <div class="form-text">
                       Total PUT/CALL premium income collected to offset this position's cost basis

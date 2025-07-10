@@ -8,7 +8,8 @@ import { getPerSharePL, getWeeksHeld, getTotalROR, getWeeklyROR, getNetPLPerShar
 const store = useAppStore()
 const confirmModalRef = ref(null)
 
-// Migration: Ensure all positions have profitAllocation
+// --- Merge Functionality ---
+// Handles migration to ensure all positions have profitAllocation set
 function migrateProfitAllocation() {
   let migrated = false
   if (!store.activeAccount || !Array.isArray(store.activeAccount.positions)) return
@@ -28,7 +29,8 @@ onMounted(() => {
   migrateProfitAllocation()
 })
 
-// Define columns for DataTable
+// --- DataTable Columns Definition ---
+// Defines columns for the positions table, including merge summary columns
 const columns = [
   {
     key: 'symbol',
@@ -95,6 +97,8 @@ const columns = [
   }
 ]
 
+// --- Filtering and Selection State ---
+// Handles filtering positions by open/closed/all and selection for merging
 const filter = ref('open')
 
 const filteredPositions = computed(() => {
@@ -107,46 +111,64 @@ const filteredPositions = computed(() => {
   return store.activeAccount.positions
 })
 
-const selectedIndexes = ref([])
+const selectedPositionKeys = ref([])
 
 const toggleSelect = (index) => {
-  const i = selectedIndexes.value.indexOf(index)
+  const pos = filteredPositions.value[index]
+  if (!pos) return
+  const key = pos.positionKey
+  const i = selectedPositionKeys.value.indexOf(key)
   if (i === -1) {
-    selectedIndexes.value.push(index)
+    selectedPositionKeys.value.push(key)
   } else {
-    selectedIndexes.value.splice(i, 1)
+    selectedPositionKeys.value.splice(i, 1)
   }
 }
 
 const clearSelection = () => {
-  selectedIndexes.value = []
+  selectedPositionKeys.value = []
 }
 
-const canMerge = computed(() => selectedIndexes.value.length >= 2)
+const canMerge = computed(() => selectedPositionKeys.value.length >= 2)
 
 const firstSelectedSymbol = computed(() => {
-  if (selectedIndexes.value.length === 0) return null
-  const first = filteredPositions.value[selectedIndexes.value[0]]
+  if (selectedPositionKeys.value.length === 0) return null
+  const firstKey = selectedPositionKeys.value[0]
+  const first = filteredPositions.value.find(p => p.positionKey === firstKey)
   return first ? first.symbol : null
 })
 
+// --- Merge Action ---
+// When merge is triggered, assigns a mergeGroup id to selected positions
 const mergePositions = () => {
-  // Get the selected positions (by filteredPositions)
-  const selected = selectedIndexes.value.map(i => filteredPositions.value[i])
+  // Get the selected positions (by positionKey)
+  const selected = store.activeAccount.positions.filter(p => selectedPositionKeys.value.includes(p.positionKey))
   if (selected.length < 2) return
   // Generate a unique group id
   const groupId = 'group_' + Date.now() + '_' + Math.floor(Math.random() * 10000)
   // Assign the group id to all selected positions
   selected.forEach(sel => {
-    const idx = store.activeAccount.positions.findIndex(p => p === sel)
+    const idx = store.activeAccount.positions.findIndex(p => p.positionKey === sel.positionKey)
     if (idx !== -1) {
       store.activeAccount.positions[idx].mergeGroup = groupId
     }
   })
+  // Auto-calculate allocation percentage for each member based on quantity
+  const totalQty = selected.reduce((sum, pos) => sum + (pos.shares || 0), 0)
+  if (totalQty > 0) {
+    selected.forEach(sel => {
+      const idx = store.activeAccount.positions.findIndex(p => p.positionKey === sel.positionKey)
+      if (idx !== -1) {
+        store.activeAccount.positions[idx].profitAllocation = Math.round((sel.shares / totalQty) * 10000) / 100 // 2 decimals
+      }
+    })
+  }
   store.saveBacon()
   clearSelection()
 }
 
+// --- Manual Position Add/Remove ---
+// Handles adding and removing manual positions
 const addManualPosition = () => {
   // Only allow adding a manual position for stocks owned prior to the account start date
   const startWeek = 1 // Always week 1 for account start
@@ -178,6 +200,8 @@ const removePosition = (index) => {
   )
 }
 
+// --- Merge Group Expand/Collapse State ---
+// Handles expanding/collapsing merged group summary rows
 const expandedGroups = ref([])
 
 const toggleExpandGroup = (groupId) => {
@@ -189,7 +213,8 @@ const toggleExpandGroup = (groupId) => {
   }
 }
 
-// Compute displayPositions: if 2+ selected with same symbol, show a summary row instead of those rows
+// --- Display Positions Computed ---
+// Computes the list of positions to display in the table, replacing merged positions with a summary row
 const displayPositions = computed(() => {
   // Group positions by mergeGroup
   const groups = {}
@@ -207,8 +232,9 @@ const displayPositions = computed(() => {
         // Expanded: show all group members
         groups[pos.mergeGroup].forEach(({ pos }) => result.push(pos))
       } else {
-        // Collapsed: show summary row
+        // Collapsed: show summary row for the merged group
         const group = groups[pos.mergeGroup]
+        // Create a merged summary object
         const merged = { ...group[0].pos, isMergedSummary: true }
         merged.shares = group.reduce((sum, { pos }) => sum + (pos.shares || 0), 0)
         merged.costBasis = group.reduce((sum, { pos }) => sum + (pos.costBasis || 0), 0)
@@ -220,6 +246,7 @@ const displayPositions = computed(() => {
         merged.currentPrice = group[0].pos.currentPrice
         merged.sellAmount = group.every(({ pos }) => pos.soldWeek) ? group.reduce((sum, { pos }) => sum + (pos.sellAmount || 0), 0) : null
         merged.mergeGroup = pos.mergeGroup
+        merged.profitAllocation = 100 // Always 100% for merged summary
         result.push(merged)
       }
       usedGroups.add(pos.mergeGroup)
@@ -229,6 +256,58 @@ const displayPositions = computed(() => {
   })
   return result
 })
+
+// State for merged group modal
+const mergedGroupEdit = ref({
+  visible: false,
+  group: null,
+  startWeek: null,
+  currentPrice: null
+})
+
+// Open modal for merged group editing
+function openMergedGroupEditModal(mergedItem) {
+  mergedGroupEdit.value.group = mergedItem.mergeGroup
+  mergedGroupEdit.value.startWeek = mergedItem.startWeek
+  mergedGroupEdit.value.currentPrice = mergedItem.currentPrice
+  mergedGroupEdit.value.visible = true
+}
+
+// Save handler for merged group modal
+function saveMergedGroupEdit() {
+  const groupId = mergedGroupEdit.value.group
+  const startWeek = mergedGroupEdit.value.startWeek
+  const currentPrice = mergedGroupEdit.value.currentPrice
+  if (!groupId) return
+  // Update all positions in this merge group
+  store.activeAccount.positions.forEach(pos => {
+    if (pos.mergeGroup === groupId) {
+      pos.startWeek = startWeek
+      pos.currentPrice = currentPrice
+    }
+  })
+  store.saveBacon()
+  mergedGroupEdit.value.visible = false
+}
+
+// Remove a position from a merge group
+function removeFromMergeGroup(groupId, positionKey) {
+  // Otherwise, just remove from the selected position
+  const pos = store.activeAccount.positions.find(p => p.positionKey === positionKey)
+  if (pos && pos.mergeGroup === groupId) {
+    delete pos.mergeGroup
+  }
+  // Find all positions in the group
+  const groupPositions = store.activeAccount.positions.filter(p => p.mergeGroup === groupId)
+  if (groupPositions.length === 1) {
+    // Remove mergeGroup from all positions in the group
+    groupPositions.forEach(p => { delete p.mergeGroup })
+    store.saveBacon()
+  }
+  else {
+    store.saveBacon()
+  }
+}
 </script>
 
 <template>
@@ -236,10 +315,6 @@ const displayPositions = computed(() => {
     :columns="columns"
     :items="displayPositions"
     :striped="true"
-    @edit="index => {
-      const item = displayPositions[index]
-      if (!item.isMergedSummary) store.showPositionModal(item, index)
-    }"
   >
     <template #header-actions>
       <div class="btn-group" role="group">
@@ -257,13 +332,23 @@ const displayPositions = computed(() => {
     <!-- Symbol column -->
     <template #symbol="{ item, index }">
       <div class="d-flex align-items-center">
-        <div v-if="(selectedIndexes.length === 0 || (firstSelectedSymbol && item.symbol === firstSelectedSymbol)) && !item.isMergedSummary">
+        <!-- Show remove-from-group icon for expanded group members -->
+        <div v-if="item.mergeGroup && !item.isMergedSummary && expandedGroups.includes(item.mergeGroup)">
+          <button
+            class="btn btn-sm btn-outline-danger me-2"
+            title="Remove from merged group"
+            @click.stop="removeFromMergeGroup(item.mergeGroup, item.positionKey)"
+          >
+            <i class="bi bi-box-arrow-left"></i>
+          </button>
+        </div>
+        <div v-else-if="(selectedPositionKeys.length === 0 || (firstSelectedSymbol && item.symbol === firstSelectedSymbol)) && !item.isMergedSummary && !item.mergeGroup">
           <input
             type="checkbox"
             class="form-check-input me-2"
-            :checked="selectedIndexes.includes(index)"
+            :checked="selectedPositionKeys.includes(item.positionKey)"
             @change="toggleSelect(index)"
-            style="display: none"
+            v-if="!item.mergeGroup"
           >
         </div>
         <div v-else-if="item.isMergedSummary">
@@ -349,19 +434,23 @@ const displayPositions = computed(() => {
     <template #actions="{ item, index }">
       <div class="d-flex gap-2">
         <template v-if="item.isMergedSummary">
+          <button class="btn btn-sm btn-outline-primary flex-grow-0" 
+                  title="Edit merged group"
+                  @click="store.showPositionModal(item, item.mergeGroup)">
+            <i class="bi bi-stickies"></i>
+          </button>
           <button class="btn btn-sm btn-outline-secondary flex-grow-0" @click="toggleExpandGroup(item.mergeGroup)">
             <i :class="expandedGroups.includes(item.mergeGroup) ? 'bi bi-chevron-up' : 'bi bi-chevron-down'"></i>
-            {{ expandedGroups.includes(item.mergeGroup) ? 'Collapse' : 'Expand' }}
           </button>
         </template>
         <template v-else>
           <button class="btn btn-sm btn-outline-primary flex-grow-0" 
-                  @click="store.showPositionModal(item, index)">
+                  @click="store.showPositionModal(item)">
             <i class="bi bi-pencil-square"></i>
           </button>
           <!-- Collapse button for expanded group members (only show on first member, after edit button) -->
           <button v-if="item.mergeGroup && expandedGroups.includes(item.mergeGroup) && displayPositions.findIndex(p => p === item) === displayPositions.findIndex(p => p.mergeGroup === item.mergeGroup && !p.isMergedSummary)" class="btn btn-sm btn-outline-secondary flex-grow-0" @click="toggleExpandGroup(item.mergeGroup)">
-            <i class="bi bi-chevron-up"></i> Collapse
+            <i class="bi bi-chevron-up"></i>
           </button>
           <button v-if="item.manual" class="btn btn-sm btn-outline-danger flex-grow-0" 
                   @click="removePosition(index)" title="Remove manual position">
@@ -379,6 +468,39 @@ const displayPositions = computed(() => {
     </template>
   </DataTable>
   <ConfirmModal ref="confirmModalRef" />
+
+  <!-- Add modal for merged group editing -->
+  <template v-if="mergedGroupEdit.visible">
+    <div class="modal d-block" tabindex="-1">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Edit Merged Group</h5>
+            <button type="button" class="btn-close" @click="mergedGroupEdit.visible = false"></button>
+          </div>
+          <div class="modal-body">
+            <div class="mb-3">
+              <label class="form-label">Start Week</label>
+              <select class="form-select" v-model="mergedGroupEdit.startWeek">
+                <option v-for="p in store.projections" :key="p.week" :value="p.week">
+                  Week {{ p.week }} ({{ store.weekRange(p.week, true) }})
+                </option>
+              </select>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Current Price</label>
+              <input type="number" class="form-control" v-model.number="mergedGroupEdit.currentPrice" min="0" step="0.001">
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" @click="mergedGroupEdit.visible = false">Cancel</button>
+            <button type="button" class="btn btn-primary" @click="saveMergedGroupEdit">Save</button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-backdrop fade show"></div>
+    </div>
+  </template>
 </template>
 
 <style>
