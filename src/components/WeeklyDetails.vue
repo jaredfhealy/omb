@@ -9,6 +9,14 @@ const selectionSummary = ref(null)
 const scrollableWindow = ref(null)
 const currentWeekRef = ref(null)
 const summaryExpanded = ref(false)
+const weekRangeFilter = ref('current-minus-4')
+
+const weekRangeOptions = [
+  { value: 'current-minus-4', label: 'Current - 4' },
+  { value: 'current-minus-8', label: 'Current - 8' },
+  { value: 'current-minus-12', label: 'Current - 12' },
+  { value: 'all', label: 'All Weeks' }
+]
 
 // Add local function (without exposing to store)
 function getAssignmentsForWeek(week) {
@@ -50,6 +58,25 @@ const getAssignmentsTooltip = (projection, type) => {
 // Add function to determine current week
 const getCurrentWeek = computed(() => {
   return store.getCurrentWeek()
+})
+
+const filteredProjections = computed(() => {
+  if (weekRangeFilter.value === 'all') {
+    return store.projections
+  }
+
+  const windowByFilter = {
+    'current-minus-4': 4,
+    'current-minus-8': 8,
+    'current-minus-12': 12
+  }
+
+  const lookbackWindow = windowByFilter[weekRangeFilter.value] ?? 4
+  const maxWeek = store.projections.length || 1
+  const currentWeek = Math.max(1, Math.min(getCurrentWeek.value || 1, maxWeek))
+  const startWeek = Math.max(1, currentWeek - lookbackWindow)
+
+  return store.projections.filter((projection) => projection.week >= startWeek)
 })
 
 // Define columns for the DataTable
@@ -275,6 +302,10 @@ watch(() => store.activeTab, (newTab) => {
   }
 })
 
+watch(weekRangeFilter, () => {
+  closeSummary()
+})
+
 onUnmounted(() => {
   document.removeEventListener('keydown', handleEscape)
 })
@@ -356,6 +387,23 @@ const dataTableRef = ref(null)
 
 <template>
   <div class="weekly-details-container">
+    <div class="d-xl-none mb-3">
+      <label for="week-filter-mobile" class="form-label mb-1">Week Range</label>
+      <select
+        id="week-filter-mobile"
+        class="form-select form-select-sm week-filter-select-mobile"
+        v-model="weekRangeFilter"
+      >
+        <option
+          v-for="option in weekRangeOptions"
+          :key="option.value"
+          :value="option.value"
+        >
+          {{ option.label }}
+        </option>
+      </select>
+    </div>
+
     <!-- Reorganized selection summary with collapsible feature -->
     <div v-if="selectionSummary" class="selection-summary">
       <div class="summary-header">
@@ -441,11 +489,30 @@ const dataTableRef = ref(null)
     <!-- Replace table with DataTable -->
     <DataTable 
       ref="dataTableRef"
-      :items="store.projections"
+      :items="filteredProjections"
       :columns="columns"
       :striped="true"
       :get-row-attributes="getRowAttributes"
       :get-row-ref="handleRowRef">
+      <template #header-week>
+        <div class="d-flex flex-column gap-1">
+          <span>Week</span>
+          <select
+            class="form-select form-select-sm week-filter-select"
+            v-model="weekRangeFilter"
+            @click.stop
+          >
+            <option
+              v-for="option in weekRangeOptions"
+              :key="option.value"
+              :value="option.value"
+            >
+              {{ option.label }}
+            </option>
+          </select>
+        </div>
+      </template>
+
       <!-- Week column with checkbox -->
       <template #week="{ item }">
         <div class="week-combined">
@@ -521,6 +588,14 @@ const dataTableRef = ref(null)
   height: 1.1em;
   border: 1.5px solid #6c757d !important;
   margin-right: 0.25rem !important;
+}
+
+.week-filter-select {
+  max-width: 150px;
+}
+
+.week-filter-select-mobile {
+  max-width: 220px;
 }
 
 /* Keep summary styles */

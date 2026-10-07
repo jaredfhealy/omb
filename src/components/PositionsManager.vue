@@ -104,7 +104,7 @@ const columns = [
     header: {
       text: 'Actions'
     },
-    class: 'col-1'
+    class: 'col-6 col-xl-1'
   }
 ]
 

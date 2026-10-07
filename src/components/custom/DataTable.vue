@@ -39,6 +39,15 @@ const getRowClasses = (index) => ({
   'row-striped': props.striped && index % 2 === 1
 })
 
+const getMobileLabelText = (text) => {
+  if (typeof text !== 'string') return ''
+  return text
+    .replace(/&lt;br\s*\/?&gt;/gi, ' ')
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 // Expose the ref to parent
 defineExpose({
   scrollableWindow
@@ -65,11 +74,15 @@ defineExpose({
                          data-bs-toggle="tooltip"
                          :data-bs-html="column.header.tooltipHtml"
                          :data-bs-title="column.header.tooltip">
-                      <span v-html="column.header.text"></span>
+                      <slot :name="`header-${column.key}`" :column="column">
+                        <span v-html="column.header.text"></span>
+                      </slot>
                       <i v-if="column.header.tooltip" class="bi bi-info-circle ms-1"></i>
                     </div>
                     <div v-else :class="column.class || 'col'">
-                      {{ column.header.text }}
+                      <slot :name="`header-${column.key}`" :column="column">
+                        <span v-html="column.header.text"></span>
+                      </slot>
                     </div>
                   </template>
                 </div>
@@ -98,7 +111,7 @@ defineExpose({
                     <!-- Default row rendering -->
                     <template v-for="column in columns" :key="column.key">
                       <div :class="column.class || 'col-6 col-xl'">
-                        <div class="data-label d-xl-none">{{ column.header.text }}</div>
+                        <div class="data-label d-xl-none">{{ getMobileLabelText(column.header.text) }}</div>
                         <div v-if="column.getTooltip"
                              data-bs-toggle="tooltip"
                              :data-bs-html="column.tooltipHtml"
