@@ -8,12 +8,16 @@ import {
   getWeeklyROR,
   getNetPLPerShare,
   getRawPL,
-  getNetPL
+  getNetPL,
+  getCurrentValue,
+  getOpenShares,
+  getSoldShares
 } from '@/utils/positionUtils'
 
 const store = useAppStore()
 const isVisible = ref(false)
 const isEdit = ref(false)
+const showAllocationDetails = ref(false)
 
 // Default position template
 const defaultPosition = {
@@ -55,6 +59,7 @@ const show = (posObj = null, groupId = null) => {
     Object.assign(position, defaultPosition)
   }
   mergedGroupID.value = groupId || (posObj && posObj.mergeGroup) || null
+  showAllocationDetails.value = false
   isVisible.value = true
   setTimeout(() => { modalInitialized = true }, 0)
 }
@@ -67,6 +72,7 @@ const close = () => {
   isVisible.value = false
   modalInitialized = false
   mergedGroupID.value = null
+  showAllocationDetails.value = false
 }
 
 const save = () => {
@@ -145,6 +151,36 @@ watch(() => position.profitAllocation, (newProfitAllocation, oldProfitAllocation
   if (!position.startWeek || newProfitAllocation === oldProfitAllocation) return
   store.recalculateOffsettingProfits(position)
 })
+
+const allocatedSellRows = computed(() => {
+  if (!position.positionKey || !store.activeAccount?.sells) return []
+
+  const baseCostPerShare = position.shares > 0 ? position.costBasis / position.shares : 0
+  const rows = []
+
+  store.activeAccount.sells.forEach(sell => {
+    if (!Array.isArray(sell.allocated) || !sell.shares || !sell.amount) return
+    sell.allocated.forEach(allocation => {
+      if (allocation.positionKey !== position.positionKey) return
+      const allocatedShares = Number(allocation.shares || 0)
+      if (allocatedShares <= 0) return
+      const proceeds = (Number(sell.amount) * allocatedShares) / Number(sell.shares)
+      const allocatedCostBasis = baseCostPerShare * allocatedShares
+      rows.push({
+        sellWeek: Number(sell.week),
+        sellDate: sell.date || '',
+        shares: allocatedShares,
+        proceeds,
+        avgSellPrice: proceeds / allocatedShares,
+        allocatedCostBasis,
+        realizedPL: proceeds - allocatedCostBasis
+      })
+    })
+  })
+
+  rows.sort((a, b) => a.sellWeek - b.sellWeek)
+  return rows
+})
 </script>
 
 <template>
@@ -156,10 +192,7 @@ watch(() => position.profitAllocation, (newProfitAllocation, oldProfitAllocation
           <button type="button" class="btn-close" @click="close"></button>
         </div>
         <div class="modal-body">
-          <div class="row"> <!-- Main row to create two columns -->
-            <!-- Reversed order: Summary first, then form -->
-            
-            <!-- Summary column - now first -->
+          <div class="row">
             <div class="col-md-4 mb-4 mb-md-0">
               <div class="position-summary h-100 d-flex flex-column">
                 <h5 class="border-bottom pb-2 mb-4">Position Summary</h5>
@@ -180,12 +213,7 @@ watch(() => position.profitAllocation, (newProfitAllocation, oldProfitAllocation
                   <div class="col-6 summary-item">
                     <label class="fw-bold">Current Value</label>
                     <div class="value">
-                      <template v-if="position.soldWeek && position.sellAmount != null">
-                        {{ store.currency(position.sellAmount) }}
-                      </template>
-                      <template v-else>
-                        {{ store.currency((position.currentPrice || 0) * (position.shares || 0)) }}
-                      </template>
+                      {{ store.currency(getCurrentValue(position)) }}
                     </div>
                   </div>
                   <div class="col-6 summary-item">
@@ -240,6 +268,17 @@ watch(() => position.profitAllocation, (newProfitAllocation, oldProfitAllocation
                     </div>
                   </div>
                 </div>
+                <!-- Open Shares | Sold Shares -->
+                <div class="row mb-4">
+                  <div class="col-6 summary-item">
+                    <label class="fw-bold">Open Shares</label>
+                    <div class="value">{{ getOpenShares(position) }}</div>
+                  </div>
+                  <div class="col-6 summary-item">
+                    <label class="fw-bold">Sold Shares</label>
+                    <div class="value">{{ getSoldShares(position) }}</div>
+                  </div>
+                </div>
                 <!-- Weeks Held (full width) -->
                 <div class="summary-item mb-4">
                   <label class="fw-bold">Weeks Held</label>
@@ -249,10 +288,11 @@ watch(() => position.profitAllocation, (newProfitAllocation, oldProfitAllocation
                 </div>
               </div>
             </div>
-            
-            <!-- Form column - now second -->
+
             <div class="col-md-8">
+              <div class="position-details-panel h-100">
               <form @submit.prevent="save">
+                <h5 class="border-bottom pb-2 mb-4">Position Details</h5>
                 <!-- Manual entry info block -->
                 <div v-if="position.manual" class="alert alert-info mb-4">
                   All stock positions after the start date specified for the account will be created during import. Manual entry is intended to record open positions and their cost basis that were acquired before starting LSO.
@@ -356,6 +396,50 @@ watch(() => position.profitAllocation, (newProfitAllocation, oldProfitAllocation
                   <button type="submit" class="btn btn-primary">Save</button>
                 </div>
               </form>
+              </div>
+            </div>
+          </div>
+          <div v-if="allocatedSellRows.length" class="row mt-4">
+            <div class="col-12">
+              <div class="allocated-sales-panel">
+                <button
+                  class="allocated-sales-toggle"
+                  type="button"
+                  @click="showAllocationDetails = !showAllocationDetails"
+                  :aria-expanded="showAllocationDetails"
+                >
+                  <span class="allocated-sales-title">Allocated Sales ({{ allocatedSellRows.length }})</span>
+                  <i class="bi bi-chevron-down allocated-sales-chevron" :class="{ expanded: showAllocationDetails }"></i>
+                </button>
+                <div v-if="showAllocationDetails" class="table-responsive mt-3">
+                  <table class="table table-sm mb-0">
+                    <thead>
+                      <tr>
+                        <th>Week</th>
+                        <th>Date</th>
+                        <th>Shares</th>
+                        <th>Proceeds</th>
+                        <th>Avg Sell</th>
+                        <th>Cost Basis</th>
+                        <th>Realized P/L</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(sale, idx) in allocatedSellRows" :key="`${sale.sellWeek}-${sale.sellDate}-${idx}`">
+                        <td>{{ sale.sellWeek }}</td>
+                        <td>{{ sale.sellDate }}</td>
+                        <td>{{ sale.shares }}</td>
+                        <td>{{ store.currency(sale.proceeds) }}</td>
+                        <td>{{ store.currency(sale.avgSellPrice) }}</td>
+                        <td>{{ store.currency(sale.allocatedCostBasis) }}</td>
+                        <td :class="sale.realizedPL >= 0 ? 'text-success' : 'text-danger'">
+                          {{ store.currency(sale.realizedPL) }}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -368,6 +452,13 @@ watch(() => position.profitAllocation, (newProfitAllocation, oldProfitAllocation
 <style scoped>
 /* Position Summary Panel */
 .position-summary {
+  background-color: #f8f9fa;
+  border-radius: 8px;
+  padding: 20px;
+  height: 100%;
+}
+
+.position-details-panel {
   background-color: #f8f9fa;
   border-radius: 8px;
   padding: 20px;
@@ -390,10 +481,45 @@ watch(() => position.profitAllocation, (newProfitAllocation, oldProfitAllocation
   font-weight: 600;
 }
 
+.allocated-sales-panel {
+  background-color: #f8f9fa;
+  border-radius: 8px;
+  padding: 16px 20px;
+}
+
+.allocated-sales-toggle {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 1.1rem;
+  font-weight: 600;
+  text-align: left;
+}
+
+.allocated-sales-chevron {
+  transition: transform 0.2s ease-in-out;
+}
+
+.allocated-sales-chevron.expanded {
+  transform: rotate(180deg);
+}
+
 /* Responsive adjustments */
 @media (max-width: 767.98px) {
   .position-summary {
     margin-bottom: 2rem;
+    padding: 1rem;
+  }
+
+  .position-details-panel {
+    padding: 1rem;
+  }
+  
+  .allocated-sales-panel {
     padding: 1rem;
   }
   

@@ -3,7 +3,18 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useAppStore } from '@/stores/app'
 import DataTable from '@/components/custom/DataTable.vue'
 import ConfirmModal from '@/components/modals/ConfirmModal.vue'
-import { getPerSharePL, getWeeksHeld, getTotalROR, getWeeklyROR, getNetPLPerShare, getRawPL, getNetPL } from '@/utils/positionUtils'
+import {
+  getPerSharePL,
+  getWeeksHeld,
+  getTotalROR,
+  getWeeklyROR,
+  getNetPLPerShare,
+  getRawPL,
+  getNetPL,
+  getCurrentValue,
+  getOpenShares,
+  getSoldShares
+} from '@/utils/positionUtils'
 
 const store = useAppStore()
 const confirmModalRef = ref(null)
@@ -237,14 +248,18 @@ const displayPositions = computed(() => {
         // Create a merged summary object
         const merged = { ...group[0].pos, isMergedSummary: true }
         merged.shares = group.reduce((sum, { pos }) => sum + (pos.shares || 0), 0)
+        merged.soldShares = group.reduce((sum, { pos }) => sum + getSoldShares(pos), 0)
         merged.costBasis = group.reduce((sum, { pos }) => sum + (pos.costBasis || 0), 0)
         merged.offsettingProfits = group.reduce((sum, { pos }) => sum + (pos.offsettingProfits || 0), 0)
         merged.assignedWeek = Math.min(...group.map(({ pos }) => pos.assignedWeek || 0))
         merged.startWeek = Math.min(...group.map(({ pos }) => pos.startWeek || 0))
-        merged.soldWeek = group.every(({ pos }) => pos.soldWeek) ? Math.max(...group.map(({ pos }) => pos.soldWeek || 0)) : null
+        const mergedOpenShares = merged.shares - merged.soldShares
+        merged.soldWeek = mergedOpenShares === 0 ? Math.max(...group.map(({ pos }) => pos.soldWeek || 0)) : null
         merged.manual = group.some(({ pos }) => pos.manual)
-        merged.currentPrice = group[0].pos.currentPrice
-        merged.sellAmount = group.every(({ pos }) => pos.soldWeek) ? group.reduce((sum, { pos }) => sum + (pos.sellAmount || 0), 0) : null
+        const totalOpenShares = group.reduce((sum, { pos }) => sum + getOpenShares(pos), 0)
+        const totalUnrealizedValue = group.reduce((sum, { pos }) => sum + ((pos.currentPrice || 0) * getOpenShares(pos)), 0)
+        merged.currentPrice = totalOpenShares > 0 ? totalUnrealizedValue / totalOpenShares : 0
+        merged.sellAmount = group.reduce((sum, { pos }) => sum + (pos.sellAmount || 0), 0)
         merged.mergeGroup = pos.mergeGroup
         merged.profitAllocation = 100 // Always 100% for merged summary
         result.push(merged)
@@ -254,8 +269,34 @@ const displayPositions = computed(() => {
       result.push(pos)
     }
   })
+
   return result
 })
+
+function getLatestSellWeek(position) {
+  if (!store.activeAccount?.sells || !position?.positionKey) return null
+  const weeks = store.activeAccount.sells
+    .filter(sell => Array.isArray(sell.allocated) && sell.allocated.some(a => a.positionKey === position.positionKey))
+    .map(sell => Number(sell.week))
+    .filter(week => !Number.isNaN(week))
+  if (!weeks.length) return null
+  return Math.max(...weeks)
+}
+
+function getSharesLabel(position) {
+  const openShares = getOpenShares(position)
+  const soldShares = getSoldShares(position)
+  if (soldShares <= 0) {
+    return `${position.shares} shares`
+  }
+  return `${openShares} shares`
+}
+
+function getSoldSharesSuffix(position) {
+  const soldShares = getSoldShares(position)
+  if (soldShares <= 0) return null
+  return `(${soldShares} sold)`
+}
 
 // State for merged group modal
 const mergedGroupEdit = ref({
@@ -357,25 +398,26 @@ function removeFromMergeGroup(groupId, positionKey) {
         <!-- Always render the symbol and shares labels -->
         <div class="position-symbol d-none d-xl-flex">
           <span class="symbol-text">{{ item.symbol }}</span>
-          <span class="shares-count">{{ item.shares }} shares</span>
+          <span class="shares-count">{{ getSharesLabel(item) }}</span>
+          <span v-if="getSoldSharesSuffix(item)" class="shares-count text-muted">{{ getSoldSharesSuffix(item) }}</span>
         </div>
         <div class="d-xl-none">
-          <span class="symbol-text">{{ item.symbol }}</span>&nbsp;
-          <span>({{ item.shares }} shares)</span>
+          <span class="symbol-text">{{ item.symbol }}</span>
+          <div class="shares-count">{{ getSharesLabel(item) }}</div>
+          <div v-if="getSoldSharesSuffix(item)" class="shares-count text-muted">{{ getSoldSharesSuffix(item) }}</div>
         </div>
       </div>
     </template>
     
     <!-- Weeks column -->
     <template #weeks="{ item }">
-      <div v-if="item.isMergedSummary">
+      <div>
         <div v-html="store.weekRange(item.assignedWeek)"></div>
         <div v-if="item.soldWeek" v-html="store.weekRange(item.soldWeek)"></div>
-        <div v-else class="text-muted">Not Yet Sold</div>
-      </div>
-      <div v-else>
-        <div v-html="store.weekRange(item.assignedWeek)"></div>
-        <div v-if="item.soldWeek" v-html="store.weekRange(item.soldWeek)"></div>
+        <div v-else-if="getSoldShares(item) > 0" class="text-warning">
+          <div v-if="getLatestSellWeek(item)" v-html="store.weekRange(getLatestSellWeek(item))"></div>
+          <div>Partial Sale</div>
+        </div>
         <div v-else class="text-muted">Not Yet Sold</div>
       </div>
     </template>
@@ -416,13 +458,7 @@ function removeFromMergeGroup(groupId, positionKey) {
     <template #currentValuePrice="{ item }">
       <div class="d-flex flex-column">
         <span>
-          <!-- Current Value: if sold, show sellAmount, else currentPrice * shares -->
-          <template v-if="item.soldWeek && item.sellAmount != null">
-            {{ store.currency(item.sellAmount) }}
-          </template>
-          <template v-else>
-            {{ store.currency(item.currentPrice * item.shares) }}
-          </template>
+          {{ store.currency(getCurrentValue(item)) }}
         </span>
         <span class="small text-muted">
           {{ store.currency(item.currentPrice) }} / share
