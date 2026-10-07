@@ -459,7 +459,7 @@ export const useAppStore = defineStore('app', {
           weeklyTotalTypes: ['sell to open', 'sell to close', 'buy to open', 'buy to close', 'qualified dividend', 'bank interest', 'dividend', 'cash dividend', 'credit interest', 'foreign tax paid', 'expired', 'margin interest', 'substitute inc pmt'],
           transactionTypes: ['moneylink transfer', 'moneylink deposit', 'journal', 'funds received'],
           positionTypes: ['buy'],
-          sellTypes: ['sell'],
+          sellTypes: ['sell', 'sell short'],
         }
       }
       // Try direct lookup first (header string as key)

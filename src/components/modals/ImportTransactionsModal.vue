@@ -128,6 +128,18 @@ async function importTransactionsFromCSV(file) {
     const { transactionsImport, positionsImport, sellsImport, processDataResults } = 
       _processData(dataRows, brokerMap)
     
+    // DEBUG: Inspect categorized data before final processing
+    console.log('🔍 DEBUG: Categorized Import Data', {
+      transactionsImport,
+      transactionCount: transactionsImport.length,
+      positionsImport,
+      positionCount: positionsImport.length,
+      sellsImport,
+      sellCount: sellsImport.length,
+      processDataResults
+    })
+    debugger // Pause again to inspect categorized data
+    
     // Step 3: Process transactions into account transactions array
     const transactionResults = _processTransactions(transactionsImport)
 
