@@ -2,9 +2,6 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { useRoute } from 'vue-router'
-import { signOut, onAuthStateChanged } from 'firebase/auth'
-import { auth } from '@/firebase'
-import router from '@/router'
 
 const store = useAppStore()
 const route = useRoute()
@@ -41,42 +38,12 @@ watch(() => route.path, () => {
   closeMenu()
 })
 
-// Initialize authentication state on component mount
+// Load persisted state for all pages except the standalone summarizer tool
 onMounted(() => {
-  onAuthStateChanged(auth, (user) => {
-    if (user) {
-      store.user = user
-      // If we're on the summarizer page, don't initiate the full data load
-      if (!isOnSummarizer.value) {
-        store.getBaconStash()
-      }
-    } else if (!isOnSummarizer.value) {
-      // Only redirect if not on summarizer page
-      router.push('/login')
-    }
-  })
-})
-
-// Add local function (without exposing to store)
-async function logout() {
-  try {
-    await signOut(auth)
-    
-    // Use imported router instead of global router
-    await router.push('/login')
-    
-    store.$reset()
-  } catch (error) {
-    console.error('Logout error:', error)
-    window.location.href = '/login'
+  if (!isOnSummarizer.value) {
+    store.getBaconStash()
   }
-}
-
-// Add account switching function
-const switchAccount = (accountId) => {
-  store.db.selectedAccountId = Number(accountId)
-  store.calculateProjections()
-}
+})
 </script>
 
 <template>
@@ -91,9 +58,8 @@ const switchAccount = (accountId) => {
         <span class="navbar-toggler-icon"></span>
       </button>
       
-      <!-- Right-aligned items - show conditionally based on existence of user -->
       <div class="collapse navbar-collapse justify-content-end" id="navbarContent" ref="navbarCollapse">
-        <ul class="navbar-nav align-items-center" v-if="store.user">
+        <ul class="navbar-nav align-items-center">
           <!-- Add the Import CSV button -->
           <li class="nav-item">
             <a href="#" class="nav-link" @click.prevent="store.showImportTransactionsModal(); closeMenu()">
@@ -130,31 +96,6 @@ const switchAccount = (accountId) => {
                 </router-link>
               </li>
             </ul>
-          </li>
-          
-          <!-- User Dropdown -->
-          <li class="nav-item dropdown">
-            <a class="nav-link dropdown-toggle" href="#" id="userDropdown" role="button" data-bs-toggle="dropdown"
-              aria-expanded="false">
-              {{ store.user.email }}
-            </a>
-            <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="userDropdown">
-              <li>
-                <a class="dropdown-item" href="#" data-bs-toggle="modal" data-bs-target="#changePasswordModal" @click="closeMenu">Change Password</a>
-              </li>
-              <li><hr class="dropdown-divider"></li>
-              <li>
-                <a class="dropdown-item" href="#" @click.prevent="logout(); closeMenu()">
-                  <i class="bi bi-box-arrow-right"></i> Logout
-                </a>
-              </li>
-            </ul>
-          </li>
-        </ul>
-        <!-- Simplified menu for when not authenticated -->
-        <ul class="navbar-nav align-items-center" v-else>
-          <li class="nav-item">
-            <router-link to="/login" class="nav-link">Login</router-link>
           </li>
         </ul>
       </div>

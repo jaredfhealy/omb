@@ -1,38 +1,33 @@
 export const routes = [
   {
     path: '/login',
-    name: 'Login',
-    component: () => import('../views/user/Login.vue'),
-    meta: { requiresAuth: false }
+    redirect: '/'
   },
   {
     path: '/signup',
-    name: 'Signup',
-    component: () => import('../views/user/Signup.vue'),
-    meta: { requiresAuth: false }
+    redirect: '/'
   },
   {
     path: '/forgot-password',
-    name: 'ForgotPassword',
-    component: () => import('../views/user/ForgotPassword.vue'),
-    meta: { requiresAuth: false }
+    redirect: '/'
   },
   {
     path: '/reporting',
     name: 'reporting',
-    component: () => import('../views/Reporting.vue'),
-    meta: { requiresAuth: true }
+    component: () => import('../views/Reporting.vue')
   },
   {
     path: '/',
     name: 'Bacon',
-    component: () => import('../views/Bacon.vue'),
-    meta: { requiresAuth: true }
+    component: () => import('../views/Bacon.vue')
   },
   {
     path: '/summarizer',
     name: 'Summarizer',
-    component: () => import('../views/tools/TransactionSummarizer.vue'),
-    meta: { requiresAuth: true }
+    component: () => import('../views/tools/TransactionSummarizer.vue')
+  },
+  {
+    path: '/:pathMatch(.*)*',
+    redirect: '/'
   }
 ]

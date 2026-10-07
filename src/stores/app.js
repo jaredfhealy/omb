@@ -1,12 +1,7 @@
 // stores/app.js
 import { defineStore } from 'pinia'
 import { nextTick } from 'vue'
-import { auth, db } from '@/firebase'
-import {
-  doc,
-  setDoc,
-  getDoc
-} from 'firebase/firestore'
+import { loadState, saveState } from '@/services/stateApi'
 
 export const useAppStore = defineStore('app', {
   state: () => ({
@@ -55,33 +50,16 @@ export const useAppStore = defineStore('app', {
   },
 
   actions: {
-    // Firestore interactions
+    // State API interactions
     async getBaconStash() {
-      const user = auth.currentUser
-      const userId = user?.uid
-      if (!userId) {
-        console.log('No user logged in')
-        return
-      }
-      else {
-        this.user = user
-      }
-    
       try {
-        const docRef = doc(db, 'accounts', userId)
-        const docSnap = await getDoc(docRef)
-    
-        if (docSnap.exists()) {
-          // Get the data so we can validate it
-          let data = docSnap.data()
+        const data = await loadState()
 
-          // Validate that we have a positions array on each account
+        if (data && Array.isArray(data.accounts)) {
           data.accounts.forEach(account => {
             if (!account.positions) account.positions = []
           })
           this.db = data
-        } else {
-          console.log('No bacon data found for user')
         }
         this.calculateProjections()
       } catch (error) {
@@ -91,19 +69,12 @@ export const useAppStore = defineStore('app', {
     },
     
     async saveBacon() {
-      const userId = auth.currentUser?.uid
-      if (!userId) {
-        console.log('No user logged in')
-        return
-      }
-    
       try {
-        const docRef = doc(db, 'accounts', userId)
         const dataToSave = {
           ...this.db,
           lastUpdated: new Date().toISOString()
         }
-        await setDoc(docRef, dataToSave)
+        await saveState(dataToSave)
         this.initTooltips()  // Initialize tooltips after save
       } catch (error) {
         console.error('Failed to save the bacon:', error)

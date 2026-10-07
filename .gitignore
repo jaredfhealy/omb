@@ -26,6 +26,8 @@ dist-ssr
 # environment
 .env*
 
-#Firebase
-/local
-/.firebase
+# Local backend database
+/server/data/
+
+# Migration working notes
+/migration/

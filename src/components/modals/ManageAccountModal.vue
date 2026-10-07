@@ -46,8 +46,11 @@ function downloadBackup() {
   const blob = new Blob([data], { type: 'application/json' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
+  const backupPrefix = store.activeAccount?.name
+    ? store.activeAccount.name.replace(/\s+/g, '_')
+    : 'operation_more_bacon'
   a.href = url
-  a.download = `${store.user.email.split('@')[0]}_backup_${store.formatDate(new Date())}.json`
+  a.download = `${backupPrefix}_backup_${store.formatDate(new Date())}.json`
   document.body.appendChild(a)
   a.click()
   document.body.removeChild(a)

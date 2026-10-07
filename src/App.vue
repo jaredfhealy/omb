@@ -4,8 +4,7 @@ import { useRoute } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import AppNavigation from '@/components/AppNavigation.vue'
 import {
-  ConfirmModal, 
-  ChangePasswordModal,
+  ConfirmModal,
   EditAccountModal,
   SettingsModal,
   ManageAccountModal,
@@ -30,15 +29,14 @@ store.confirm = (message, callback, cancelCallback) => {
 <template>
   <AppNavigation />
   <div :class="[
-    store.user ? 'container-fluid' : 'container',
+    'container-fluid',
     { 'fixed-nav': isOnSummarizer }
   ]" v-cloak>
     <router-view/>
   </div>
   
   <!-- Global Modals - fix the ref name -->
-  <ConfirmModal ref="confirmModal" v-if="store.user" />
-  <ChangePasswordModal v-if="store.user" />
+  <ConfirmModal ref="confirmModal" />
   
   <!-- Account Level Modals -->
   <SettingsModal />

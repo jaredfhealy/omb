@@ -5,7 +5,6 @@ import EditRowModal from './EditRowModal.vue'
 import SettingsModal from './SettingsModal.vue'
 import EditPositionModal from './EditPositionModal.vue'
 import ConfirmModal from './ConfirmModal.vue'
-import ChangePasswordModal from './ChangePasswordModal.vue'
 import ImportTransactionsModal from './ImportTransactionsModal.vue'
 
 // Export modals as an object so they can be imported as a group
@@ -17,6 +16,5 @@ export {
   SettingsModal,
   EditPositionModal,
   ConfirmModal,
-  ChangePasswordModal,
   ImportTransactionsModal
 }

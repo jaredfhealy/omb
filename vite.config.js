@@ -21,8 +21,6 @@ export default defineConfig({
         manualChunks: {
           'vendor-vue': ['vue'],
           'vendor-ecosystem': ['vue-router', 'pinia'],
-          'vendor-firebase-core': ['firebase/app', 'firebase/auth'],
-          'vendor-firebase-store': ['firebase/firestore'],
           'vendor-bootstrap': ['bootstrap']
         },
         chunkFileNames: (chunkInfo) => {
