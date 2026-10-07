@@ -13,9 +13,10 @@ export function useChartData(store) {
     // Filter projections based on the criteria - only include weeks with actual data
     const filteredProjections = store.projections.filter(projection => {
       // Check if the projection has a valid actualGrowth value
-      const hasActualGrowth = 
-        projection.hasOwnProperty('actualGrowth') && 
-        projection.actualGrowth > 0
+      const hasActualGrowth =
+        projection.hasOwnProperty('actualGrowth') &&
+        projection.actualGrowth !== null &&
+        projection.actualGrowth !== undefined
         
       // Determine if this is the current week
       const projectionDate = new Date(projection.date)

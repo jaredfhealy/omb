@@ -5,11 +5,15 @@ import Papa from 'papaparse'
 
 const store = useAppStore()
 const isVisible = ref(false)
-const csvFile = ref(null)
-const isProcessing = ref(false)
-const importResults = ref(null)
-const hasError = ref(false)
-const errorMessage = ref('')
+const importMode = ref('transactions')
+const transactionCsvFile = ref(null)
+const positionsCsvFile = ref(null)
+const isProcessingTransactions = ref(false)
+const isProcessingPositions = ref(false)
+const transactionImportResults = ref(null)
+const positionsImportResults = ref(null)
+const transactionError = ref('')
+const positionsError = ref('')
 const discardFirstWeek = ref(true) // Default to true for this option
 const deleteAllData = ref(false) // Default to false for this option
 
@@ -26,45 +30,64 @@ const close = () => {
 }
 
 const resetForm = () => {
-  csvFile.value = null
-  isProcessing.value = false
-  importResults.value = null
-  hasError.value = false
-  errorMessage.value = ''
+  importMode.value = 'transactions'
+  transactionCsvFile.value = null
+  positionsCsvFile.value = null
+  isProcessingTransactions.value = false
+  isProcessingPositions.value = false
+  transactionImportResults.value = null
+  positionsImportResults.value = null
+  transactionError.value = ''
+  positionsError.value = ''
   discardFirstWeek.value = true // Reset to default
   deleteAllData.value = false // Reset to default
   
   // Reset the file input element to clear the selected file
-  const fileInput = document.querySelector('#csvFile')
-  if (fileInput) {
-    fileInput.value = ''
+  const transactionFileInput = document.querySelector('#transactionsCsvFile')
+  if (transactionFileInput) {
+    transactionFileInput.value = ''
+  }
+  const positionsFileInput = document.querySelector('#positionsCsvFile')
+  if (positionsFileInput) {
+    positionsFileInput.value = ''
   }
 }
 
-// Handle file selection
-const handleFileChange = (event) => {
+const handleTransactionFileChange = (event) => {
   const file = event.target.files[0]
   
   if (file && file.type !== 'text/csv') {
-    hasError.value = true
-    errorMessage.value = 'Please select a valid CSV file'
+    transactionError.value = 'Please select a valid CSV file'
+    transactionCsvFile.value = null
     return
   }
   
-  csvFile.value = file
-  hasError.value = false
+  transactionCsvFile.value = file
+  transactionError.value = ''
+}
+
+const handlePositionsFileChange = (event) => {
+  const file = event.target.files[0]
+
+  if (file && file.type !== 'text/csv') {
+    positionsError.value = 'Please select a valid CSV file'
+    positionsCsvFile.value = null
+    return
+  }
+
+  positionsCsvFile.value = file
+  positionsError.value = ''
 }
 
 // Process the CSV file
-const processImport = async () => {
-  if (!csvFile.value) {
-    hasError.value = true
-    errorMessage.value = 'Please select a CSV file first'
+const processTransactionImport = async () => {
+  if (!transactionCsvFile.value) {
+    transactionError.value = 'Please select a CSV file first'
     return
   }
 
   // Get the filename and replace underscores with spaces
-  const fileName = csvFile.value.name.replace(/_/g, ' ')
+  const fileName = transactionCsvFile.value.name.replace(/_/g, ' ')
   const accountName = store.activeAccount.name.trim()
   // Check if the filename starts with the account name (case-insensitive)
   let confirmMessage = `Are you sure you want to import transactions into the "${store.activeAccount.name}" account?`
@@ -76,25 +99,24 @@ const processImport = async () => {
     confirmMessage,
     async () => {
       // User confirmed, proceed with import
-      isProcessing.value = true
+      isProcessingTransactions.value = true
       
       try {
         // Store the file before clearing the input
-        const fileToProcess = csvFile.value
+        const fileToProcess = transactionCsvFile.value
         
         // Call the local function to handle the actual import
         const results = await importTransactionsFromCSV(fileToProcess)
-        importResults.value = results
-        hasError.value = false
+        transactionImportResults.value = results
+        transactionError.value = ''
         
         // Trigger projections and save
         store.calculateProjections()
       } catch (error) {
-        hasError.value = true
-        errorMessage.value = error.message || 'An error occurred during import'
+        transactionError.value = error.message || 'An error occurred during import'
         console.error('Import error:', error)
       } finally {
-        isProcessing.value = false
+        isProcessingTransactions.value = false
       }
     },
     () => { close() }
@@ -128,18 +150,6 @@ async function importTransactionsFromCSV(file) {
     const { transactionsImport, positionsImport, sellsImport, processDataResults } = 
       _processData(dataRows, brokerMap)
     
-    // DEBUG: Inspect categorized data before final processing
-    console.log('🔍 DEBUG: Categorized Import Data', {
-      transactionsImport,
-      transactionCount: transactionsImport.length,
-      positionsImport,
-      positionCount: positionsImport.length,
-      sellsImport,
-      sellCount: sellsImport.length,
-      processDataResults
-    })
-    debugger // Pause again to inspect categorized data
-    
     // Step 3: Process transactions into account transactions array
     const transactionResults = _processTransactions(transactionsImport)
 
@@ -169,6 +179,152 @@ async function importTransactionsFromCSV(file) {
   } catch (error) {
     console.error('Import transaction error:', error)
     throw error
+  }
+}
+
+const processPositionsImport = async () => {
+  if (!positionsCsvFile.value) {
+    positionsError.value = 'Please select a Positions CSV file first'
+    return
+  }
+
+  const fileName = positionsCsvFile.value.name.replace(/_/g, ' ')
+  const accountName = store.activeAccount.name.trim()
+  let confirmMessage = `Update current position pricing for "${store.activeAccount.name}" from this Schwab positions export?`
+  if (!fileName.toLowerCase().startsWith(accountName.toLowerCase())) {
+    confirmMessage = `WARNING: The file you selected ("${fileName}") does not appear to match the current account ("${accountName}"). Continue importing current positions anyway?`
+  }
+
+  store.confirm(
+    confirmMessage,
+    async () => {
+      isProcessingPositions.value = true
+
+      try {
+        const results = await importCurrentPositionsFromCSV(positionsCsvFile.value)
+        positionsImportResults.value = results
+        positionsError.value = ''
+        store.calculateProjections()
+      } catch (error) {
+        positionsError.value = error.message || 'An error occurred during positions import'
+        console.error('Positions import error:', error)
+      } finally {
+        isProcessingPositions.value = false
+      }
+    }
+  )
+}
+
+async function importCurrentPositionsFromCSV(file) {
+  if (!store.activeAccount) {
+    throw new Error('No active account found')
+  }
+
+  const text = await file.text()
+  const rows = Papa.parse(text, { header: false, skipEmptyLines: true }).data || []
+  const { positionsRows, summaryRows } = parsePositionsRows(rows)
+  if (!positionsRows.length) {
+    throw new Error('No position rows found. Confirm this is a Schwab Positions export CSV.')
+  }
+
+  const accountPositions = store.activeAccount.positions || []
+  const equityPriceBySymbol = new Map()
+  const snapshot = {
+    asOf: new Date().toISOString(),
+    source: 'schwab-positions-csv',
+    totals: {
+      positionsTotal: null,
+      cashAndCashInvestments: null,
+      equitiesMarketValue: 0,
+      optionsMarketValue: 0
+    }
+  }
+
+  positionsRows.forEach((row) => {
+    const marketValue = _parseAmount(row.marketValue, 0)
+    const assetType = (row.assetType || '').toLowerCase()
+    const quantity = Number(String(row.quantity || '').replace(/,/g, ''))
+    const price = _parseAmount(row.price, 0)
+
+    if (assetType === 'equity' && row.symbol && quantity > 0 && price > 0) {
+      equityPriceBySymbol.set(row.symbol, price)
+      snapshot.totals.equitiesMarketValue += marketValue
+    } else if (assetType.includes('option')) {
+      snapshot.totals.optionsMarketValue += marketValue
+    } else if (assetType.includes('cash')) {
+      snapshot.totals.cashAndCashInvestments = marketValue
+    }
+  })
+
+  summaryRows.forEach((row) => {
+    if ((row.symbol || '').toLowerCase() === 'positions total') {
+      snapshot.totals.positionsTotal = _parseAmount(row.marketValue, 0)
+    }
+  })
+
+  let lotsUpdated = 0
+  let symbolsUpdated = 0
+  const matchedSymbols = new Set()
+  accountPositions.forEach((position) => {
+    if (!position?.symbol) return
+    const price = equityPriceBySymbol.get(position.symbol)
+    if (typeof price !== 'number') return
+
+    position.currentPrice = Math.round(price * 1000) / 1000
+    lotsUpdated++
+    matchedSymbols.add(position.symbol)
+  })
+  symbolsUpdated = matchedSymbols.size
+
+  store.activeAccount.brokerageSnapshot = snapshot
+  await store.saveBacon()
+
+  return {
+    rowsProcessed: positionsRows.length,
+    symbolsInFile: equityPriceBySymbol.size,
+    symbolsUpdated,
+    lotsUpdated,
+    unmatchedSymbols: [...equityPriceBySymbol.keys()].filter(symbol => !matchedSymbols.has(symbol)),
+    snapshot
+  }
+}
+
+function parsePositionsRows(rows) {
+  const headerIndex = rows.findIndex((row) => String(row?.[0] || '').trim() === 'Symbol')
+  if (headerIndex === -1) {
+    throw new Error('Could not find Schwab positions CSV header row')
+  }
+
+  const headers = rows[headerIndex].map((h) => String(h || '').trim())
+  const rowsAfterHeader = rows.slice(headerIndex + 1)
+
+  const normalizedRows = rowsAfterHeader
+    .map((cells) => headers.reduce((obj, header, idx) => {
+      obj[header] = String(cells[idx] || '').trim()
+      return obj
+    }, {}))
+    .filter((row) => row.Symbol && row.Symbol.length > 0)
+
+  const positionsRows = normalizedRows
+    .filter((row) => row.Symbol.toLowerCase() !== 'positions total')
+    .map((row) => ({
+      symbol: row.Symbol,
+      quantity: row['Qty (Quantity)'],
+      price: row.Price,
+      marketValue: row['Mkt Val (Market Value)'],
+      assetType: row['Asset Type']
+    }))
+
+  const summaryRows = normalizedRows
+    .filter((row) => row.Symbol.toLowerCase() === 'positions total')
+    .map((row) => ({
+      symbol: row.Symbol,
+      marketValue: row['Mkt Val (Market Value)']
+    }))
+
+  return {
+    positionsRows,
+    summaryRows
   }
 }
 
@@ -714,101 +870,160 @@ store.showImportTransactionsModal = show
     <div class="modal-dialog modal-lg">
       <div class="modal-content">
         <div class="modal-header">
-          <h5 class="modal-title">Import Transactions</h5>
+          <h5 class="modal-title">Import Data</h5>
           <button type="button" class="btn-close" @click="close"></button>
         </div>
         <div class="modal-body">
-          <!-- File selection area -->
-          <div v-if="!importResults">
-            <div class="mb-3">
-              <label for="csvFile" class="form-label">Select CSV file to import</label>
-              <input 
-                class="form-control" 
-                type="file" 
-                id="csvFile" 
-                accept=".csv" 
-                @change="handleFileChange"
-                :class="{ 'is-invalid': hasError }"
+          <ul class="nav nav-pills mb-3">
+            <li class="nav-item">
+              <button
+                class="nav-link"
+                :class="{ active: importMode === 'transactions' }"
+                type="button"
+                @click="importMode = 'transactions'"
               >
-              <div class="invalid-feedback" v-if="hasError">{{ errorMessage }}</div>
-              
-              <div class="form-text">
-                CSV file should contain transaction data with date, description, and amount columns.
+                Transactions
+              </button>
+            </li>
+            <li class="nav-item">
+              <button
+                class="nav-link"
+                :class="{ active: importMode === 'positions' }"
+                type="button"
+                @click="importMode = 'positions'"
+              >
+                Current Positions
+              </button>
+            </li>
+          </ul>
+
+          <div v-if="importMode === 'transactions'">
+            <div v-if="!transactionImportResults">
+              <div class="mb-3">
+                <label for="transactionsCsvFile" class="form-label">Select transactions CSV file</label>
+                <input 
+                  class="form-control" 
+                  type="file" 
+                  id="transactionsCsvFile" 
+                  accept=".csv" 
+                  @change="handleTransactionFileChange"
+                  :class="{ 'is-invalid': !!transactionError }"
+                >
+                <div class="invalid-feedback" v-if="transactionError">{{ transactionError }}</div>
+                
+                <div class="form-text">
+                  CSV file should contain transaction data with date, description, and amount columns.
+                </div>
               </div>
-            </div>
-            
-            <!-- Discard first week option -->
-            <div class="form-check mb-3">
-              <input 
-                class="form-check-input" 
-                type="checkbox" 
-                id="discardFirstWeekOption" 
-                v-model="discardFirstWeek"
-              >
-              <label class="form-check-label" for="discardFirstWeekOption">
-                Discard first week of data
-              </label>
-              <div class="form-text">
-                When importing 'Last 6 Months' or similar, discard the first week as it may not be a full week of data
+              
+              <div class="form-check mb-3">
+                <input 
+                  class="form-check-input" 
+                  type="checkbox" 
+                  id="discardFirstWeekOption" 
+                  v-model="discardFirstWeek"
+                >
+                <label class="form-check-label" for="discardFirstWeekOption">
+                  Discard first week of data
+                </label>
+                <div class="form-text">
+                  When importing 'Last 6 Months' or similar, discard the first week as it may not be a full week of data
+                </div>
+              </div>
+
+              <div class="form-check mb-3">
+                <input 
+                  class="form-check-input" 
+                  type="checkbox" 
+                  id="deleteAllDataOption" 
+                  v-model="deleteAllData"
+                >
+                <label class="form-check-label" for="deleteAllDataOption">
+                  Delete all data before import
+                </label>
+                <div class="form-text">
+                  When checked, all transactions, positions, and weekly transaction data will be deleted before importing new data.
+                </div>
+              </div>
+              
+              <div class="text-center my-3" v-if="isProcessingTransactions">
+                <div class="spinner-border text-primary" role="status">
+                  <span class="visually-hidden">Processing...</span>
+                </div>
+                <p class="mt-2">Processing your transactions...</p>
               </div>
             </div>
 
-            <!-- Delete all data option -->
-            <div class="form-check mb-3">
-              <input 
-                class="form-check-input" 
-                type="checkbox" 
-                id="deleteAllDataOption" 
-                v-model="deleteAllData"
-              >
-              <label class="form-check-label" for="deleteAllDataOption">
-                Delete all data before import
-              </label>
-              <div class="form-text">
-                When checked, all transactions, positions, and weekly transaction data will be deleted before importing new data.
+            <div v-if="transactionImportResults" class="import-results">
+              <div class="alert alert-success">
+                <h5>Transactions Import Completed</h5>
+                <p>{{ transactionImportResults.totalProcessed }} transactions processed</p>
+                <p>{{ transactionImportResults.weeksUpdated }} of {{ transactionImportResults.weeksProcessed }} weeks updated</p>
+                <p v-if="transactionImportResults.transfersDeleted">{{ transactionImportResults.transfersDeleted }} transactions deleted</p>
+                <p>{{ transactionImportResults.transfersAdded }} deposit/withdrawal transactions added</p>
+                <p v-if="transactionImportResults.skippedRows">{{ transactionImportResults.skippedRows }} rows skipped due to errors</p>
+                <p v-if="transactionImportResults.recalculation?.weeksProcessed">
+                  {{ transactionImportResults.recalculation.weeksUpdated }} of {{ transactionImportResults.recalculation.weeksProcessed }} weeks recalculated
+                </p>
+                <p v-if="transactionImportResults.recalculation?.weeksWithoutData" class="text-warning">
+                  Warning: Weeks {{ transactionImportResults.recalculation.weeksWithoutData.join(', ') }} have no transaction data
+                </p>
               </div>
-            </div>
-            
-            <!-- Processing indicator -->
-            <div class="text-center my-3" v-if="isProcessing">
-              <div class="spinner-border text-primary" role="status">
-                <span class="visually-hidden">Processing...</span>
+
+              <div v-if="transactionImportResults.errors && transactionImportResults.errors.length > 0" class="error-results mt-3">
+                <h6>Errors:</h6>
+                <ul class="list-group">
+                  <li 
+                    v-for="(error, index) in transactionImportResults.errors" 
+                    :key="index"
+                    class="list-group-item list-group-item-warning"
+                  >
+                    Line {{ error.line }}: {{ error.message }}
+                  </li>
+                </ul>
               </div>
-              <p class="mt-2">Processing your transactions...</p>
             </div>
           </div>
-          
-          <!-- Import results summary -->
-          <div v-if="importResults" class="import-results">
-            <div class="alert alert-success">
-              <h5>Import Completed Successfully</h5>
-              <p>{{ importResults.totalProcessed }} transactions processed</p>
-              <p>{{ importResults.weeksUpdated }} of {{ importResults.weeksProcessed }} weeks updated</p>
-              <p v-if="importResults.transfersDeleted">{{ importResults.transfersDeleted }} transactions deleted</p>
-              <p>{{ importResults.transfersAdded }} deposit/withdrawal transactions added</p>
-              <p v-if="importResults.skippedRows">{{ importResults.skippedRows }} rows skipped due to errors</p>
-              <!-- Add recalculation results if available -->
-              <p v-if="importResults.recalculation?.weeksProcessed">
-                {{ importResults.recalculation.weeksUpdated }} of {{ importResults.recalculation.weeksProcessed }} weeks recalculated
-              </p>
-              <!-- Warning about missing data if applicable -->
-              <p v-if="importResults.recalculation?.weeksWithoutData" class="text-warning">
-                Warning: Weeks {{ importResults.recalculation.weeksWithoutData.join(', ') }} have no transaction data
-              </p>
+
+          <div v-if="importMode === 'positions'">
+            <div v-if="!positionsImportResults">
+              <div class="mb-3">
+                <label for="positionsCsvFile" class="form-label">Select Schwab positions CSV file</label>
+                <input 
+                  class="form-control" 
+                  type="file" 
+                  id="positionsCsvFile" 
+                  accept=".csv" 
+                  @change="handlePositionsFileChange"
+                  :class="{ 'is-invalid': !!positionsError }"
+                >
+                <div class="invalid-feedback" v-if="positionsError">{{ positionsError }}</div>
+
+                <div class="form-text">
+                  Imports current prices from your positions export and updates open lots by symbol. Also stores a brokerage snapshot for reporting.
+                </div>
+              </div>
+
+              <div class="text-center my-3" v-if="isProcessingPositions">
+                <div class="spinner-border text-primary" role="status">
+                  <span class="visually-hidden">Processing...</span>
+                </div>
+                <p class="mt-2">Processing current positions...</p>
+              </div>
             </div>
 
-            <!-- Only show errors section if there are errors -->
-            <div v-if="importResults.errors && importResults.errors.length > 0" class="error-results mt-3">
-              <h6>Errors:</h6>
-              <ul class="list-group">
-                <li 
-                  v-for="(error, index) in importResults.errors" 
-                  :key="index"
-                  class="list-group-item list-group-item-warning"
-                >
-                  Line {{ error.line }}: {{ error.message }}
-                </li>
-              </ul>
+            <div v-if="positionsImportResults" class="import-results">
+              <div class="alert alert-success">
+                <h5>Current Positions Import Completed</h5>
+                <p>{{ positionsImportResults.rowsProcessed }} position rows processed</p>
+                <p>{{ positionsImportResults.symbolsUpdated }} symbols updated across {{ positionsImportResults.lotsUpdated }} lots</p>
+                <p v-if="positionsImportResults.snapshot?.totals?.positionsTotal !== null">
+                  Brokerage Positions Total: {{ store.currency(positionsImportResults.snapshot.totals.positionsTotal) }}
+                </p>
+                <p v-if="positionsImportResults.unmatchedSymbols?.length" class="text-warning mb-0">
+                  Unmatched symbols: {{ positionsImportResults.unmatchedSymbols.join(', ') }}
+                </p>
+              </div>
             </div>
           </div>
         </div>
@@ -819,16 +1034,25 @@ store.showImportTransactionsModal = show
             class="btn btn-secondary" 
             @click="close"
           >
-            {{ importResults ? 'Close' : 'Cancel' }}
+            {{ (importMode === 'transactions' && transactionImportResults) || (importMode === 'positions' && positionsImportResults) ? 'Close' : 'Cancel' }}
           </button>
           <button 
-            v-if="!importResults && !isProcessing" 
+            v-if="importMode === 'transactions' && !transactionImportResults && !isProcessingTransactions" 
             type="button" 
             class="btn btn-primary"
-            @click="processImport" 
-            :disabled="!csvFile || isProcessing"
+            @click="processTransactionImport" 
+            :disabled="!transactionCsvFile || isProcessingTransactions"
           >
             Import Transactions
+          </button>
+          <button 
+            v-if="importMode === 'positions' && !positionsImportResults && !isProcessingPositions" 
+            type="button" 
+            class="btn btn-primary"
+            @click="processPositionsImport" 
+            :disabled="!positionsCsvFile || isProcessingPositions"
+          >
+            Import Current Positions
           </button>
         </div>
       </div>
