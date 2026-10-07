@@ -1,7 +1,7 @@
 # Operation More Bacon — Copilot Instructions
 
 ## Project Purpose
-A Vue 3 + Firebase personal finance app focused on **weekly options trading income projection**. Users track cash balances, recurring deposits/withdrawals, assigned stock positions (cash-secured puts, etc.), and compare actual weekly trading results against a projected growth curve. Supports multiple brokerage accounts per user and CSV import from Schwab.
+A Vue 3 + local API personal finance app focused on **weekly options trading income projection**. Users track cash balances, recurring deposits/withdrawals, assigned stock positions (cash-secured puts, etc.), and compare actual weekly trading results against a projected growth curve. Supports multiple brokerage accounts and CSV import from Schwab.
 
 ---
 
@@ -12,8 +12,8 @@ A Vue 3 + Firebase personal finance app focused on **weekly options trading inco
 | Vue 3 (`<script setup>` / Composition API) | UI framework |
 | Pinia | Global state management |
 | Vue Router 4 | Client-side routing |
-| VueFire 3 | Firebase/Vue binding |
-| Firebase 11 (Auth + Firestore) | Auth and cloud persistence |
+| Node.js + Express | Local backend API |
+| better-sqlite3 (SQLite) | Local persistence |
 | Bootstrap 5 + Bootstrap Icons | UI styling |
 | Chart.js 4 + vue-chartjs | Charts |
 | chartjs-plugin-zoom / annotation | Chart interactivity |
@@ -22,17 +22,17 @@ A Vue 3 + Firebase personal finance app focused on **weekly options trading inco
 | Vite | Build tool |
 
 **Dev scripts:**
-- `npm run dev` — runs Firebase emulators + Vite dev server concurrently
-- `npm run emulators` — Firebase emulators only (Auth: 9099, Firestore: 8080)
+- `npm run dev` — runs local API server + Vite dev server concurrently
+- `npm run server` — local API server only (default port 3001)
 - `npm run build` / `npm run preview` — production build
 
-Local emulator data is persisted in `./local` between runs.
+Local persisted data is stored in `./server/data/app.db`.
 
 ---
 
-## Firestore Data Structure
+## Local State Payload Structure
 
-One document per user at `users/{uid}`. The entire app state lives in this single document.
+The entire app state is stored as one JSON payload row in SQLite `app_state` (id=1) and served by `GET/PUT /api/state`.
 
 ```javascript
 {
@@ -106,7 +106,7 @@ One document per user at `users/{uid}`. The entire app state lives in this singl
 }
 ```
 
-**Security rules:** Only authenticated users can read/write their own `users/{uid}` document.
+**Security model (current):** local-only app; no auth layer.
 
 ---
 
@@ -118,10 +118,9 @@ The backbone of the application. Contains all state, computed projections, busin
 
 | Property | Type | Description |
 |---|---|---|
-| `userData` | Object | Full Firestore document |
-| `user` | Object\|null | Firebase Auth user |
+| `db` | Object | Full local state payload loaded from `/api/state` |
 | `projections` | Array | Computed weekly rows — recalculated on every data change |
-| `isLoading` | Boolean | Prevents auto-save during initial load |
+| `loading` | Boolean | Prevents auto-save during initial load |
 | `activeTab` | String | `'yearly'` \| `'weekly'` \| `'recurring'` \| `'positions'` |
 | `weekFilter` | String | `'all'` \| `'open'` \| `'closed'` |
 | `selectedWeek` | Number\|null | Currently selected week for row modal |
@@ -132,13 +131,12 @@ The backbone of the application. Contains all state, computed projections, busin
 - `currentAccount` — finds account by `selectedAccountId`
 - `totalWeeks` — total number of weeks (`settings.years * 52`)
 - `otherAccounts` — accounts not currently active
-- `currentUser` — alias for `user`
 
 ### Key Actions
 
-**Firestore:**
-- `loadData(uid)` — loads user document, validates positions array, triggers `calculateProjections()`
-- `saveData()` — writes `userData` to Firestore with `lastUpdated` timestamp, then calls `refreshTooltips()`
+**Local API persistence:**
+- `getBaconStash()` — loads full state payload from local API, validates account arrays, triggers `calculateProjections()`
+- `saveBacon()` — writes full state payload to local API with `lastUpdated`, then calls `refreshTooltips()`
 
 **Core Business Logic:**
 - `calculateProjections()` — main computation engine. Iterates all weeks; for each week:
@@ -191,16 +189,13 @@ Always guard calls: `if (store.confirm) store.confirm(...)`.
 
 ## Routing (`src/router/`)
 
-| Path | Component | Auth Required |
+| Path | Component | Access Requirements |
 |---|---|---|
-| `/login` | `Login.vue` | No |
-| `/signup` | `Signup.vue` | No |
-| `/forgot-password` | `ForgotPassword.vue` | No |
-| `/` | `Bacon.vue` | Yes |
-| `/reporting` | `Reporting.vue` | Yes |
-| `/summarizer` | `TransactionSummarizer.vue` | Yes (guard bypassed) |
+| `/` | `Bacon.vue` | No |
+| `/reporting` | `Reporting.vue` | No |
+| `/summarizer` | `TransactionSummarizer.vue` | No |
 
-All routes are lazy-loaded. The navigation guard waits for `auth.authStateReady()` before processing. `/summarizer` is explicitly allowed through without auth for standalone use.
+All routes are lazy-loaded. Auth guards and auth bootstrap were removed in local-only mode.
 
 ---
 
@@ -212,14 +207,11 @@ All routes are lazy-loaded. The navigation guard waits for `auth.authStateReady(
 | `views/Bacon.vue` | Main app view (`/`). Thin wrapper around `BalanceProjector`. |
 | `views/Reporting.vue` | Reporting dashboard. Renders all 4 charts. Has local chart-type toggle. |
 | `views/tools/TransactionSummarizer.vue` | Standalone CSV transaction summarizer. Groups roll pairs, calculates per-trade ROR, supports week-range filtering and image copy. |
-| `views/user/Login.vue` | Email/password login form. |
-| `views/user/Signup.vue` | Registration form. Creates initial Firestore document on signup. |
-| `views/user/ForgotPassword.vue` | Password reset email form. |
 
 ### Core Components
 | File | Description |
 |---|---|
-| `components/AppNavigation.vue` | Top navbar. Bootstraps auth listener, handles logout, account switching, mobile collapse. |
+| `components/AppNavigation.vue` | Top navbar. Handles account actions, page navigation, and mobile collapse. |
 | `components/BalanceProjector.vue` | Primary container for the main view. Mounts Bootstrap listeners, renders tab panels, shows loading overlay. |
 | `components/TabNavigation.vue` | Tab bar that sets `store.activeTab`. No props/emits — reads store directly. |
 | `components/YearlySummary.vue` | Groups projections into yearly chunks. Shows start balance, deposits, withdrawals, growth, end balance, % change. |
@@ -244,7 +236,6 @@ All routes are lazy-loaded. The navigation guard waits for `auth.authStateReady(
 | File | Description |
 |---|---|
 | `modals/ConfirmModal.vue` | Global reusable confirm dialog. Exposes `show(msg, confirmCb, cancelCb)`. |
-| `modals/ChangePasswordModal.vue` | Firebase `updatePassword` form. Triggered via Bootstrap JS in `AppNavigation`. |
 | `modals/EditAccountModal.vue` | Create/edit account (name, description, settings). |
 | `modals/EditPositionModal.vue` | Add/edit stock position. Shows live P&L summary using `positionUtils`. Handles merge group editing. |
 | `modals/EditRowModal.vue` | Edit per-week notes. Does not edit growth (that's read-only from actuals). |
@@ -277,11 +268,8 @@ App.vue
 │   │   ├── RORChart.vue
 │   │   └── BalanceGrowthChart.vue
 │   ├── TransactionSummarizer.vue
-│   ├── Login.vue
-│   ├── Signup.vue
-│   └── ForgotPassword.vue
+│
 ├── ConfirmModal.vue           (global, mounted in App.vue)
-├── ChangePasswordModal.vue    (global)
 ├── SettingsModal.vue          (global)
 ├── ManageAccountModal.vue     (global)
 ├── EditAccountModal.vue       (global)
@@ -351,7 +339,6 @@ Pure functions for position P&L calculations. All accept a position object.
 - **Week numbers** are 1-based, relative to `settings.startDate` of the active account
 - **Projection rows** are the source of truth for display — always derived from `calculateProjections()`, never stored directly
 - **Auto-save** happens after `calculateProjections()` completes (after initial load flag clears)
-- **Bootstrap modals** are triggered via Bootstrap JS (not Vue events) for globally-mounted modals like `ChangePasswordModal`
 - **Option symbol regex:** `/^([\w.-]+) (\d{2}\/\d{2}\/\d{4}) ([\d.]+) ([CP])$/` — used in `TransactionSummarizer` for parsing option contract symbols
 - **Brokerage format** is stored as `formatKey` on the account; currently only `'schwab'` is implemented in `getBrokerageFormat()`
 
@@ -360,9 +347,9 @@ Pure functions for position P&L calculations. All accept a position object.
 ## Adding a New Feature — Checklist
 
 1. **New store state** → add to `state()` in `src/stores/app.js`
-2. **New Firestore field** → add to the account object shape; consider migration logic for existing accounts
+2. **New persisted field** → add to the local payload shape and consider migration logic for existing saved payloads
 3. **New modal** → follow existing modal pattern (local `isVisible`, `show()`/`close()`, `defineExpose({ show })`), register in `modals/index.js`, mount globally in `App.vue`, attach to store: `store.showMyModal = modalRef.value.show`
 4. **New tab** → add tab button in `TabNavigation.vue`, add `v-if` panel in `BalanceProjector.vue`, add tab key to `activeTab` type
 5. **Projection changes** → modify `calculateProjections()` in the store; all display components reactively update
 6. **New chart** → use `useChartData` composable unless you need full projection history (then read `store.projections` directly, like `BalanceGrowthChart`)
-7. **Update this file** when adding new store state, Firestore fields, global modal patterns, or significant architectural changes
+7. **Update this file** when adding new store state, persisted payload fields, global modal patterns, or significant architectural changes
