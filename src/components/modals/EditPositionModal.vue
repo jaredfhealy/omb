@@ -1,6 +1,7 @@
 <script setup>
 import { ref, reactive, watch, computed } from 'vue'
 import { useAppStore } from '@/stores/app'
+import DataTable from '@/components/custom/DataTable.vue'
 import {
   getPerSharePL,
   getWeeksHeld,
@@ -17,7 +18,7 @@ import {
 const store = useAppStore()
 const isVisible = ref(false)
 const isEdit = ref(false)
-const showAllocationDetails = ref(false)
+const showAllocationDetails = ref(true)
 
 // Default position template
 const defaultPosition = {
@@ -59,7 +60,7 @@ const show = (posObj = null, groupId = null) => {
     Object.assign(position, defaultPosition)
   }
   mergedGroupID.value = groupId || (posObj && posObj.mergeGroup) || null
-  showAllocationDetails.value = false
+  showAllocationDetails.value = true
   isVisible.value = true
   setTimeout(() => { modalInitialized = true }, 0)
 }
@@ -181,11 +182,52 @@ const allocatedSellRows = computed(() => {
   rows.sort((a, b) => a.sellWeek - b.sellWeek)
   return rows
 })
+
+const allocatedSalesColumns = [
+  {
+    key: 'sellWeek',
+    header: { text: 'Week' },
+    class: 'col-6 col-xl-1'
+  },
+  {
+    key: 'sellDate',
+    header: { text: 'Date' },
+    class: 'col-6 col-xl-2'
+  },
+  {
+    key: 'shares',
+    header: { text: 'Shares' },
+    class: 'col-6 col-xl-1'
+  },
+  {
+    key: 'proceeds',
+    header: { text: 'Proceeds' },
+    class: 'col-6 col-xl-2',
+    value: (sale) => store.currency(sale.proceeds)
+  },
+  {
+    key: 'avgSellPrice',
+    header: { text: 'Avg Sell' },
+    class: 'col-6 col-xl-2',
+    value: (sale) => store.currency(sale.avgSellPrice)
+  },
+  {
+    key: 'allocatedCostBasis',
+    header: { text: 'Cost Basis' },
+    class: 'col-6 col-xl-2',
+    value: (sale) => store.currency(sale.allocatedCostBasis)
+  },
+  {
+    key: 'realizedPL',
+    header: { text: 'Realized P/L' },
+    class: 'col-6 col-xl-2'
+  }
+]
 </script>
 
 <template>
   <div class="modal" id="edit-position-modal" tabindex="-1" :class="{ 'd-block': isVisible }" v-show="isVisible">
-    <div class="modal-dialog modal-xl">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable edit-position-dialog">
       <div class="modal-content">
         <div class="modal-header">
           <h5 class="modal-title">{{ isEdit ? 'Edit' : 'Add' }} Position</h5>
@@ -291,7 +333,7 @@ const allocatedSellRows = computed(() => {
 
             <div class="col-md-8">
               <div class="position-details-panel h-100">
-              <form @submit.prevent="save">
+              <form class="position-details-form" @submit.prevent="save">
                 <h5 class="border-bottom pb-2 mb-4">Position Details</h5>
                 <!-- Manual entry info block -->
                 <div v-if="position.manual" class="alert alert-info mb-4">
@@ -411,33 +453,14 @@ const allocatedSellRows = computed(() => {
                   <span class="allocated-sales-title">Allocated Sales ({{ allocatedSellRows.length }})</span>
                   <i class="bi bi-chevron-down allocated-sales-chevron" :class="{ expanded: showAllocationDetails }"></i>
                 </button>
-                <div v-if="showAllocationDetails" class="table-responsive mt-3">
-                  <table class="table table-sm mb-0">
-                    <thead>
-                      <tr>
-                        <th>Week</th>
-                        <th>Date</th>
-                        <th>Shares</th>
-                        <th>Proceeds</th>
-                        <th>Avg Sell</th>
-                        <th>Cost Basis</th>
-                        <th>Realized P/L</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr v-for="(sale, idx) in allocatedSellRows" :key="`${sale.sellWeek}-${sale.sellDate}-${idx}`">
-                        <td>{{ sale.sellWeek }}</td>
-                        <td>{{ sale.sellDate }}</td>
-                        <td>{{ sale.shares }}</td>
-                        <td>{{ store.currency(sale.proceeds) }}</td>
-                        <td>{{ store.currency(sale.avgSellPrice) }}</td>
-                        <td>{{ store.currency(sale.allocatedCostBasis) }}</td>
-                        <td :class="sale.realizedPL >= 0 ? 'text-success' : 'text-danger'">
-                          {{ store.currency(sale.realizedPL) }}
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
+                <div v-if="showAllocationDetails" class="mt-3">
+                  <DataTable :items="allocatedSellRows" :columns="allocatedSalesColumns" :striped="false">
+                    <template #realizedPL="{ item }">
+                      <span :class="item.realizedPL >= 0 ? 'text-success' : 'text-danger'">
+                        {{ store.currency(item.realizedPL) }}
+                      </span>
+                    </template>
+                  </DataTable>
                 </div>
               </div>
             </div>
@@ -511,28 +534,69 @@ const allocatedSellRows = computed(() => {
 /* Responsive adjustments */
 @media (max-width: 767.98px) {
   .position-summary {
-    margin-bottom: 2rem;
-    padding: 1rem;
+    margin-bottom: 1rem;
+    padding: 0.75rem;
   }
 
   .position-details-panel {
-    padding: 1rem;
+    padding: 0.75rem;
   }
   
   .allocated-sales-panel {
     padding: 1rem;
   }
+
+  .position-summary h5,
+  .position-details-panel h5 {
+    font-size: 1rem;
+    margin-bottom: 0.85rem !important;
+    padding-bottom: 0.4rem !important;
+  }
+
+  .position-summary .row.mb-4 {
+    margin-bottom: 0.65rem !important;
+  }
   
   .summary-item {
-    margin-bottom: 1rem !important;
+    margin-bottom: 0.5rem !important;
+  }
+
+  .summary-item label {
+    font-size: 0.8rem;
+    margin-bottom: 0.15rem;
   }
   
   .summary-item .value {
-    font-size: 1.1rem;
+    font-size: 0.98rem;
   }
   
   .summary-item .highlight {
-    font-size: 1.25rem;
+    font-size: 1.08rem;
+  }
+
+  .position-details-form .row {
+    --bs-gutter-x: 0.75rem;
+  }
+
+  .position-details-form .mb-3 {
+    margin-bottom: 0.65rem !important;
+  }
+
+  .position-details-form .form-label {
+    font-size: 0.85rem;
+    margin-bottom: 0.2rem;
+  }
+
+  .position-details-form .form-control,
+  .position-details-form .form-select,
+  .position-details-form .input-group-text {
+    font-size: 0.9rem;
+    padding: 0.25rem 0.5rem;
+  }
+
+  .position-details-form .form-text {
+    font-size: 0.75rem;
+    margin-top: 0.2rem;
   }
 }
 
@@ -573,5 +637,17 @@ const allocatedSellRows = computed(() => {
 
 .modal .modal-dialog {
   z-index: 2100;
+}
+
+.edit-position-dialog {
+  max-height: calc(100vh - 2rem);
+}
+
+.edit-position-dialog .modal-content {
+  max-height: calc(100vh - 2rem);
+}
+
+.edit-position-dialog .modal-body {
+  overflow-y: auto;
 }
 </style>

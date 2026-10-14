@@ -86,7 +86,7 @@ store.clearFilters = clearFilters
     :items="filteredTransactions"
     :columns="columns"
     :striped="true">
-    <template #header-actions>
+    <template #table-controls>
       <div class="d-flex flex-wrap align-items-center justify-content-between w-100">
         <div class="d-flex align-items-center">
           <div class="btn-group me-3">

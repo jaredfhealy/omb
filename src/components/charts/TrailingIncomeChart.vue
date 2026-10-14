@@ -4,7 +4,6 @@ import { useAppStore } from '@/stores/app'
 import { Chart, registerables } from 'chart.js'
 import { Line } from 'vue-chartjs'
 import { useChartData } from '@/composables/useChartData'
-import { getOpenShares } from '@/utils/positionUtils'
 
 // Register Chart.js components
 Chart.register(...registerables)
@@ -39,98 +38,22 @@ const chartData = computed(() => {
   }
 })
 
-const currentWeek = computed(() => {
-  return store.getCurrentWeek()
-})
+const averageTrailingIncome = computed(() => {
+  const { projections } = filteredProjectionData.value
+  const values = projections
+    .map(p => Number(p.trailing4WeekGrowthTotal))
+    .filter(v => !Number.isNaN(v))
 
-const projectionsToDate = computed(() => {
-  return (store.projections || []).filter(p => Number(p.week) <= currentWeek.value)
-})
-
-const netContributionsToDate = computed(() => {
-  return projectionsToDate.value.reduce((total, p) => {
-    return total + Number(p.deposit || 0) - Number(p.withdrawal || 0)
-  }, 0)
-})
-
-const latestProjection = computed(() => {
-  if (!projectionsToDate.value.length) return null
-  return projectionsToDate.value[projectionsToDate.value.length - 1]
-})
-
-const openPositionMarketAdjustment = computed(() => {
-  const positions = store.activeAccount?.positions || []
-  return positions.reduce((total, position) => {
-    const shares = Number(position.shares || 0)
-    if (shares <= 0) return total
-
-    const openShares = getOpenShares(position)
-    if (openShares <= 0) return total
-
-    const currentPrice = Number(position.currentPrice || 0)
-    const marketValue = openShares * currentPrice
-    const costBasis = Number(position.costBasis || 0) * (openShares / shares)
-
-    return total + (marketValue - costBasis)
-  }, 0)
-})
-
-const unrealizedLossTotal = computed(() => {
-  const positions = store.activeAccount?.positions || []
-  return positions.reduce((total, position) => {
-    const shares = Number(position.shares || 0)
-    if (shares <= 0) return total
-
-    const openShares = getOpenShares(position)
-    if (openShares <= 0) return total
-
-    const currentPrice = Number(position.currentPrice || 0)
-    const marketValue = openShares * currentPrice
-    const costBasis = Number(position.costBasis || 0) * (openShares / shares)
-    const unrealizedPL = marketValue - costBasis
-
-    return unrealizedPL < 0 ? total + unrealizedPL : total
-  }, 0)
-})
-
-const estimatedAccountValue = computed(() => {
-  const snapshotTotal = Number(store.activeAccount?.brokerageSnapshot?.totals?.positionsTotal)
-  if (!Number.isNaN(snapshotTotal) && snapshotTotal > 0) {
-    return snapshotTotal
-  }
-  if (!latestProjection.value) return 0
-  return Number(latestProjection.value.endBalance || 0) + openPositionMarketAdjustment.value
-})
-
-const estimatedValueVsContributions = computed(() => {
-  const startingBalance = Number(store.activeAccount?.settings?.startingBalance || 0)
-  return estimatedAccountValue.value - (startingBalance + netContributionsToDate.value)
-})
-
-const recoveredValueVsContributions = computed(() => {
-  // unrealizedLossTotal is negative, so subtracting it adds back the loss.
-  return estimatedValueVsContributions.value - unrealizedLossTotal.value
+  if (!values.length) return 0
+  return values.reduce((sum, value) => sum + value, 0) / values.length
 })
 </script>
 
 <template>
   <div class="chart-container">
     <div class="total-income-tile">
-      <div class="tile-label">Estimated Value vs Net Contributions</div>
-      <div class="tile-value">{{ store.currency(estimatedValueVsContributions) }}</div>
-      <div class="tile-subtext">
-        Est. Account Value: {{ store.currency(estimatedAccountValue) }}
-        <span class="mx-1">|</span>
-        Net Contributions: {{ store.currency(netContributionsToDate) }}
-      </div>
-      <div v-if="store.activeAccount?.brokerageSnapshot?.totals?.positionsTotal" class="tile-subtext">
-        Using brokerage positions snapshot as account value anchor.
-      </div>
-      <div class="tile-subtext">
-        If Shares Recovered: {{ store.currency(recoveredValueVsContributions) }}
-        <span class="mx-1">|</span>
-        Unrealized Loss Total: {{ store.currency(unrealizedLossTotal) }}
-      </div>
+      <div class="tile-label">Average 4-Week Trailing Income</div>
+      <div class="tile-value">{{ store.currency(averageTrailingIncome) }}</div>
     </div>
     <Line 
       :data="chartData" 

@@ -61,9 +61,9 @@ defineExpose({
         <!-- Header Row -->
         <div class="row sticky-top header-row bg-white pb-2 pt-0 mb-2">
           <div class="col-12 d-flex flex-column align-items-stretch d-none d-xl-block">
-            <!-- Render header-actions slot if provided, above the column labels -->
+            <!-- Render table-controls slot if provided, above the column labels -->
             <div class="p-2 align-self-end">
-              <slot name="header-actions"></slot>
+              <slot name="table-controls"></slot>
             </div>
             <div class="card border-0 flex-grow-1">
               <div class="card-body py-2">
@@ -143,6 +143,17 @@ defineExpose({
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
+}
+
+@media (max-width: 1199.98px) {
+  .scrollable-window {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .scrollable-window::-webkit-scrollbar {
+    display: none;
+  }
 }
 
 /* Remove duplicate/conflicting styles and simplify row styling */

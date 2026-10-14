@@ -359,6 +359,15 @@ const hasSelection = computed(() => {
   return Object.values(selectedRows.value).some(selected => selected === true)
 })
 
+function getWeekRawTransactionCount(week) {
+  const actualWeekEntry = store.activeAccount?.actuals?.find(a => Number(a.week) === Number(week))
+  return Array.isArray(actualWeekEntry?.data) ? actualWeekEntry.data.length : 0
+}
+
+function hasWeekNote(week) {
+  return !!store.activeAccount.notes?.some(a => Number(a.week) === Number(week) && a.note)
+}
+
 // Function to toggle summary expansion
 const toggleSummaryExpansion = () => {
   summaryExpanded.value = !summaryExpanded.value
@@ -530,12 +539,24 @@ const dataTableRef = ref(null)
 
       <!-- Actions column -->
       <template #actions="{ item }">
-        <button type="button" 
-                class="btn btn-sm btn-outline-primary" 
-                @click="store.showWeeklyRowModal(item.week)">
-          <i class="bi bi-pencil-square"></i>
-        </button>
-        {{ store.activeAccount.notes?.some(a => Number(a.week) === item.week && a.note) ? '*' : '' }}
+        <div class="d-flex gap-2">
+          <button type="button"
+                  class="btn btn-sm btn-outline-secondary raw-transactions-btn"
+                  :title="`View raw transaction rows (${getWeekRawTransactionCount(item.week)})`"
+                  @click="store.showWeeklyRawDataModal && store.showWeeklyRawDataModal(item.week)">
+            <span class="badge rounded-pill raw-count-badge"
+                  :class="getWeekRawTransactionCount(item.week) ? 'text-bg-secondary' : 'text-bg-light text-muted'">
+              {{ getWeekRawTransactionCount(item.week) }}
+            </span>
+          </button>
+          <button type="button" 
+                  class="btn btn-sm btn-outline-primary" 
+                  :class="{ 'note-present-edit-btn': hasWeekNote(item.week) }"
+                  :title="hasWeekNote(item.week) ? 'Edit note (note saved)' : 'Edit note'"
+                  @click="store.showWeeklyRowModal(item.week)">
+            <i class="bi bi-pencil-square"></i>
+          </button>
+        </div>
       </template>
 
       <!-- Net Transaction column with edit icon -->
@@ -580,6 +601,22 @@ const dataTableRef = ref(null)
 
 .week-date {
   flex: 1;
+}
+
+.raw-transactions-btn {
+  display: inline-flex;
+  align-items: center;
+}
+
+.raw-count-badge {
+  font-size: 0.65rem;
+  min-width: 1.6rem;
+}
+
+.note-present-edit-btn {
+  background-color: rgba(13, 110, 253, 0.2) !important;
+  border-color: rgba(13, 110, 253, 0.45) !important;
+  box-shadow: inset 0 0 0 1px rgba(13, 110, 253, 0.2);
 }
 
 .enhanced-checkbox {

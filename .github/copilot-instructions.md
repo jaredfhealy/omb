@@ -145,7 +145,7 @@ The backbone of the application. Contains all state, computed projections, busin
   - Applies sold/bought position adjustments from previous week
   - Selects actual vs. projected growth (actual for past/current weeks, projected for future)
   - Calculates `endBalance`, trailing 4-week, 8-week, and all-time averages for both growth and ROR
-  - Auto-saves via `saveData()` after first load
+  - Auto-saves via `saveBacon()` after first load
 - `calculatePositionPremiums(position)` — sums premiums from `actuals` matching a position's symbol from `startWeek` onwards, applies `profitAllocation` percentage
 - `calculateAllPositionPremiums()` — calls above for every position
 
@@ -215,7 +215,7 @@ All routes are lazy-loaded. Auth guards and auth bootstrap were removed in local
 | `components/BalanceProjector.vue` | Primary container for the main view. Mounts Bootstrap listeners, renders tab panels, shows loading overlay. |
 | `components/TabNavigation.vue` | Tab bar that sets `store.activeTab`. No props/emits — reads store directly. |
 | `components/YearlySummary.vue` | Groups projections into yearly chunks. Shows start balance, deposits, withdrawals, growth, end balance, % change. |
-| `components/WeeklyDetails.vue` | Week-by-week data table. Multi-row checkbox selection for summary stats. Scrolls to current week on mount. Row click opens `EditRowModal`. |
+| `components/WeeklyDetails.vue` | Week-by-week data table. Multi-row checkbox selection for summary stats. Scrolls to current week on mount. Row click opens `EditRowModal`; includes a raw-transactions action that opens `WeekRawDataModal`. |
 | `components/TransactionManager.vue` | CRUD table for recurring transactions. Filters by `weekFilter` and `selectedWeek`. |
 | `components/PositionsManager.vue` | Manages stock positions. Supports merge groups, open/closed filter, manual position add. Collapses merged groups into summary rows. |
 
@@ -225,6 +225,7 @@ All routes are lazy-loaded. Auth guards and auth bootstrap were removed in local
 | `charts/ActualGrowthChart.vue` | Weekly actual growth + 4/8-week rolling averages. |
 | `charts/RORChart.vue` | Weekly ROR % + rolling averages. |
 | `charts/TrailingIncomeChart.vue` | Rolling 4-week income sum per week. |
+| `charts/BalanceValueSummary.vue` | Compact summary card comparing estimated account value vs. net contributions, including unrealized loss context. |
 | `charts/BalanceGrowthChart.vue` | Full balance timeline: actual vs. projected + transaction markers (▲▽●). Uses zoom + annotation plugins. Does **not** use `useChartData` composable. |
 
 ### Custom Components
@@ -243,6 +244,7 @@ All routes are lazy-loaded. Auth guards and auth bootstrap were removed in local
 | `modals/ImportTransactionsModal.vue` | Multi-step Schwab CSV import. Detects format, categorizes rows, processes positions/sells/transactions, recalculates growth totals. |
 | `modals/ManageAccountModal.vue` | Account switcher/manager. Add, edit, delete accounts. JSON backup download and restore. |
 | `modals/SettingsModal.vue` | Edit active account settings (startDate, startingBalance, weeklyReturn, years). |
+| `modals/WeekRawDataModal.vue` | Per-week transactions snapshot with strategy/net-cash summary and position/transaction tabs. |
 | `modals/index.js` | Barrel export of all modals. |
 
 ---
@@ -261,11 +263,13 @@ App.vue
 │   │   ├── PositionsManager.vue     → DataTable.vue, ConfirmModal.vue
 │   │   ├── EditTransactionModal.vue
 │   │   ├── EditRowModal.vue
-│   │   └── EditPositionModal.vue
+│   │   ├── EditPositionModal.vue
+│   │   └── WeekRawDataModal.vue
 │   ├── Reporting.vue
 │   │   ├── TrailingIncomeChart.vue
 │   │   ├── ActualGrowthChart.vue
 │   │   ├── RORChart.vue
+│   │   ├── BalanceValueSummary.vue
 │   │   └── BalanceGrowthChart.vue
 │   ├── TransactionSummarizer.vue
 │
@@ -325,7 +329,7 @@ Pure functions for position P&L calculations. All accept a position object.
 
 **Props:** `items` (Array, required), `columns` (Array, required), `striped` (Boolean, default true), `getRowAttributes` (Function), `getRowRef` (Function)
 
-**Slots:** `controls` (above headers), `[column.key]` (named per column, receives `{ item }`), `row` (full row override), `mobile-header`, `empty`
+**Slots:** `table-controls` (above headers), `[column.key]` (named per column, receives `{ item }`), `row` (full row override), `mobile-header`, `empty`
 
 **Emits:** `row-click`
 

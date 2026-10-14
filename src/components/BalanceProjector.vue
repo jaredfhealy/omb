@@ -10,6 +10,7 @@ import {
   EditTransactionModal,
   EditRowModal,
   EditPositionModal,
+  WeekRawDataModal,
 } from '@/components/modals'
 
 const store = useAppStore()
@@ -54,6 +55,7 @@ onBeforeUnmount(() => {
   <EditTransactionModal />
   <EditRowModal />
   <EditPositionModal />
+  <WeekRawDataModal />
 </template>
 
 <style>
@@ -103,7 +105,8 @@ onBeforeUnmount(() => {
     flex: 1;
     display: flex;
     flex-direction: column;
-    height:  calc(100vh - 150px);
+    height: 100%;
+    min-height: 0;
     overflow: hidden;
   }
 }
@@ -122,7 +125,8 @@ onBeforeUnmount(() => {
     flex: 1;
     display: flex;
     flex-direction: column;
-    height: calc(100vh - 100px);
+    height: 100%;
+    min-height: 0;
     overflow: hidden;
   }
 }

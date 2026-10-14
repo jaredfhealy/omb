@@ -12,11 +12,23 @@ const store = useAppStore()
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, zoomPlugin, annotationPlugin)
 
 const props = defineProps({}) // empty props
+const showProjectedFuture = ref(false)
+
+const currentWeek = computed(() => {
+  const computedWeek = Number(store.getCurrentWeek() || 1)
+  return Math.max(1, Math.min(computedWeek, store.projections?.length || 1))
+})
+
+const visibleProjections = computed(() => {
+  if (!store.projections) return []
+  if (showProjectedFuture.value) return store.projections
+  return store.projections.filter(p => Number(p.week) <= currentWeek.value)
+})
 
 const balanceData = computed(() => {
-  if (!store.activeAccount?.settings || !store.projections) return []
+  if (!store.activeAccount?.settings || !visibleProjections.value) return []
   const startDate = new Date(store.activeAccount.settings.startDate)
-  return store.projections.map(p => ({
+  return visibleProjections.value.map(p => ({
     week: `Week ${p.week}`,
     date: new Date(startDate.getTime() + (p.week - 1) * 7 * 24 * 60 * 60 * 1000),
     balance: p.endBalance,
@@ -86,56 +98,62 @@ const transactionPoints = computed(() => {
 
 const chartData = computed(() => {
   if (!store.activeAccount?.settings) return null
+  const datasets = [
+    {
+      label: 'Actual Balance',
+      data: balanceData.value.map(d => d.isActual ? d.balance : null),
+      borderColor: 'rgb(75, 192, 192)',
+      tension: 0.1,
+      pointRadius: 3,
+      pointHoverRadius: 5
+    }
+  ]
+
+  if (showProjectedFuture.value) {
+    datasets.push({
+      label: 'Projected Balance',
+      data: balanceData.value.map(d => !d.isActual ? d.balance : null),
+      borderColor: 'rgb(153, 102, 255)',
+      borderDash: [5, 5],
+      tension: 0.1,
+      pointRadius: 3,
+      pointHoverRadius: 5
+    })
+  }
+
+  datasets.push({
+    label: 'Transactions',
+    data: transactionPoints.value.data,
+    pointStyle: (context) => {
+      const weekLabel = context.chart.data.labels[context.dataIndex]
+      const weekData = transactionPoints.value.transactions.find(t => t.week === weekLabel)
+      if (!weekData || !transactionPoints.value.data[context.dataIndex]) return null
+
+      return weekData.style
+    },
+    rotation: (context) => {
+      const weekLabel = context.chart.data.labels[context.dataIndex]
+      const weekData = transactionPoints.value.transactions.find(t => t.week === weekLabel)
+      if (!weekData) return 0
+
+      return weekData.rotation
+    },
+    pointRadius: 8,
+    pointHoverRadius: 10,
+    showLine: false,
+    pointBackgroundColor: function(context) {
+      const weekLabel = context.chart.data.labels[context.dataIndex]
+      const weekData = transactionPoints.value.transactions.find(t => t.week === weekLabel)
+      if (!weekData) return 'rgba(0,0,0,0)'
+
+      return weekData.backgroundColor
+    },
+    order: 1
+  })
+
   return {
     labels: balanceData.value.map(d => d.week),
-    datasets: [
-      {
-        label: 'Actual Balance',
-        data: balanceData.value.map(d => d.isActual ? d.balance : null),
-        borderColor: 'rgb(75, 192, 192)',
-        tension: 0.1,
-        pointRadius: 3,
-        pointHoverRadius: 5
-      },
-      {
-        label: 'Projected Balance',
-        data: balanceData.value.map(d => !d.isActual ? d.balance : null),
-        borderColor: 'rgb(153, 102, 255)',
-        borderDash: [5, 5],
-        tension: 0.1,
-        pointRadius: 3,
-        pointHoverRadius: 5
-      },
-      {
-        label: 'Transactions',
-        data: transactionPoints.value.data,
-        pointStyle: (context) => {
-          const weekLabel = context.chart.data.labels[context.dataIndex]
-          const weekData = transactionPoints.value.transactions.find(t => t.week === weekLabel)
-          if (!weekData || !transactionPoints.value.data[context.dataIndex]) return null
-
-          return weekData.style
-        },
-        rotation: (context) => {
-          const weekLabel = context.chart.data.labels[context.dataIndex]
-          const weekData = transactionPoints.value.transactions.find(t => t.week === weekLabel)
-          if (!weekData) return 0
-
-          return weekData.rotation
-        },
-        pointRadius: 8,
-        pointHoverRadius: 10,
-        showLine: false,
-        pointBackgroundColor: function(context) {
-          const weekLabel = context.chart.data.labels[context.dataIndex]
-          const weekData = transactionPoints.value.transactions.find(t => t.week === weekLabel)
-          if (!weekData) return 'rgba(0,0,0,0)'
-
-          return weekData.backgroundColor
-        },
-        order: 1
-      }
-    ]
+    datasets
   }
 })
 
@@ -162,8 +180,7 @@ const chartOptions = computed(() => {
         position: 'top'
       },
       title: {
-        display: true,
-        text: 'Account Balance Growth'
+        display: false
       },
       tooltip: {
         callbacks: {
@@ -299,7 +316,18 @@ const switchAccount = async (accountId) => {
 
 <template>
   <div v-if="store.activeAccount?.settings && store.projections?.length">
-    <div class="mb-3 d-flex justify-content-end">
+    <div class="mb-3 d-flex justify-content-between align-items-center">
+      <div class="form-check">
+        <input
+          id="showProjectedFuture"
+          v-model="showProjectedFuture"
+          class="form-check-input"
+          type="checkbox"
+        >
+        <label class="form-check-label" for="showProjectedFuture">
+          Show projected future weeks
+        </label>
+      </div>
       <button class="btn btn-secondary" @click="resetZoom">
         Reset Zoom
       </button>

@@ -111,15 +111,48 @@ const columns = [
 // --- Filtering and Selection State ---
 // Handles filtering positions by open/closed/all and selection for merging
 const filter = ref('open')
+const symbolFilterInput = ref('')
+const selectedSymbols = ref([])
+const isFilterAccordionOpen = ref(true)
+
+const positionsByStatusFilter = computed(() => {
+  const positions = Array.isArray(store.activeAccount?.positions) ? store.activeAccount.positions : []
+  if (filter.value === 'open') {
+    return positions.filter(position => !position.soldWeek)
+  }
+  if (filter.value === 'closed') {
+    return positions.filter(position => position.soldWeek)
+  }
+  return positions
+})
+
+const availableSymbols = computed(() => {
+  return [...new Set(
+    positionsByStatusFilter.value
+      .map(position => (position.symbol || '').trim().toUpperCase())
+      .filter(Boolean)
+  )].sort()
+})
+
+const symbolSuggestions = computed(() => {
+  const query = symbolFilterInput.value.trim().toUpperCase()
+  if (!query) return []
+  const selected = new Set(selectedSymbols.value)
+  return availableSymbols.value
+    .filter(symbol => !selected.has(symbol) && symbol.includes(query))
+    .slice(0, 12)
+})
 
 const filteredPositions = computed(() => {
   if (!store.activeAccount.positions) return []
-  if (filter.value === 'open') {
-    return store.activeAccount.positions.filter(p => !p.soldWeek)
-  } else if (filter.value === 'closed') {
-    return store.activeAccount.positions.filter(p => p.soldWeek)
-  }
-  return store.activeAccount.positions
+  const selectedSymbolSet = new Set(selectedSymbols.value)
+  return positionsByStatusFilter.value.filter((position) => {
+    if (selectedSymbolSet.size > 0) {
+      const symbol = (position.symbol || '').trim().toUpperCase()
+      if (!selectedSymbolSet.has(symbol)) return false
+    }
+    return true
+  })
 })
 
 const selectedPositionKeys = ref([])
@@ -140,6 +173,54 @@ const clearSelection = () => {
   selectedPositionKeys.value = []
 }
 
+function addSymbolFilter(symbol) {
+  const normalized = (symbol || '').trim().toUpperCase()
+  if (!normalized) return
+  if (!availableSymbols.value.includes(normalized)) return
+  if (selectedSymbols.value.includes(normalized)) {
+    symbolFilterInput.value = ''
+    return
+  }
+  selectedSymbols.value.push(normalized)
+  symbolFilterInput.value = ''
+  clearSelection()
+}
+
+function addFirstMatchingSymbol() {
+  const normalized = symbolFilterInput.value.trim().toUpperCase()
+  if (!normalized) return
+  if (availableSymbols.value.includes(normalized)) {
+    addSymbolFilter(normalized)
+    return
+  }
+  if (symbolSuggestions.value.length > 0) {
+    addSymbolFilter(symbolSuggestions.value[0])
+  }
+}
+
+function removeSymbolFilter(symbol) {
+  selectedSymbols.value = selectedSymbols.value.filter(item => item !== symbol)
+  clearSelection()
+}
+
+function clearSymbolFilters() {
+  if (selectedSymbols.value.length === 0) return
+  selectedSymbols.value = []
+  clearSelection()
+}
+
+function handleSymbolFilterKeydown(event) {
+  if (event.key === 'Enter' || event.key === ',' || event.key === 'Tab') {
+    addFirstMatchingSymbol()
+    if (event.key !== 'Tab' || symbolFilterInput.value.trim()) {
+      event.preventDefault()
+    }
+  } else if (event.key === 'Backspace' && !symbolFilterInput.value && selectedSymbols.value.length > 0) {
+    selectedSymbols.value.pop()
+    clearSelection()
+  }
+}
+
 const canMerge = computed(() => selectedPositionKeys.value.length >= 2)
 
 const firstSelectedSymbol = computed(() => {
@@ -147,6 +228,24 @@ const firstSelectedSymbol = computed(() => {
   const firstKey = selectedPositionKeys.value[0]
   const first = filteredPositions.value.find(p => p.positionKey === firstKey)
   return first ? first.symbol : null
+})
+
+watch(availableSymbols, () => {
+  const available = new Set(availableSymbols.value)
+  const filteredSelected = selectedSymbols.value.filter(symbol => available.has(symbol))
+  if (filteredSelected.length !== selectedSymbols.value.length) {
+    selectedSymbols.value = filteredSelected
+    clearSelection()
+  }
+})
+
+const mobileFilterSummary = computed(() => {
+  const statusLabel = filter.value.charAt(0).toUpperCase() + filter.value.slice(1)
+  const symbolCount = selectedSymbols.value.length
+  const symbolLabel = symbolCount === 0
+    ? 'All symbols'
+    : `${symbolCount} symbol${symbolCount === 1 ? '' : 's'} selected`
+  return `${statusLabel} • ${symbolLabel}`
 })
 
 // --- Merge Action ---
@@ -352,24 +451,100 @@ function removeFromMergeGroup(groupId, positionKey) {
 </script>
 
 <template>
-  <DataTable 
-    :columns="columns"
-    :items="displayPositions"
-    :striped="true"
-  >
-    <template #header-actions>
-      <div class="btn-group" role="group">
-        <button type="button" class="btn btn-outline-primary" :class="{ active: filter === 'open' }" @click="filter = 'open'">Open</button>
-        <button type="button" class="btn btn-outline-primary" :class="{ active: filter === 'closed' }" @click="filter = 'closed'">Closed</button>
-        <button type="button" class="btn btn-outline-primary" :class="{ active: filter === 'all' }" @click="filter = 'all'">All</button>
+  <div class="positions-container positions-manager-layout">
+    <div class="accordion mb-3 positions-filter-accordion">
+      <div class="accordion-item shadow-sm">
+        <h2 class="accordion-header">
+          <button
+            class="accordion-button py-2"
+            type="button"
+            :class="{ collapsed: !isFilterAccordionOpen }"
+            @click="isFilterAccordionOpen = !isFilterAccordionOpen"
+          >
+            <span class="small text-muted fw-semibold">Position filters</span>
+            <span v-if="!isFilterAccordionOpen" class="small text-muted ms-2">
+              {{ mobileFilterSummary }}
+            </span>
+          </button>
+        </h2>
+        <div class="accordion-collapse collapse" :class="{ show: isFilterAccordionOpen }">
+          <div class="accordion-body py-2">
+            <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-2">
+              <div class="d-flex flex-wrap align-items-center gap-2">
+                <div class="btn-group" role="group" aria-label="Position status filter">
+                  <button type="button" class="btn btn-outline-primary" :class="{ active: filter === 'open' }" @click="filter = 'open'">Open</button>
+                  <button type="button" class="btn btn-outline-primary" :class="{ active: filter === 'closed' }" @click="filter = 'closed'">Closed</button>
+                  <button type="button" class="btn btn-outline-primary" :class="{ active: filter === 'all' }" @click="filter = 'all'">All</button>
+                </div>
+              </div>
+              <div class="d-flex align-items-center gap-2">
+                <button type="button" class="btn btn-primary btn-sm" @click="addManualPosition">
+                  <i class="bi bi-plus-lg"></i> Add
+                </button>
+                <button v-if="canMerge" type="button" class="btn btn-warning btn-sm" @click="mergePositions">
+                  <i class="bi bi-arrow-merge"></i> Merge
+                </button>
+              </div>
+            </div>
+
+            <div class="d-flex flex-wrap gap-2 mb-2" v-if="selectedSymbols.length > 0">
+              <span v-for="symbol in selectedSymbols" :key="symbol" class="badge text-bg-primary symbol-chip">
+                {{ symbol }}
+                <button
+                  type="button"
+                  class="btn-close btn-close-white ms-2"
+                  aria-label="Remove symbol filter"
+                  @click="removeSymbolFilter(symbol)"
+                ></button>
+              </span>
+            </div>
+            <div class="position-relative">
+              <input
+                v-model="symbolFilterInput"
+                type="text"
+                class="form-control"
+                placeholder="Type a symbol and press Enter (e.g., AAPL)"
+                @keydown="handleSymbolFilterKeydown"
+              >
+              <div v-if="symbolFilterInput.trim()" class="list-group position-absolute w-100 symbol-suggestions">
+                <button
+                  v-for="symbol in symbolSuggestions"
+                  :key="symbol"
+                  type="button"
+                  class="list-group-item list-group-item-action"
+                  @mousedown.prevent="addSymbolFilter(symbol)"
+                >
+                  {{ symbol }}
+                </button>
+                <div v-if="symbolSuggestions.length === 0" class="list-group-item text-muted">
+                  No matching symbols for the current {{ filter }} filter.
+                </div>
+              </div>
+            </div>
+            <div class="d-flex flex-wrap justify-content-between align-items-center mt-2 gap-2">
+              <div class="form-text mb-0">
+                Multiple symbols supported. Press Enter to add, Backspace to remove the last chip.
+              </div>
+              <button
+                v-if="selectedSymbols.length > 0"
+                type="button"
+                class="btn btn-sm btn-outline-secondary"
+                @click="clearSymbolFilters"
+              >
+                Clear symbols
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
-      <button type="button" class="btn btn-primary ms-3" @click="addManualPosition">
-        <i class="bi bi-plus-lg"></i> Add
-      </button>
-      <button v-if="canMerge" type="button" class="btn btn-warning ms-3" @click="mergePositions">
-        <i class="bi bi-arrow-merge"></i> Merge
-      </button>
-    </template>
+    </div>
+
+    <div class="positions-table-region">
+      <DataTable 
+        :columns="columns"
+        :items="displayPositions"
+        :striped="true"
+      >
     <!-- Symbol column -->
     <template #symbol="{ item, index }">
       <div class="d-flex align-items-center">
@@ -501,8 +676,9 @@ function removeFromMergeGroup(groupId, positionKey) {
       <div class="text-center py-5">
         <p class="text-muted">No positions found</p>
       </div>
-    </template>
-  </DataTable>
+      </template>
+    </DataTable>
+    </div>
   <ConfirmModal ref="confirmModalRef" />
 
   <!-- Add modal for merged group editing -->
@@ -537,6 +713,7 @@ function removeFromMergeGroup(groupId, positionKey) {
       <div class="modal-backdrop fade show"></div>
     </div>
   </template>
+  </div>
 </template>
 
 <style>
@@ -555,5 +732,62 @@ function removeFromMergeGroup(groupId, positionKey) {
 .shares-count {
   font-size: 0.85rem;
   color: #6c757d;
+}
+
+.symbol-chip {
+  display: inline-flex;
+  align-items: center;
+}
+
+.symbol-chip .btn-close {
+  font-size: 0.55rem;
+}
+
+.symbol-suggestions {
+  z-index: 10;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.positions-manager-layout {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding-top: 0.5rem;
+  box-sizing: border-box;
+}
+
+.positions-table-region {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.positions-table-region .data-table-container {
+  flex: 1;
+  min-height: 0;
+  height: auto !important;
+}
+
+.positions-filter-accordion .accordion-item {
+  overflow: hidden;
+  border-color: var(--bs-border-color);
+}
+
+.positions-filter-accordion .accordion-button {
+  background-color: var(--bs-tertiary-bg);
+}
+
+.positions-filter-accordion .accordion-button:not(.collapsed) {
+  color: inherit;
+  box-shadow: none;
+}
+
+.positions-filter-accordion .accordion-body {
+  border-top: 1px solid var(--bs-border-color);
+  background-color: var(--bs-body-bg);
 }
 </style>

@@ -46,6 +46,13 @@ store.confirm = (message, callback, cancelCallback) => {
 </template>
 
 <style>
+html,
+body,
+#app {
+  height: 100%;
+  overflow: hidden;
+}
+
 /* Remove the navbar's default margin-bottom and rounded borders */
 .navbar {
     margin-bottom: 0;
