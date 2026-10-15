@@ -345,6 +345,7 @@ Pure functions for position P&L calculations. All accept a position object.
 - **Auto-save** happens after `calculateProjections()` completes (after initial load flag clears)
 - **Option symbol regex:** `/^([\w.-]+) (\d{2}\/\d{2}\/\d{4}) ([\d.]+) ([CP])$/` — used in `TransactionSummarizer` for parsing option contract symbols
 - **Brokerage format** is stored as `formatKey` on the account; currently only `'schwab'` is implemented in `getBrokerageFormat()`
+- **CSV import sequencing:** preserve effective execution order during import. For Schwab exports (typically newest-first), processing is normalized to oldest-first, and same-day rows preserve their in-day execution sequence.
 
 ---
 

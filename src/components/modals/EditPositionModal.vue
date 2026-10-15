@@ -19,6 +19,7 @@ const store = useAppStore()
 const isVisible = ref(false)
 const isEdit = ref(false)
 const showAllocationDetails = ref(true)
+const originalMetaFields = ref(null)
 
 // Default position template
 const defaultPosition = {
@@ -53,11 +54,17 @@ const show = (posObj = null, groupId = null) => {
   if (posObj) {
     isEdit.value = true
     Object.assign(position, posObj)
+    store.ensurePositionMetaKey(position)
+    originalMetaFields.value = {
+      offsettingProfits: Number(posObj.offsettingProfits || 0),
+      profitAllocation: Number(posObj.profitAllocation || 100)
+    }
     // If profitAllocation is missing (old data), default to 100
     if (typeof position.profitAllocation !== 'number') position.profitAllocation = 100
   } else {
     isEdit.value = false
     Object.assign(position, defaultPosition)
+    originalMetaFields.value = null
   }
   mergedGroupID.value = groupId || (posObj && posObj.mergeGroup) || null
   showAllocationDetails.value = true
@@ -74,6 +81,7 @@ const close = () => {
   modalInitialized = false
   mergedGroupID.value = null
   showAllocationDetails.value = false
+  originalMetaFields.value = null
 }
 
 const save = () => {
@@ -124,14 +132,34 @@ const save = () => {
 
   // If this is a new position, add to array
   if (!isEdit.value) {
-    store.activeAccount.positions.push({ ...position })
+    const newPosition = { ...position }
+    store.ensurePositionMetaKey(newPosition)
+    store.activeAccount.positions.push(newPosition)
+    if (newPosition.manual) {
+      store.upsertPositionMetaOverride(newPosition, {
+        offsettingProfitsOverride: Number(newPosition.offsettingProfits || 0),
+        profitAllocationOverride: Number(newPosition.profitAllocation || 100)
+      })
+    }
     store.activeAccount.positions.sort((a, b) => (a.assignedWeek || 0) - (b.assignedWeek || 0))
   }
   else {
     // Save the object to the store using the positionKey
     const idx = store.activeAccount.positions.findIndex(p => p.positionKey === position.positionKey)
     if (idx !== -1) {
-      store.activeAccount.positions[idx] = { ...position }
+      const updatedPosition = { ...position }
+      store.ensurePositionMetaKey(updatedPosition)
+      store.activeAccount.positions[idx] = updatedPosition
+
+      const original = originalMetaFields.value || { offsettingProfits: 0, profitAllocation: 100 }
+      const offsettingChanged = Number(updatedPosition.offsettingProfits || 0) !== Number(original.offsettingProfits || 0)
+      const allocationChanged = Number(updatedPosition.profitAllocation || 100) !== Number(original.profitAllocation || 100)
+      if (offsettingChanged || allocationChanged) {
+        store.upsertPositionMetaOverride(updatedPosition, {
+          offsettingProfitsOverride: Number(updatedPosition.offsettingProfits || 0),
+          profitAllocationOverride: Number(updatedPosition.profitAllocation || 100)
+        })
+      }
     }
   }
   store.saveBacon()
@@ -157,16 +185,30 @@ const allocatedSellRows = computed(() => {
   if (!position.positionKey || !store.activeAccount?.sells) return []
 
   const baseCostPerShare = position.shares > 0 ? position.costBasis / position.shares : 0
+  const isShortPosition = position.positionType === 'short' || Number(position.costBasis || 0) < 0
+  const totalCoveredShares = Number(position.soldShares || 0)
+  const totalCoverCost = Number(position.sellAmount || 0)
+  const assignedWeek = Number(position.assignedWeek || 0)
   const rows = []
 
   store.activeAccount.sells.forEach(sell => {
     if (!Array.isArray(sell.allocated) || !sell.shares || !sell.amount) return
+    const sellAction = (sell.action || '').toString().toLowerCase()
+    if (Number(sell.week || 0) < assignedWeek) return
+
     sell.allocated.forEach(allocation => {
       if (allocation.positionKey !== position.positionKey) return
       const allocatedShares = Number(allocation.shares || 0)
       if (allocatedShares <= 0) return
       const proceeds = (Number(sell.amount) * allocatedShares) / Number(sell.shares)
-      const allocatedCostBasis = baseCostPerShare * allocatedShares
+      let allocatedCostBasis = baseCostPerShare * allocatedShares
+      let realizedPL = proceeds - allocatedCostBasis
+
+      if (isShortPosition && sellAction.includes('short')) {
+        allocatedCostBasis = totalCoveredShares > 0 ? (totalCoverCost * allocatedShares) / totalCoveredShares : 0
+        realizedPL = proceeds - allocatedCostBasis
+      }
+
       rows.push({
         sellWeek: Number(sell.week),
         sellDate: sell.date || '',
@@ -174,7 +216,7 @@ const allocatedSellRows = computed(() => {
         proceeds,
         avgSellPrice: proceeds / allocatedShares,
         allocatedCostBasis,
-        realizedPL: proceeds - allocatedCostBasis
+        realizedPL
       })
     })
   })
@@ -407,11 +449,11 @@ const allocatedSalesColumns = [
                     <div class="input-group">
                       <span class="input-group-text">$</span>
                       <input type="number" class="form-control" id="position-offsettingProfits" 
-                             v-model.number="position.offsettingProfits" min="0" step="0.01"
+                             v-model.number="position.offsettingProfits" step="0.01"
                              :disabled="!!mergedGroupID">
                     </div>
                     <div class="form-text">
-                      Total PUT/CALL premium income collected to offset this position's cost basis
+                      Net options contribution for this lot (positive credit or negative debit).
                     </div>
                   </div>
                   <div class="col-md-6 mb-3">
@@ -450,7 +492,7 @@ const allocatedSalesColumns = [
                   @click="showAllocationDetails = !showAllocationDetails"
                   :aria-expanded="showAllocationDetails"
                 >
-                  <span class="allocated-sales-title">Allocated Sales ({{ allocatedSellRows.length }})</span>
+                  <span class="allocated-sales-title">Associatd Closing Transactions ({{ allocatedSellRows.length }})</span>
                   <i class="bi bi-chevron-down allocated-sales-chevron" :class="{ expanded: showAllocationDetails }"></i>
                 </button>
                 <div v-if="showAllocationDetails" class="mt-3">

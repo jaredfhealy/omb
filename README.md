@@ -1,6 +1,13 @@
 # O.M.B (Operation More Bacon)
 This is a local-first application to project future balances and income based on weekly options trading performance.
 
+## Product and Engineering Specs
+
+Canonical project specs and architectural decisions are stored in-repo:
+
+- Spec index: [docs/spec/README.md](./docs/spec/README.md)
+- ADR index: [docs/adr/README.md](./docs/adr/README.md)
+
 ## Local-only architecture
 
 - Frontend: Vue 3 + Pinia + Vue Router + Bootstrap + Chart.js

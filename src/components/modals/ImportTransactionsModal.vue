@@ -53,6 +53,31 @@ const resetForm = () => {
   }
 }
 
+function getExecutionOrderedRows(dataRows) {
+  if (!Array.isArray(dataRows) || dataRows.length === 0) return []
+
+  const firstDate = new Date(dataRows[0].date).getTime()
+  const lastDate = new Date(dataRows[dataRows.length - 1].date).getTime()
+  const sourceIsDescendingByDate = Number.isFinite(firstDate) && Number.isFinite(lastDate) && firstDate > lastDate
+
+  const ordered = dataRows
+    .slice()
+    .sort((a, b) => {
+      if (a.date < b.date) return -1
+      if (a.date > b.date) return 1
+      if (sourceIsDescendingByDate) {
+        return Number(b.sourceLine || 0) - Number(a.sourceLine || 0)
+      }
+      return Number(a.sourceLine || 0) - Number(b.sourceLine || 0)
+    })
+    .map((row, idx) => ({
+      ...row,
+      executionOrder: idx + 1
+    }))
+
+  return ordered
+}
+
 const handleTransactionFileChange = (event) => {
   const file = event.target.files[0]
   
@@ -134,12 +159,16 @@ async function importTransactionsFromCSV(file) {
     // Step 1: Parse CSV file and extract structured data
     const text = await file.text()
     const { dataRows, errors, meta } = parseCSV(text)
+    const preservedPositionMeta = Array.isArray(store.activeAccount.positionMeta)
+      ? [...store.activeAccount.positionMeta]
+      : []
 
     // If delete all data is selected, clear all data arrays before import
     if (deleteAllData.value) {
       store.activeAccount.actuals = []
       store.activeAccount.positions = []
       store.activeAccount.sells = []
+      store.activeAccount.positionMeta = preservedPositionMeta
     }
     
     // Get broker map for type categorization
@@ -154,10 +183,15 @@ async function importTransactionsFromCSV(file) {
     const transactionResults = _processTransactions(transactionsImport)
 
     // Step 4: Process positions data
-    const positionsResults = _processPositions(positionsImport)
+    const positionsResults = _processPositions(positionsImport, sellsImport)
 
     // Step 5: Process sell data if any
     const sellResults = _processSellData(sellsImport)
+
+    // Final metadata pass: reapply persisted overrides after all lots and allocations settle.
+    // This ensures delete+reimport keeps user-edited position fields (e.g., profit allocation).
+    store.applyPositionMetadataForActiveAccount()
+    store.recalculateAllOffsettingProfits()
     
     // Combine all results for display
     const results = {
@@ -396,9 +430,9 @@ function parseCSV(csvText) {
       const dateStr = values[columnMap.date]
       let dateToUse = dateStr
       
-      // Check if the date has the special "as of" format
+      // If present, use the "as of" date as the effective trade date
       if (dateStr && dateStr.includes(' as of ')) {
-        dateToUse = dateStr.split(' as of ')[0].trim()
+        dateToUse = dateStr.split(' as of ')[1].trim()
       }
       
       transactionDate = new Date(dateToUse)
@@ -420,6 +454,7 @@ function parseCSV(csvText) {
     if (actionValue.toLowerCase() === 'journal' && amountValue === 0) continue
 
     const dataObj = {
+      sourceLine: i,
       date: transactionDate.toISOString().split('T')[0], // Store as YYYY-MM-DD
       description: values[columnMap.description] || '',
       amount: amountValue,
@@ -470,8 +505,10 @@ function _processData(dataRows, brokerMap) {
   // Create a mapping of transactions by week
   const dataByWeek = {}
   
+  const orderedRows = getExecutionOrderedRows(dataRows)
+
   // First pass: Group all data rows by their corresponding week
-  dataRows.forEach(dataRow => {
+  orderedRows.forEach(dataRow => {
     // Calculate which week this data row belongs to
     const transactionDate = new Date(dataRow.date)
     const diffTime = transactionDate - startDate
@@ -503,18 +540,22 @@ function _processData(dataRows, brokerMap) {
       // Add to transactions import for later processing
       transactionsImport.push({
         ...dataRow,
+        executionOrder: dataRow.executionOrder,
         week: week
       })
     } else if (brokerMap.positionTypes.includes(action)) {
       // Add to positions import for later processing (only buys)
       positionsImport.push({
         ...dataRow,
+        executionOrder: dataRow.executionOrder,
         week: week
       })
     } else if (brokerMap.sellTypes && brokerMap.sellTypes.includes(action)) {
       // Add to sells import for later processing (only sells)
       sellsImport.push({
         ...dataRow,
+        action,
+        executionOrder: dataRow.executionOrder,
         week: week
       })
     }
@@ -641,19 +682,137 @@ function _processTransactions(transactionsImport) {
   }
 }
 
-function _processPositions(positionsImport) {
+function _processPositions(positionsImport, sellsImport = []) {
   if (!Array.isArray(positionsImport) || positionsImport.length === 0) return
   if (!store.activeAccount.positions) store.activeAccount.positions = []
+  if (!store.activeAccount.sells) store.activeAccount.sells = []
 
-  positionsImport.forEach(data => {
+  const shortSells = (Array.isArray(sellsImport) ? sellsImport : [])
+    .filter(sell => (sell.action || '').toString().toLowerCase().includes('short'))
+    .sort((a, b) => {
+      if (a.week !== b.week) return a.week - b.week
+      if (a.date < b.date) return -1
+      if (a.date > b.date) return 1
+      return (a.executionOrder || 0) - (b.executionOrder || 0)
+    })
+
+  shortSells.forEach((sell) => {
+    const shortPosition = {
+      positionKey: '',
+      startWeek: sell.week,
+      date: sell.date,
+      executionOrder: sell.executionOrder,
+      costBasis: -Math.abs(sell.amount),
+      offsettingProfits: 0,
+      shares: Number(sell.quantity || 0),
+      assignedWeek: sell.week,
+      soldShares: 0,
+      sellAmount: 0,
+      soldWeek: null,
+      symbol: sell.symbol,
+      currentPrice: Number(sell.price || 0),
+      profitAllocation: 100,
+      manual: false,
+      positionType: 'short'
+    }
+    shortPosition.positionKey = `${store.getPositionKey(shortPosition, 'short')}_${sell.executionOrder}`
+    store.ensurePositionMetaKey(shortPosition)
+    store.applyPositionMetaToPosition(store.activeAccount, shortPosition)
+    const exists = store.activeAccount.positions.some(p => p.positionKey === shortPosition.positionKey)
+    if (!exists) {
+      store.activeAccount.positions.push(shortPosition)
+    }
+
+    const shortSellRecord = {
+      positionKey: `${store.getPositionKey(sell, 'sellshort')}_${sell.executionOrder}`,
+      week: sell.week,
+      date: sell.date,
+      action: (sell.action || '').toString().toLowerCase(),
+      amount: Math.abs(sell.amount),
+      shares: Number(sell.quantity || 0),
+      symbol: sell.symbol,
+      executionOrder: sell.executionOrder,
+      remainingShares: Number(sell.quantity || 0),
+      shortPositionKey: shortPosition.positionKey,
+      allocated: []
+    }
+    const sellExists = store.activeAccount.sells.some(s => s.positionKey === shortSellRecord.positionKey)
+    if (!sellExists) {
+      store.activeAccount.sells.push(shortSellRecord)
+    }
+  })
+
+  positionsImport
+    .slice()
+    .sort((a, b) => {
+      if (a.week !== b.week) return a.week - b.week
+      if (a.date < b.date) return -1
+      if (a.date > b.date) return 1
+      return (a.executionOrder || 0) - (b.executionOrder || 0)
+    })
+    .forEach(data => {
+    let sharesRemaining = Number(data.quantity || 0)
+    if (sharesRemaining <= 0) return
+
+    const buyAmount = Math.abs(Number(data.amount || 0))
+
+    const openShortSells = store.activeAccount.sells
+      .filter(sell =>
+        (sell.action || '').includes('short') &&
+        sell.symbol === data.symbol &&
+        Number(sell.remainingShares || 0) > 0 &&
+        Number(sell.week || 0) <= Number(data.week || 0) &&
+        Number(sell.executionOrder || 0) < Number(data.executionOrder || 0)
+      )
+      .sort((a, b) => {
+        if (a.week !== b.week) return a.week - b.week
+        if (a.date < b.date) return -1
+        if (a.date > b.date) return 1
+        return (a.executionOrder || 0) - (b.executionOrder || 0)
+      })
+
+    for (const shortSell of openShortSells) {
+      if (sharesRemaining <= 0) break
+      const availableShortShares = Number(shortSell.remainingShares || 0)
+      if (availableShortShares <= 0) continue
+      const coverQty = Math.min(availableShortShares, sharesRemaining)
+      const coverCost = Math.round((buyAmount * (coverQty / Number(data.quantity || 1))) * 1000) / 1000
+
+      shortSell.remainingShares -= coverQty
+      shortSell.allocated.push({
+        positionKey: shortSell.shortPositionKey,
+        shares: coverQty,
+        buyWeek: data.week,
+        sellWeek: shortSell.week
+      })
+
+      const shortPosition = store.activeAccount.positions.find(p => p.positionKey === shortSell.shortPositionKey)
+      if (shortPosition) {
+        shortPosition.soldShares = Number(shortPosition.soldShares || 0) + coverQty
+        shortPosition.sellAmount = Number(shortPosition.sellAmount || 0) + coverCost
+        if (shortPosition.soldShares > 0) {
+          shortPosition.currentPrice = Math.round((shortPosition.sellAmount / shortPosition.soldShares) * 1000) / 1000
+        }
+        if (shortPosition.soldShares >= Number(shortPosition.shares || 0)) {
+          shortPosition.soldWeek = data.week
+        }
+      }
+
+      sharesRemaining -= coverQty
+    }
+
+    if (sharesRemaining <= 0) return
+
+    const remainingCostBasis = Math.round((buyAmount * (sharesRemaining / Number(data.quantity || 1))) * 1000) / 1000
     // Build the position object
     const position = {
       positionKey: '',
       startWeek: null,
       date: data.date,
-      costBasis: Math.abs(data.amount),
+      executionOrder: data.executionOrder,
+      costBasis: remainingCostBasis,
       offsettingProfits: 0,
-      shares: data.quantity,
+      shares: sharesRemaining,
       assignedWeek: data.week,
       soldShares: 0,
       sellAmount: 0,
@@ -662,10 +821,12 @@ function _processPositions(positionsImport) {
       currentPrice: 0,
       profitAllocation: 100
     }
-    position.currentPrice = (Number(position.costBasis / data.quantity) * 100) / 100
+    position.currentPrice = (Number(position.costBasis / sharesRemaining) * 100) / 100
 
     // Add the position to the account's positions array
-    position.positionKey = store.getPositionKey(position, 'buy')
+    position.positionKey = `${store.getPositionKey(position, 'buy')}_${data.executionOrder}`
+    store.ensurePositionMetaKey(position)
+    store.applyPositionMetaToPosition(store.activeAccount, position)
 
     // Check if this positionKey already exists
     const exists = store.activeAccount.positions.some(p => p.positionKey === position.positionKey)
@@ -690,16 +851,19 @@ function _processSellData(sellsImport) {
 
   // Step 1: Add new sells to the account's sells array
   sellsImport.forEach(data => {
+    if ((data.action || '').toString().toLowerCase().includes('short')) return
     const sell = {
       positionKey: '',
       week: data.week,
       date: data.date,
+      action: (data.action || '').toString().toLowerCase(),
       amount: Math.abs(data.amount),
       shares: data.quantity,
       symbol: data.symbol,
+      executionOrder: data.executionOrder,
       allocated: []
     }
-    sell.positionKey = store.getPositionKey(sell, 'sell')
+    sell.positionKey = `${store.getPositionKey(sell, 'sell')}_${data.executionOrder}`
     // Check if this sell already exists
     const exists = store.activeAccount.sells.some(s => s.positionKey === sell.positionKey)
     if (exists) return
@@ -709,10 +873,15 @@ function _processSellData(sellsImport) {
   // Step 2: Allocate sells to open positions (FIFO)
   store.activeAccount.sells.forEach(sell => {
     if (sell.allocated && sell.allocated.length > 0) return // Already allocated
+    if ((sell.action || '').includes('short')) return // "sell short" opens a short; do not allocate as long-position close
     let sharesToAllocate = sell.shares
     // Find open positions for this symbol, FIFO order (by date, then by startWeek)
     const openPositions = store.activeAccount.positions
-      .filter(pos => pos.symbol === sell.symbol && (pos.soldShares || 0) < pos.shares)
+      .filter(pos =>
+        pos.symbol === sell.symbol &&
+        (pos.soldShares || 0) < pos.shares &&
+        Number(pos.assignedWeek || 0) <= Number(sell.week || 0)
+      )
       .sort((a, b) => {
         // FIFO: by date, then by startWeek
         if (a.date < b.date) return -1
@@ -754,6 +923,7 @@ function _processSellData(sellsImport) {
       const newPosition = {
         startWeek: sell.week,
         date: startDate,
+        executionOrder: sell.executionOrder,
         costBasis: unallocatedSellAmount,
         offsettingProfits: 0,
         shares: sharesToAllocate,
@@ -767,6 +937,8 @@ function _processSellData(sellsImport) {
         manual: true // Mark as manual/unallocated
       }
       newPosition.positionKey = store.getPositionKey(newPosition, 'buy')
+      store.ensurePositionMetaKey(newPosition)
+      store.applyPositionMetaToPosition(store.activeAccount, newPosition)
       store.activeAccount.positions.push(newPosition)
       sell.allocated.push({
         positionKey: newPosition.positionKey,
@@ -874,22 +1046,26 @@ store.showImportTransactionsModal = show
           <button type="button" class="btn-close" @click="close"></button>
         </div>
         <div class="modal-body">
-          <ul class="nav nav-pills mb-3">
-            <li class="nav-item">
+          <ul class="nav nav-tabs import-tabs" role="tablist">
+            <li class="nav-item" role="presentation">
               <button
                 class="nav-link"
                 :class="{ active: importMode === 'transactions' }"
                 type="button"
+                role="tab"
+                :aria-selected="importMode === 'transactions'"
                 @click="importMode = 'transactions'"
               >
                 Transactions
               </button>
             </li>
-            <li class="nav-item">
+            <li class="nav-item" role="presentation">
               <button
                 class="nav-link"
                 :class="{ active: importMode === 'positions' }"
                 type="button"
+                role="tab"
+                :aria-selected="importMode === 'positions'"
                 @click="importMode = 'positions'"
               >
                 Current Positions
@@ -897,7 +1073,8 @@ store.showImportTransactionsModal = show
             </li>
           </ul>
 
-          <div v-if="importMode === 'transactions'">
+          <div class="tab-content import-tab-content">
+          <div class="tab-pane fade" :class="{ 'show active': importMode === 'transactions' }" role="tabpanel">
             <div v-if="!transactionImportResults">
               <div class="mb-3">
                 <label for="transactionsCsvFile" class="form-label">Select transactions CSV file</label>
@@ -985,7 +1162,7 @@ store.showImportTransactionsModal = show
             </div>
           </div>
 
-          <div v-if="importMode === 'positions'">
+          <div class="tab-pane fade" :class="{ 'show active': importMode === 'positions' }" role="tabpanel">
             <div v-if="!positionsImportResults">
               <div class="mb-3">
                 <label for="positionsCsvFile" class="form-label">Select Schwab positions CSV file</label>
@@ -1025,6 +1202,7 @@ store.showImportTransactionsModal = show
                 </p>
               </div>
             </div>
+          </div>
           </div>
         </div>
         
@@ -1072,5 +1250,26 @@ store.showImportTransactionsModal = show
   max-height: 200px;
   overflow-y: auto;
   margin-top: 20px;
+}
+
+.import-tab-content {
+  padding: 1rem;
+  border: 1px solid var(--bs-border-color);
+  border-top: 0;
+  border-radius: 0 0 0.5rem 0.5rem;
+}
+
+.import-tabs {
+  margin-bottom: 0;
+}
+
+.import-tabs .nav-link {
+  margin-bottom: -1px;
+}
+
+@media (max-width: 767.98px) {
+  .import-tab-content {
+    padding: 0.75rem;
+  }
 }
 </style>

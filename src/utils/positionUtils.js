@@ -1,5 +1,9 @@
 // src/utils/positionUtils.js
 
+function isShortPosition(position) {
+  return position?.positionType === 'short' || Number(position?.costBasis || 0) < 0
+}
+
 export function getSoldShares(position) {
   if (!position) return 0
   if (typeof position.soldShares === 'number' && position.soldShares > 0) {
@@ -34,16 +38,24 @@ export function _getCurrentValue(position) {
 }
 
 export function getRawPL(position) {
+  if (isShortPosition(position)) {
+    const entryProceeds = Math.abs(Number(position?.costBasis || 0))
+    const soldShares = getSoldShares(position)
+    const totalShares = Number(position?.shares || 0)
+    const openShares = Math.max(totalShares - soldShares, 0)
+    const coverCost = Number(position?.sellAmount || 0)
+    const openLiability = Number(position?.currentPrice || 0) * openShares
+    return entryProceeds - (coverCost + openLiability)
+  }
+
   const currentValue = getCurrentValue(position)
-  const costBasis = position.costBasis
+  const costBasis = Number(position?.costBasis || 0)
   return currentValue - costBasis
 }
 
 export function getNetPL(position) {
-  const currentValue = _getCurrentValue(position)
-  const costBasis = position.costBasis
-  const totalProfits = position.offsettingProfits || 0
-  return currentValue - costBasis + totalProfits
+  const totalProfits = Number(position?.offsettingProfits || 0)
+  return getRawPL(position) + totalProfits
 }
 
 export function getNetPLPerShare(position) {
@@ -52,9 +64,10 @@ export function getNetPLPerShare(position) {
 }
 
 export function getTotalROR(position) {
-  if (!position.costBasis || position.costBasis === 0) return 0
+  const basis = Math.abs(Number(position?.costBasis || 0))
+  if (!basis) return 0
   const netPL = getNetPL(position)
-  return (netPL / position.costBasis) * 100
+  return (netPL / basis) * 100
 }
 
 export function getWeeklyROR(position, store) {

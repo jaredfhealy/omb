@@ -13,6 +13,9 @@ export const useAppStore = defineStore('app', {
         transactions: [],
         actuals: [],
         positions: [],
+        sells: [],
+        notes: [],
+        positionMeta: [],
         settings: {
           startDate: new Date().toISOString().split('T')[0],
           startingBalance: 5000,
@@ -56,10 +59,38 @@ export const useAppStore = defineStore('app', {
         const data = await loadState()
 
         if (data && Array.isArray(data.accounts)) {
+          let migrated = false
           data.accounts.forEach(account => {
-            if (!account.positions) account.positions = []
+            if (!account.transactions) {
+              account.transactions = []
+              migrated = true
+            }
+            if (!account.actuals) {
+              account.actuals = []
+              migrated = true
+            }
+            if (!account.positions) {
+              account.positions = []
+              migrated = true
+            }
+            if (!account.sells) {
+              account.sells = []
+              migrated = true
+            }
+            if (!account.notes) {
+              account.notes = []
+              migrated = true
+            }
+            if (!account.positionMeta) {
+              account.positionMeta = []
+              migrated = true
+            }
           })
           this.db = data
+          this.applyPositionMetadataForActiveAccount()
+          if (migrated) {
+            this.saveBacon()
+          }
         }
         this.calculateProjections()
       } catch (error) {
@@ -384,6 +415,105 @@ export const useAppStore = defineStore('app', {
       return `${pos.symbol}_${pos.shares}_${action}_${pos.date}_${Math.abs(pos.costBasis || pos.amount)}`
     },
 
+    getPositionMetaKey(position) {
+      const baseKey = this.getPositionMetaBaseKey(position)
+      const executionOrder = Number(position?.executionOrder || 0) > 0
+        ? Number(position.executionOrder)
+        : 'na'
+      return `${baseKey}|${executionOrder}`
+    },
+
+    getPositionMetaBaseKey(position) {
+      const symbol = (position?.symbol || '').trim().toUpperCase()
+      const date = position?.date ? this.formatDate(position.date) : ''
+      const type = (position?.positionType === 'short' || Number(position?.costBasis || 0) < 0) ? 'short' : 'long'
+      const shares = Number(position?.shares || 0)
+      const basis = Math.round(Math.abs(Number(position?.costBasis ?? position?.amount ?? 0)) * 1000) / 1000
+      return `pmeta_v1|${symbol}|${date}|${type}|${shares}|${basis}`
+    },
+
+    ensurePositionMetaKey(position) {
+      if (!position) return null
+      const key = this.getPositionMetaKey(position)
+      position.positionMetaKey = key
+      return key
+    },
+
+    getPositionMetaEntry(position, account = this.activeAccount) {
+      if (!account || !Array.isArray(account.positionMeta) || !position) return null
+      const key = position.positionMetaKey || this.ensurePositionMetaKey(position)
+      const exact = account.positionMeta.find(entry => entry.key === key)
+      if (exact) return exact
+
+      const basePrefix = `${this.getPositionMetaBaseKey(position)}|`
+      const baseMatches = account.positionMeta.filter(entry => typeof entry.key === 'string' && entry.key.startsWith(basePrefix))
+      if (baseMatches.length === 0) return null
+      if (baseMatches.length === 1) return baseMatches[0]
+
+      const withExactExecution = Number(position?.executionOrder || 0) > 0
+        ? baseMatches.find(entry => entry.key === `${basePrefix}${Number(position.executionOrder)}`)
+        : null
+      if (withExactExecution) return withExactExecution
+
+      return baseMatches
+        .slice()
+        .sort((a, b) => (b.updatedAt || b.createdAt || '').localeCompare(a.updatedAt || a.createdAt || ''))[0]
+    },
+
+    applyPositionMetaToPosition(account, position) {
+      if (!account || !position) return
+      if (!Array.isArray(account.positionMeta)) account.positionMeta = []
+      this.ensurePositionMetaKey(position)
+      const entry = this.getPositionMetaEntry(position, account)
+      if (!entry) return
+
+      if (Number.isFinite(Number(entry.profitAllocationOverride))) {
+        position.profitAllocation = Number(entry.profitAllocationOverride)
+      }
+      if (Number.isFinite(Number(entry.offsettingProfitsOverride))) {
+        position.offsettingProfits = Number(entry.offsettingProfitsOverride)
+      }
+    },
+
+    applyPositionMetadataForActiveAccount() {
+      if (!this.activeAccount || !Array.isArray(this.activeAccount.positions)) return
+      this.activeAccount.positions.forEach(position => {
+        this.applyPositionMetaToPosition(this.activeAccount, position)
+      })
+    },
+
+    upsertPositionMetaOverride(position, { offsettingProfitsOverride, profitAllocationOverride } = {}) {
+      if (!this.activeAccount || !position) return
+      if (!Array.isArray(this.activeAccount.positionMeta)) this.activeAccount.positionMeta = []
+
+      const key = this.ensurePositionMetaKey(position)
+      let entry = this.getPositionMetaEntry(position, this.activeAccount)
+      if (!entry) {
+        entry = {
+          key,
+          createdAt: new Date().toISOString()
+        }
+        this.activeAccount.positionMeta.push(entry)
+      } else if (!entry.key) {
+        entry.key = key
+      }
+
+      if (offsettingProfitsOverride !== undefined) {
+        entry.offsettingProfitsOverride = Number(offsettingProfitsOverride)
+      }
+      if (profitAllocationOverride !== undefined) {
+        entry.profitAllocationOverride = Number(profitAllocationOverride)
+      }
+      entry.updatedAt = new Date().toISOString()
+    },
+
+    removePositionMeta(position) {
+      if (!this.activeAccount || !Array.isArray(this.activeAccount.positionMeta) || !position) return
+      const key = position.positionMetaKey || this.getPositionMetaKey(position)
+      const basePrefix = `${this.getPositionMetaBaseKey(position)}|`
+      this.activeAccount.positionMeta = this.activeAccount.positionMeta.filter(entry => entry.key !== key && !(typeof entry.key === 'string' && entry.key.startsWith(basePrefix)))
+    },
+
     calculateWeekStartEnd(weekNumber) {
       const startDate = new Date(this.activeAccount.settings.startDate)
       startDate.setDate(startDate.getDate() + (weekNumber - 1) * 7)
@@ -463,16 +593,27 @@ export const useAppStore = defineStore('app', {
         position.offsettingProfits = 0
         return
       }
+      const existingMeta = this.getPositionMetaEntry(position, this.activeAccount)
+      if (existingMeta && Number.isFinite(Number(existingMeta.profitAllocationOverride))) {
+        position.profitAllocation = Number(existingMeta.profitAllocationOverride)
+      }
+      if (existingMeta && Number.isFinite(Number(existingMeta.offsettingProfitsOverride))) {
+        position.offsettingProfits = Number(existingMeta.offsettingProfitsOverride)
+        return
+      }
       let total = 0
       const actuals = this.activeAccount?.actuals || []
+      const optionActionPattern = /(to open|to close|expired|assigned|exercised)/
       actuals.forEach(a => {
         if (Array.isArray(a.data) && parseInt(a.week) >= parseInt(position.startWeek)) {
           a.data.forEach(txn => {
+            const action = (txn.action || '').toLowerCase().trim()
             if (
               txn.symbol &&
               txn.symbol.toUpperCase().split(" ")[0].includes(position.symbol.toUpperCase()) &&
-              txn.action &&
-              !['buy', 'sell'].includes(txn.action.toLowerCase())
+              optionActionPattern.test(action) &&
+              !action.includes('sell short') &&
+              !action.includes('buy to cover')
             ) {
               total += parseFloat(txn.amount || 0)
             }

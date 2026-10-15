@@ -29,6 +29,10 @@ function migrateProfitAllocation() {
       pos.profitAllocation = 100
       migrated = true
     }
+    if (pos.positionType === 'short' && pos.manual) {
+      pos.manual = false
+      migrated = true
+    }
   })
   if (migrated) {
     store.saveBacon()
@@ -146,13 +150,17 @@ const symbolSuggestions = computed(() => {
 const filteredPositions = computed(() => {
   if (!store.activeAccount.positions) return []
   const selectedSymbolSet = new Set(selectedSymbols.value)
-  return positionsByStatusFilter.value.filter((position) => {
+  const filtered = positionsByStatusFilter.value.filter((position) => {
     if (selectedSymbolSet.size > 0) {
       const symbol = (position.symbol || '').trim().toUpperCase()
       if (!selectedSymbolSet.has(symbol)) return false
     }
     return true
   })
+
+  return filtered
+    .slice()
+    .sort((a, b) => comparePositionsByOpeningSequenceDesc(a, b))
 })
 
 const selectedPositionKeys = ref([])
@@ -303,6 +311,7 @@ const removePosition = (index) => {
       // Find the actual index in the positions array
       const actualIndex = store.activeAccount.positions.findIndex(p => p === item)
       if (actualIndex !== -1) {
+        store.removePositionMeta(item)
         store.activeAccount.positions.splice(actualIndex, 1)
         store.saveBacon()
       }
@@ -352,6 +361,16 @@ const displayPositions = computed(() => {
         merged.offsettingProfits = group.reduce((sum, { pos }) => sum + (pos.offsettingProfits || 0), 0)
         merged.assignedWeek = Math.min(...group.map(({ pos }) => pos.assignedWeek || 0))
         merged.startWeek = Math.min(...group.map(({ pos }) => pos.startWeek || 0))
+        const groupDates = group
+          .map(({ pos }) => getPositionDateTimestamp(pos))
+          .filter(ts => ts !== null)
+        if (groupDates.length > 0) {
+          merged.date = new Date(Math.min(...groupDates)).toISOString().slice(0, 10)
+        }
+        const groupExecutionOrders = group
+          .map(({ pos }) => Number(pos.executionOrder || 0))
+          .filter(order => order > 0)
+        merged.executionOrder = groupExecutionOrders.length ? Math.min(...groupExecutionOrders) : null
         const mergedOpenShares = merged.shares - merged.soldShares
         merged.soldWeek = mergedOpenShares === 0 ? Math.max(...group.map(({ pos }) => pos.soldWeek || 0)) : null
         merged.manual = group.some(({ pos }) => pos.manual)
@@ -370,7 +389,41 @@ const displayPositions = computed(() => {
   })
 
   return result
+    .slice()
+    .sort((a, b) => comparePositionsByOpeningSequenceDesc(a, b))
 })
+
+function getPositionDateTimestamp(position) {
+  const dateValue = position?.date
+  if (!dateValue) return null
+  const parsed = new Date(dateValue).getTime()
+  return Number.isNaN(parsed) ? null : parsed
+}
+
+function comparePositionsByOpeningSequenceDesc(a, b) {
+  const aDate = getPositionDateTimestamp(a)
+  const bDate = getPositionDateTimestamp(b)
+  if (aDate !== null || bDate !== null) {
+    if (aDate === null) return 1
+    if (bDate === null) return -1
+    if (aDate !== bDate) return bDate - aDate
+  }
+
+  const aWeek = Number(a?.assignedWeek || 0)
+  const bWeek = Number(b?.assignedWeek || 0)
+  if (aWeek !== bWeek) return bWeek - aWeek
+
+  const aExecutionOrder = Number(a?.executionOrder || 0)
+  const bExecutionOrder = Number(b?.executionOrder || 0)
+  if (aExecutionOrder !== bExecutionOrder) return bExecutionOrder - aExecutionOrder
+
+  const aSymbol = (a?.symbol || '').toUpperCase()
+  const bSymbol = (b?.symbol || '').toUpperCase()
+  if (aSymbol < bSymbol) return -1
+  if (aSymbol > bSymbol) return 1
+
+  return (a?.positionKey || '').localeCompare(b?.positionKey || '')
+}
 
 function getLatestSellWeek(position) {
   if (!store.activeAccount?.sells || !position?.positionKey) return null
@@ -663,7 +716,7 @@ function removeFromMergeGroup(groupId, positionKey) {
           <button v-if="item.mergeGroup && expandedGroups.includes(item.mergeGroup) && displayPositions.findIndex(p => p === item) === displayPositions.findIndex(p => p.mergeGroup === item.mergeGroup && !p.isMergedSummary)" class="btn btn-sm btn-outline-secondary flex-grow-0" @click="toggleExpandGroup(item.mergeGroup)">
             <i class="bi bi-chevron-up"></i>
           </button>
-          <button v-if="item.manual" class="btn btn-sm btn-outline-danger flex-grow-0" 
+          <button v-if="item.manual && item.positionType !== 'short'" class="btn btn-sm btn-outline-danger flex-grow-0" 
                   @click="removePosition(index)" title="Remove manual position">
             <i class="bi bi-trash"></i>
           </button>
