@@ -69,16 +69,13 @@ const show = (posObj = null, groupId = null) => {
   mergedGroupID.value = groupId || (posObj && posObj.mergeGroup) || null
   showAllocationDetails.value = true
   isVisible.value = true
-  setTimeout(() => { modalInitialized = true }, 0)
 }
 
 // Expose the show function to the store for external use
 store.showPositionModal = show
 
-// When modal closes, reset modalInitialized
 const close = () => {
   isVisible.value = false
-  modalInitialized = false
   mergedGroupID.value = null
   showAllocationDetails.value = false
   originalMetaFields.value = null
@@ -96,7 +93,6 @@ const save = () => {
         pos.currentPrice = currentPrice
       }
     })
-    store.recalculateAllOffsettingProfits()
     store.saveBacon()
     close()
     return
@@ -108,14 +104,24 @@ const save = () => {
   }
 
   // Validate costBasis input
-  if (isNaN(position.costBasis) || position.costBasis <= 0) {
-    alert('Cost Basis must be a positive number')
+  if (!Number.isFinite(Number(position.costBasis)) || Number(position.costBasis) === 0) {
+    alert('Cost Basis must be a non-zero number')
     return
   }
 
   // Ensure currentPrice is 0 or positive
   if (isNaN(position.currentPrice) || position.currentPrice < 0) {
     position.currentPrice = 0
+  }
+
+  // Offsetting Profits is optional; blank is treated as 0.
+  if (position.offsettingProfits === '' || position.offsettingProfits === null || position.offsettingProfits === undefined) {
+    position.offsettingProfits = 0
+  } else if (!Number.isFinite(Number(position.offsettingProfits))) {
+    alert('Offsetting Profits must be a valid number')
+    return
+  } else {
+    position.offsettingProfits = Number(position.offsettingProfits)
   }
 
   // If soldWeek is set, require sellAmount
@@ -165,21 +171,6 @@ const save = () => {
   store.saveBacon()
   close()
 }
-
-// Add watcher for startWeek to recalculate offsettingProfits
-let modalInitialized = false
-
-watch(() => position.startWeek, (newStartWeek, oldStartWeek) => {
-  if (!modalInitialized) return
-  if (!newStartWeek || newStartWeek === oldStartWeek) return
-  store.recalculateOffsettingProfits(position)
-})
-
-watch(() => position.profitAllocation, (newProfitAllocation, oldProfitAllocation) => {
-  if (!modalInitialized) return
-  if (!position.startWeek || newProfitAllocation === oldProfitAllocation) return
-  store.recalculateOffsettingProfits(position)
-})
 
 const allocatedSellRows = computed(() => {
   if (!position.positionKey || !store.activeAccount?.sells) return []
@@ -428,7 +419,7 @@ const allocatedSalesColumns = [
                       </option>
                     </select>
                     <div class="form-text">
-                      The first week premiums were collected (Offsetting Profits is automatically calculated on Start Week change).<br/>
+                      The first week premiums were collected (reference only; Offsetting Profits is manual).<br/>
                       NOTE: You can use Transaction Summarizer to find the week you want to calculate from.
                     </div>
                   </div>
@@ -492,7 +483,7 @@ const allocatedSalesColumns = [
                   @click="showAllocationDetails = !showAllocationDetails"
                   :aria-expanded="showAllocationDetails"
                 >
-                  <span class="allocated-sales-title">Associatd Closing Transactions ({{ allocatedSellRows.length }})</span>
+                  <span class="allocated-sales-title">Associated Closing Transactions ({{ allocatedSellRows.length }})</span>
                   <i class="bi bi-chevron-down allocated-sales-chevron" :class="{ expanded: showAllocationDetails }"></i>
                 </button>
                 <div v-if="showAllocationDetails" class="mt-3">

@@ -39,6 +39,12 @@ Run frontend + backend together:
 npm run dev
 ```
 
+Run frontend + backend for Tailscale/mobile testing (binds Vite to `0.0.0.0:5174`):
+
+```bash
+npm run dev:tailscale
+```
+
 Run backend only:
 
 ```bash
@@ -49,6 +55,27 @@ Build production assets:
 
 ```bash
 npm run build
+```
+
+## Tailscale access (no port in URL)
+
+The frontend now uses relative `/api` calls by default, and Vite proxies `/api` to backend `:3001` in dev.
+
+If your machine is `gaminglaptop1.tail511f93.ts.net`, you can expose the app on the tailnet URL without port using Tailscale Serve:
+
+```bash
+tailscale serve --bg --https=443 / http://127.0.0.1:5174
+```
+
+Then open:
+
+`https://gaminglaptop1.tail511f93.ts.net`
+
+To inspect/clear serve config:
+
+```bash
+tailscale serve status
+tailscale serve reset
 ```
 
 ## Data migration workflow

@@ -585,14 +585,11 @@ export const useAppStore = defineStore('app', {
     },
 
     /**
-     * Recalculate offsettingProfits for a given position object.
-     * Mutates the position.offsettingProfits property.
+     * Sync offsetting-related fields for a position from persisted metadata overrides.
+     * Offsetting profits are manual; no auto-derivation is performed here.
      */
     recalculateOffsettingProfits(position) {
-      if (!position || !position.startWeek || !position.symbol) {
-        position.offsettingProfits = 0
-        return
-      }
+      if (!position) return
       const existingMeta = this.getPositionMetaEntry(position, this.activeAccount)
       if (existingMeta && Number.isFinite(Number(existingMeta.profitAllocationOverride))) {
         position.profitAllocation = Number(existingMeta.profitAllocationOverride)
@@ -601,26 +598,11 @@ export const useAppStore = defineStore('app', {
         position.offsettingProfits = Number(existingMeta.offsettingProfitsOverride)
         return
       }
-      let total = 0
-      const actuals = this.activeAccount?.actuals || []
-      const optionActionPattern = /(to open|to close|expired|assigned|exercised)/
-      actuals.forEach(a => {
-        if (Array.isArray(a.data) && parseInt(a.week) >= parseInt(position.startWeek)) {
-          a.data.forEach(txn => {
-            const action = (txn.action || '').toLowerCase().trim()
-            if (
-              txn.symbol &&
-              txn.symbol.toUpperCase().split(" ")[0].includes(position.symbol.toUpperCase()) &&
-              optionActionPattern.test(action) &&
-              !action.includes('sell short') &&
-              !action.includes('buy to cover')
-            ) {
-              total += parseFloat(txn.amount || 0)
-            }
-          })
-        }
-      })
-      position.offsettingProfits = parseFloat((total * ((position.profitAllocation || 100) / 100)).toFixed(2))
+      if (!Number.isFinite(Number(position.offsettingProfits))) {
+        position.offsettingProfits = 0
+      } else {
+        position.offsettingProfits = Number(position.offsettingProfits)
+      }
     },
 
     /**

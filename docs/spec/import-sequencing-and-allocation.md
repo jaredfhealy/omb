@@ -32,10 +32,10 @@ This document defines the required transaction import behavior for Schwab CSV da
   - mark as system-imported (not manual/deletable from manual controls)
   - create a sell record with remaining short shares to cover
 
-### Offsetting-profits accrual
+### Offsetting profits
 
-- Offsetting profits are derived from option-lifecycle actions for the symbol (for example `buy to open`, `sell to open`, `buy to close`, `sell to close`, `expired`, `assigned`, `exercised`).
-- Stock lifecycle actions (`buy`, `sell`, `sell short`, `buy to cover`) are excluded from offsetting-profits accrual.
+- Offsetting profits are manual position metadata entered by the user.
+- Import initializes lots with `offsettingProfits = 0` and does not auto-populate from transaction rows.
 - Offsetting profits can be positive (credit) or negative (debit) and may apply to both long and short lots.
 
 ### Buy processing

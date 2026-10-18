@@ -4,8 +4,9 @@ import YearlySummary from '@/components/YearlySummary.vue'
 import WeeklyDetails from '@/components/WeeklyDetails.vue'
 import TransactionManager from '@/components/TransactionManager.vue'
 import PositionsManager from '@/components/PositionsManager.vue'
-import { onMounted, onUpdated, onBeforeUnmount } from 'vue'
+import { onMounted, onUpdated, onBeforeUnmount, watch } from 'vue'
 import { useAppStore } from '@/stores/app'
+import { useRoute, useRouter } from 'vue-router'
 import {
   EditTransactionModal,
   EditRowModal,
@@ -14,6 +15,49 @@ import {
 } from '@/components/modals'
 
 const store = useAppStore()
+const route = useRoute()
+const router = useRouter()
+const validTabs = new Set(['yearly', 'weekly', 'recurring', 'positions'])
+
+function normalizeTab(value) {
+  return validTabs.has(value) ? value : 'yearly'
+}
+
+function syncTabFromRoute() {
+  const routeTab = normalizeTab(route.query.tab)
+  if (store.activeTab !== routeTab) {
+    store.activeTab = routeTab
+  }
+}
+
+watch(() => route.query.tab, () => {
+  syncTabFromRoute()
+}, { immediate: true })
+
+watch(() => store.activeTab, (nextTab) => {
+  const normalizedTab = normalizeTab(nextTab)
+  const currentTab = normalizeTab(route.query.tab)
+
+  const nextQuery = { ...route.query }
+  if (normalizedTab !== 'positions') {
+    delete nextQuery.pf
+    delete nextQuery.symbols
+  }
+
+  if (normalizedTab === 'yearly') {
+    delete nextQuery.tab
+  } else {
+    nextQuery.tab = normalizedTab
+  }
+
+  const nextQueryTab = normalizeTab(nextQuery.tab)
+  const hasSameTab = nextQueryTab === currentTab
+  const hasSamePf = (nextQuery.pf || undefined) === (route.query.pf || undefined)
+  const hasSameSymbols = (nextQuery.symbols || undefined) === (route.query.symbols || undefined)
+  if (hasSameTab && hasSamePf && hasSameSymbols) return
+
+  router.replace({ query: nextQuery })
+})
 
 // Store the cleanup function for resize listener
 let cleanupResizeListener

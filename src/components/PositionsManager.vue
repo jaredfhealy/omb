@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
 import { useAppStore } from '@/stores/app'
+import { useRoute, useRouter } from 'vue-router'
 import DataTable from '@/components/custom/DataTable.vue'
 import ConfirmModal from '@/components/modals/ConfirmModal.vue'
 import {
@@ -17,6 +18,8 @@ import {
 } from '@/utils/positionUtils'
 
 const store = useAppStore()
+const route = useRoute()
+const router = useRouter()
 const confirmModalRef = ref(null)
 
 // --- Merge Functionality ---
@@ -118,6 +121,72 @@ const filter = ref('open')
 const symbolFilterInput = ref('')
 const selectedSymbols = ref([])
 const isFilterAccordionOpen = ref(true)
+const RECENT_ACTIVITY_DAYS = 30
+const validPositionFilters = new Set(['open', 'recent', 'closed', 'all'])
+let syncingFilterStateFromRoute = false
+
+function normalizePositionFilter(value) {
+  return validPositionFilters.has(value) ? value : 'open'
+}
+
+function parseSymbolsQueryValue(value) {
+  const rawValue = Array.isArray(value) ? value[0] : value
+  if (typeof rawValue !== 'string' || !rawValue.trim()) return []
+  return [...new Set(
+    rawValue
+      .split(',')
+      .map(symbol => symbol.trim().toUpperCase())
+      .filter(Boolean)
+  )]
+}
+
+function getDateTimestamp(value) {
+  if (!value) return null
+  const parsed = new Date(value).getTime()
+  return Number.isNaN(parsed) ? null : parsed
+}
+
+function getWeekBoundaryTimestamp(week, boundary = 'end') {
+  const numericWeek = Number(week)
+  if (!Number.isFinite(numericWeek) || numericWeek <= 0) return null
+  if (typeof store.calculateWeekStartEnd !== 'function') return null
+  const range = store.calculateWeekStartEnd(numericWeek)
+  const dateValue = boundary === 'start' ? range?.weekStart : range?.weekEnd
+  return getDateTimestamp(dateValue)
+}
+
+function getPositionOpenTimestamp(position) {
+  return getDateTimestamp(position?.date) ?? getWeekBoundaryTimestamp(position?.assignedWeek, 'start')
+}
+
+function getPositionLatestSellTimestamp(position) {
+  if (!store.activeAccount?.sells || !position?.positionKey) return null
+  const sellTimestamps = store.activeAccount.sells
+    .filter(sell => Array.isArray(sell.allocated) && sell.allocated.some(a => a.positionKey === position.positionKey))
+    .map(sell => getDateTimestamp(sell.date) ?? getWeekBoundaryTimestamp(sell.week, 'end'))
+    .filter(timestamp => timestamp !== null)
+
+  if (!sellTimestamps.length) {
+    return getWeekBoundaryTimestamp(position?.soldWeek, 'end')
+  }
+
+  return Math.max(...sellTimestamps)
+}
+
+function isPositionRecent(position) {
+  const cutoff = new Date()
+  cutoff.setHours(0, 0, 0, 0)
+  cutoff.setDate(cutoff.getDate() - RECENT_ACTIVITY_DAYS)
+  const cutoffTimestamp = cutoff.getTime()
+
+  const openedAt = getPositionOpenTimestamp(position)
+  if (openedAt !== null && openedAt >= cutoffTimestamp) return true
+
+  const soldAt = getPositionLatestSellTimestamp(position)
+  if (soldAt !== null && soldAt >= cutoffTimestamp) return true
+
+  return false
+}
 
 const positionsByStatusFilter = computed(() => {
   const positions = Array.isArray(store.activeAccount?.positions) ? store.activeAccount.positions : []
@@ -126,6 +195,9 @@ const positionsByStatusFilter = computed(() => {
   }
   if (filter.value === 'closed') {
     return positions.filter(position => position.soldWeek)
+  }
+  if (filter.value === 'recent') {
+    return positions.filter(position => isPositionRecent(position))
   }
   return positions
 })
@@ -248,13 +320,76 @@ watch(availableSymbols, () => {
 })
 
 const mobileFilterSummary = computed(() => {
-  const statusLabel = filter.value.charAt(0).toUpperCase() + filter.value.slice(1)
+  const statusLabel = filter.value === 'recent'
+    ? `Recent (${RECENT_ACTIVITY_DAYS}d)`
+    : filter.value.charAt(0).toUpperCase() + filter.value.slice(1)
   const symbolCount = selectedSymbols.value.length
   const symbolLabel = symbolCount === 0
     ? 'All symbols'
     : `${symbolCount} symbol${symbolCount === 1 ? '' : 's'} selected`
   return `${statusLabel} • ${symbolLabel}`
 })
+
+watch(
+  () => [route.query.pf, route.query.symbols],
+  () => {
+    const nextFilter = normalizePositionFilter(route.query.pf)
+    const nextSymbols = parseSymbolsQueryValue(route.query.symbols)
+
+    const isSameFilter = filter.value === nextFilter
+    const isSameSymbols =
+      selectedSymbols.value.length === nextSymbols.length &&
+      selectedSymbols.value.every((symbol, index) => symbol === nextSymbols[index])
+
+    if (isSameFilter && isSameSymbols) return
+
+    syncingFilterStateFromRoute = true
+    filter.value = nextFilter
+    selectedSymbols.value = nextSymbols
+    clearSelection()
+    syncingFilterStateFromRoute = false
+  },
+  { immediate: true }
+)
+
+watch(
+  [filter, selectedSymbols],
+  () => {
+    if (syncingFilterStateFromRoute) return
+
+    const normalizedFilter = normalizePositionFilter(filter.value)
+    const normalizedSymbols = [...new Set(
+      selectedSymbols.value
+        .map(symbol => (symbol || '').trim().toUpperCase())
+        .filter(Boolean)
+    )]
+    const currentFilter = normalizePositionFilter(route.query.pf)
+    const currentSymbols = parseSymbolsQueryValue(route.query.symbols)
+
+    const filterChanged = normalizedFilter !== currentFilter
+    const symbolsChanged =
+      normalizedSymbols.length !== currentSymbols.length ||
+      normalizedSymbols.some((symbol, index) => symbol !== currentSymbols[index])
+
+    if (!filterChanged && !symbolsChanged) return
+
+    const nextQuery = { ...route.query }
+    if (normalizedFilter === 'open') {
+      delete nextQuery.pf
+    } else {
+      nextQuery.pf = normalizedFilter
+    }
+
+    if (normalizedSymbols.length === 0) {
+      delete nextQuery.symbols
+    } else {
+      nextQuery.symbols = normalizedSymbols.join(',')
+    }
+
+    router.replace({ query: nextQuery })
+  },
+  { deep: true }
+)
 
 // --- Merge Action ---
 // When merge is triggered, assigns a mergeGroup id to selected positions
@@ -526,6 +661,15 @@ function removeFromMergeGroup(groupId, positionKey) {
               <div class="d-flex flex-wrap align-items-center gap-2">
                 <div class="btn-group" role="group" aria-label="Position status filter">
                   <button type="button" class="btn btn-outline-primary" :class="{ active: filter === 'open' }" @click="filter = 'open'">Open</button>
+                  <button
+                    type="button"
+                    class="btn btn-outline-primary"
+                    :class="{ active: filter === 'recent' }"
+                    @click="filter = 'recent'"
+                    title="Shows positions with buy/open or sell activity in the last 30 days"
+                  >
+                    Recent
+                  </button>
                   <button type="button" class="btn btn-outline-primary" :class="{ active: filter === 'closed' }" @click="filter = 'closed'">Closed</button>
                   <button type="button" class="btn btn-outline-primary" :class="{ active: filter === 'all' }" @click="filter = 'all'">All</button>
                 </div>

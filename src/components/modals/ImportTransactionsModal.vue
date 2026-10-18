@@ -16,6 +16,7 @@ const transactionError = ref('')
 const positionsError = ref('')
 const discardFirstWeek = ref(true) // Default to true for this option
 const deleteAllData = ref(false) // Default to false for this option
+const refreshPendingAfterClose = ref(false)
 
 // Modal control methods
 const show = () => {
@@ -26,7 +27,14 @@ const show = () => {
 
 const close = () => {
   isVisible.value = false
+  const shouldRefresh = refreshPendingAfterClose.value
+  refreshPendingAfterClose.value = false
   resetForm()
+  if (shouldRefresh) {
+    window.setTimeout(() => {
+      window.location.reload()
+    }, 100)
+  }
 }
 
 const resetForm = () => {
@@ -137,6 +145,7 @@ const processTransactionImport = async () => {
         
         // Trigger projections and save
         store.calculateProjections()
+        refreshPendingAfterClose.value = true
       } catch (error) {
         transactionError.value = error.message || 'An error occurred during import'
         console.error('Import error:', error)
@@ -189,9 +198,8 @@ async function importTransactionsFromCSV(file) {
     const sellResults = _processSellData(sellsImport)
 
     // Final metadata pass: reapply persisted overrides after all lots and allocations settle.
-    // This ensures delete+reimport keeps user-edited position fields (e.g., profit allocation).
+    // This ensures delete+reimport keeps user-edited position fields.
     store.applyPositionMetadataForActiveAccount()
-    store.recalculateAllOffsettingProfits()
     
     // Combine all results for display
     const results = {
@@ -239,6 +247,7 @@ const processPositionsImport = async () => {
         positionsImportResults.value = results
         positionsError.value = ''
         store.calculateProjections()
+        refreshPendingAfterClose.value = true
       } catch (error) {
         positionsError.value = error.message || 'An error occurred during positions import'
         console.error('Positions import error:', error)
@@ -839,8 +848,6 @@ function _processPositions(positionsImport, sellsImport = []) {
   // After adding all positions, sort by assignedWeek
   store.activeAccount.positions.sort((a, b) => a.assignedWeek - b.assignedWeek)
 
-  // Trigger the store to recalculate positions
-  store.recalculateAllOffsettingProfits()
 }
 
 // Stub for processing sell data
