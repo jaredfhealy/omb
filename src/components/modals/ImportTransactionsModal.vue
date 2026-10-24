@@ -17,12 +17,18 @@ const positionsError = ref('')
 const discardFirstWeek = ref(true) // Default to true for this option
 const deleteAllData = ref(false) // Default to false for this option
 const refreshPendingAfterClose = ref(false)
+const selectedImportAccountId = ref(null)
+const importTargetAccount = ref(null)
 
 // Modal control methods
 const show = () => {
   migrateNotesToArray() // Trigger migration when modal is displayed
   isVisible.value = true
   resetForm()
+  const preferredId = Number(store.activeAccount?.id)
+  selectedImportAccountId.value = Number.isFinite(preferredId)
+    ? preferredId
+    : Number(store.db.accounts?.[0]?.id || null)
 }
 
 const close = () => {
@@ -49,6 +55,7 @@ const resetForm = () => {
   positionsError.value = ''
   discardFirstWeek.value = true // Reset to default
   deleteAllData.value = false // Reset to default
+  importTargetAccount.value = null
   
   // Reset the file input element to clear the selected file
   const transactionFileInput = document.querySelector('#transactionsCsvFile')
@@ -59,6 +66,16 @@ const resetForm = () => {
   if (positionsFileInput) {
     positionsFileInput.value = ''
   }
+}
+
+function getSelectedImportAccount() {
+  const targetId = Number(selectedImportAccountId.value)
+  const account = store.db.accounts.find(a => Number(a.id) === targetId)
+  return account || null
+}
+
+function getWorkingAccount() {
+  return importTargetAccount.value || store.activeAccount
 }
 
 function getExecutionOrderedRows(dataRows) {
@@ -121,11 +138,16 @@ const processTransactionImport = async () => {
 
   // Get the filename and replace underscores with spaces
   const fileName = transactionCsvFile.value.name.replace(/_/g, ' ')
-  const accountName = store.activeAccount.name.trim()
+  const targetAccount = getSelectedImportAccount()
+  if (!targetAccount) {
+    transactionError.value = 'Please select an account for this import'
+    return
+  }
+  const accountName = targetAccount.name.trim()
   // Check if the filename starts with the account name (case-insensitive)
-  let confirmMessage = `Are you sure you want to import transactions into the "${store.activeAccount.name}" account?`
+  let confirmMessage = `Import transactions into "${targetAccount.name}"?`
   if (!fileName.toLowerCase().startsWith(accountName.toLowerCase())) {
-    confirmMessage = `WARNING: The file you selected ("${fileName}") does not appear to match the current account ("${accountName}"). Are you sure you want to import this file?`
+    confirmMessage = `WARNING: The file ("${fileName}") does not appear to match import target account ("${accountName}"). Continue importing anyway?`
   }
 
   store.confirm(
@@ -135,11 +157,12 @@ const processTransactionImport = async () => {
       isProcessingTransactions.value = true
       
       try {
+        importTargetAccount.value = targetAccount
         // Store the file before clearing the input
         const fileToProcess = transactionCsvFile.value
         
         // Call the local function to handle the actual import
-        const results = await importTransactionsFromCSV(fileToProcess)
+        const results = await importTransactionsFromCSV(fileToProcess, targetAccount)
         transactionImportResults.value = results
         transactionError.value = ''
         
@@ -150,6 +173,7 @@ const processTransactionImport = async () => {
         transactionError.value = error.message || 'An error occurred during import'
         console.error('Import error:', error)
       } finally {
+        importTargetAccount.value = null
         isProcessingTransactions.value = false
       }
     },
@@ -158,26 +182,26 @@ const processTransactionImport = async () => {
 }
 
 // CSV import function - moved from store
-async function importTransactionsFromCSV(file) {
+async function importTransactionsFromCSV(file, targetAccount) {
   // Ensure we have an account to import to
-  if (!store.activeAccount) {
-    throw new Error('No active account found')
+  if (!targetAccount) {
+    throw new Error('No import target account found')
   }
   
   try {
     // Step 1: Parse CSV file and extract structured data
     const text = await file.text()
     const { dataRows, errors, meta } = parseCSV(text)
-    const preservedPositionMeta = Array.isArray(store.activeAccount.positionMeta)
-      ? [...store.activeAccount.positionMeta]
+    const preservedPositionMeta = Array.isArray(targetAccount.positionMeta)
+      ? [...targetAccount.positionMeta]
       : []
 
     // If delete all data is selected, clear all data arrays before import
     if (deleteAllData.value) {
-      store.activeAccount.actuals = []
-      store.activeAccount.positions = []
-      store.activeAccount.sells = []
-      store.activeAccount.positionMeta = preservedPositionMeta
+      targetAccount.actuals = []
+      targetAccount.positions = []
+      targetAccount.sells = []
+      targetAccount.positionMeta = preservedPositionMeta
     }
     
     // Get broker map for type categorization
@@ -199,7 +223,7 @@ async function importTransactionsFromCSV(file) {
 
     // Final metadata pass: reapply persisted overrides after all lots and allocations settle.
     // This ensures delete+reimport keeps user-edited position fields.
-    store.applyPositionMetadataForActiveAccount()
+    store.applyPositionMetadataForAccount(targetAccount)
     
     // Combine all results for display
     const results = {
@@ -230,11 +254,17 @@ const processPositionsImport = async () => {
     return
   }
 
+  const targetAccount = getSelectedImportAccount()
+  if (!targetAccount) {
+    positionsError.value = 'Please select an account for this import'
+    return
+  }
+
   const fileName = positionsCsvFile.value.name.replace(/_/g, ' ')
-  const accountName = store.activeAccount.name.trim()
-  let confirmMessage = `Update current position pricing for "${store.activeAccount.name}" from this Schwab positions export?`
+  const accountName = targetAccount.name.trim()
+  let confirmMessage = `Update current position pricing for "${targetAccount.name}" from this Schwab positions export?`
   if (!fileName.toLowerCase().startsWith(accountName.toLowerCase())) {
-    confirmMessage = `WARNING: The file you selected ("${fileName}") does not appear to match the current account ("${accountName}"). Continue importing current positions anyway?`
+    confirmMessage = `WARNING: The file you selected ("${fileName}") does not appear to match import target account ("${accountName}"). Continue importing current positions anyway?`
   }
 
   store.confirm(
@@ -243,7 +273,8 @@ const processPositionsImport = async () => {
       isProcessingPositions.value = true
 
       try {
-        const results = await importCurrentPositionsFromCSV(positionsCsvFile.value)
+        importTargetAccount.value = targetAccount
+        const results = await importCurrentPositionsFromCSV(positionsCsvFile.value, targetAccount)
         positionsImportResults.value = results
         positionsError.value = ''
         await store.saveChangesAndRecalculate()
@@ -252,15 +283,16 @@ const processPositionsImport = async () => {
         positionsError.value = error.message || 'An error occurred during positions import'
         console.error('Positions import error:', error)
       } finally {
+        importTargetAccount.value = null
         isProcessingPositions.value = false
       }
     }
   )
 }
 
-async function importCurrentPositionsFromCSV(file) {
-  if (!store.activeAccount) {
-    throw new Error('No active account found')
+async function importCurrentPositionsFromCSV(file, targetAccount) {
+  if (!targetAccount) {
+    throw new Error('No import target account found')
   }
 
   const text = await file.text()
@@ -270,7 +302,7 @@ async function importCurrentPositionsFromCSV(file) {
     throw new Error('No position rows found. Confirm this is a Schwab Positions export CSV.')
   }
 
-  const accountPositions = store.activeAccount.positions || []
+  const accountPositions = targetAccount.positions || []
   const equityPriceBySymbol = new Map()
   const snapshot = {
     asOf: new Date().toISOString(),
@@ -319,7 +351,7 @@ async function importCurrentPositionsFromCSV(file) {
   })
   symbolsUpdated = matchedSymbols.size
 
-  store.activeAccount.brokerageSnapshot = snapshot
+  targetAccount.brokerageSnapshot = snapshot
 
   return {
     rowsProcessed: positionsRows.length,
@@ -499,6 +531,10 @@ function parseCSV(csvText) {
 
 // Process data rows and organize into actuals and identify transactions/positions
 function _processData(dataRows, brokerMap) {
+  const account = getWorkingAccount()
+  if (!account) {
+    throw new Error('No account available while processing import data')
+  }
   // Variables used for processing
   let rowsProcessed = 0
   let transactionsImport = []
@@ -508,7 +544,7 @@ function _processData(dataRows, brokerMap) {
   let weeksChanged = []
   
   // Get the account start date
-  const startDate = new Date(store.activeAccount.settings.startDate)
+  const startDate = new Date(account.settings.startDate)
   
   // Create a mapping of transactions by week
   const dataByWeek = {}
@@ -582,11 +618,11 @@ function _processData(dataRows, brokerMap) {
 
   // Always discard the current week (in progress) from actuals, not from imported data
   const today = new Date()
-  const startDateObj = new Date(store.activeAccount.settings.startDate)
+  const startDateObj = new Date(account.settings.startDate)
   const diffTime = today - startDateObj
   const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
   const currentWeek = Math.floor(diffDays / 7) + 1
-  store.activeAccount.actuals = store.activeAccount.actuals.filter(a => parseInt(a.week) !== currentWeek)
+  account.actuals = account.actuals.filter(a => parseInt(a.week) !== currentWeek)
 
   // Process each week's data into the actuals array
   const weeksProcessed = Object.keys(dataByWeek).length
@@ -595,11 +631,11 @@ function _processData(dataRows, brokerMap) {
     const weekNumber = parseInt(week)
     
     // Find existing entry for this week
-    const existingEntry = store.activeAccount.actuals.find(a => parseInt(a.week) === weekNumber)
+    const existingEntry = account.actuals.find(a => parseInt(a.week) === weekNumber)
     
     if (!existingEntry) {
       // Create new entry with data array and hash
-      store.activeAccount.actuals.push({
+      account.actuals.push({
         week: weekNumber,
         growth: 0,
         data: [...weekData]
@@ -628,15 +664,19 @@ function _processData(dataRows, brokerMap) {
 }
 
 function _processTransactions(transactionsImport) {
+  const account = getWorkingAccount()
+  if (!account) {
+    throw new Error('No account available while processing transactions')
+  }
   let transactionsAdded = 0
   let transactionsDeleted = 0
   
   // Get the account start date
-  const startDate = new Date(store.activeAccount.settings.startDate)
+  const startDate = new Date(account.settings.startDate)
   
   // Delete existing transactions if requested (for deposits/withdrawals)
   if (deleteAllData.value) {
-    if (store.activeAccount.transactions && store.activeAccount.transactions.length) {
+    if (account.transactions && account.transactions.length) {
       // Calculate the current week based on today's date
       const today = new Date()
       const diffTime = today - startDate
@@ -644,14 +684,14 @@ function _processTransactions(transactionsImport) {
       const currentWeek = Math.floor(diffDays / 7) + 1
       
       // Count transactions to be deleted (those at or before current week)
-      const transactionsToDelete = store.activeAccount.transactions.filter(t => 
+      const transactionsToDelete = account.transactions.filter(t => 
         t.startWeek <= currentWeek
       )
       
       transactionsDeleted = transactionsToDelete.length
       
       // Filter out transactions for weeks at or before the current week
-      store.activeAccount.transactions = store.activeAccount.transactions.filter(t => 
+      account.transactions = account.transactions.filter(t => 
         t.startWeek > currentWeek
       )
     }
@@ -674,7 +714,7 @@ function _processTransactions(transactionsImport) {
     }
     
     // Check if a matching transaction already exists
-    const existingTransaction = store.activeAccount.transactions.find(t => 
+    const existingTransaction = account.transactions.find(t => 
       t.type === transactionObject.type && 
       t.startWeek === week && 
       (t.endWeek === week || t.endWeek == "") && 
@@ -683,7 +723,7 @@ function _processTransactions(transactionsImport) {
     
     // Only add if no matching transaction exists
     if (!existingTransaction) {
-      store.activeAccount.transactions.push(transactionObject)
+      account.transactions.push(transactionObject)
       transactionsAdded++
     }
   })
@@ -696,9 +736,13 @@ function _processTransactions(transactionsImport) {
 }
 
 function _processPositions(positionsImport, sellsImport = []) {
+  const account = getWorkingAccount()
+  if (!account) {
+    throw new Error('No account available while processing positions')
+  }
   if (!Array.isArray(positionsImport) || positionsImport.length === 0) return
-  if (!store.activeAccount.positions) store.activeAccount.positions = []
-  if (!store.activeAccount.sells) store.activeAccount.sells = []
+  if (!account.positions) account.positions = []
+  if (!account.sells) account.sells = []
 
   const shortSells = (Array.isArray(sellsImport) ? sellsImport : [])
     .filter(sell => (sell.action || '').toString().toLowerCase().includes('short'))
@@ -730,10 +774,10 @@ function _processPositions(positionsImport, sellsImport = []) {
     }
     shortPosition.positionKey = `${store.getPositionKey(shortPosition, 'short')}_${sell.executionOrder}`
     store.ensurePositionMetaKey(shortPosition)
-    store.applyPositionMetaToPosition(store.activeAccount, shortPosition)
-    const exists = store.activeAccount.positions.some(p => p.positionKey === shortPosition.positionKey)
+    store.applyPositionMetaToPosition(account, shortPosition)
+    const exists = account.positions.some(p => p.positionKey === shortPosition.positionKey)
     if (!exists) {
-      store.activeAccount.positions.push(shortPosition)
+      account.positions.push(shortPosition)
     }
 
     const shortSellRecord = {
@@ -749,9 +793,9 @@ function _processPositions(positionsImport, sellsImport = []) {
       shortPositionKey: shortPosition.positionKey,
       allocated: []
     }
-    const sellExists = store.activeAccount.sells.some(s => s.positionKey === shortSellRecord.positionKey)
+    const sellExists = account.sells.some(s => s.positionKey === shortSellRecord.positionKey)
     if (!sellExists) {
-      store.activeAccount.sells.push(shortSellRecord)
+      account.sells.push(shortSellRecord)
     }
   })
 
@@ -769,7 +813,7 @@ function _processPositions(positionsImport, sellsImport = []) {
 
     const buyAmount = Math.abs(Number(data.amount || 0))
 
-    const openShortSells = store.activeAccount.sells
+    const openShortSells = account.sells
       .filter(sell =>
         (sell.action || '').includes('short') &&
         sell.symbol === data.symbol &&
@@ -799,7 +843,7 @@ function _processPositions(positionsImport, sellsImport = []) {
         sellWeek: shortSell.week
       })
 
-      const shortPosition = store.activeAccount.positions.find(p => p.positionKey === shortSell.shortPositionKey)
+      const shortPosition = account.positions.find(p => p.positionKey === shortSell.shortPositionKey)
       if (shortPosition) {
         shortPosition.soldShares = Number(shortPosition.soldShares || 0) + coverQty
         shortPosition.sellAmount = Number(shortPosition.sellAmount || 0) + coverCost
@@ -839,26 +883,30 @@ function _processPositions(positionsImport, sellsImport = []) {
     // Add the position to the account's positions array
     position.positionKey = `${store.getPositionKey(position, 'buy')}_${data.executionOrder}`
     store.ensurePositionMetaKey(position)
-    store.applyPositionMetaToPosition(store.activeAccount, position)
+    store.applyPositionMetaToPosition(account, position)
 
     // Check if this positionKey already exists
-    const exists = store.activeAccount.positions.some(p => p.positionKey === position.positionKey)
+    const exists = account.positions.some(p => p.positionKey === position.positionKey)
     if (exists) return
 
     // Add the position to the active account's positions
-    store.activeAccount.positions.push(position)
+    account.positions.push(position)
   })
 
   // After adding all positions, sort by assignedWeek
-  store.activeAccount.positions.sort((a, b) => a.assignedWeek - b.assignedWeek)
+  account.positions.sort((a, b) => a.assignedWeek - b.assignedWeek)
 
 }
 
 // Stub for processing sell data
 function _processSellData(sellsImport) {
+  const account = getWorkingAccount()
+  if (!account) {
+    throw new Error('No account available while processing sells')
+  }
   if (!Array.isArray(sellsImport) || sellsImport.length === 0) return
-  if (!store.activeAccount.sells) store.activeAccount.sells = []
-  if (!store.activeAccount.positions) store.activeAccount.positions = []
+  if (!account.sells) account.sells = []
+  if (!account.positions) account.positions = []
 
   // Step 1: Add new sells to the account's sells array
   sellsImport.forEach(data => {
@@ -876,18 +924,18 @@ function _processSellData(sellsImport) {
     }
     sell.positionKey = `${store.getPositionKey(sell, 'sell')}_${data.executionOrder}`
     // Check if this sell already exists
-    const exists = store.activeAccount.sells.some(s => s.positionKey === sell.positionKey)
+    const exists = account.sells.some(s => s.positionKey === sell.positionKey)
     if (exists) return
-    store.activeAccount.sells.push(sell)
+    account.sells.push(sell)
   })
 
   // Step 2: Allocate sells to open positions (FIFO)
-  store.activeAccount.sells.forEach(sell => {
+  account.sells.forEach(sell => {
     if (sell.allocated && sell.allocated.length > 0) return // Already allocated
     if ((sell.action || '').includes('short')) return // "sell short" opens a short; do not allocate as long-position close
     let sharesToAllocate = sell.shares
     // Find open positions for this symbol, FIFO order (by date, then by startWeek)
-    const openPositions = store.activeAccount.positions
+    const openPositions = account.positions
       .filter(pos =>
         pos.symbol === sell.symbol &&
         (pos.soldShares || 0) < pos.shares &&
@@ -930,7 +978,7 @@ function _processSellData(sellsImport) {
     // If not all shares could be allocated, create a new position for the remainder
     if (sharesToAllocate > 0) {
       const unallocatedSellAmount = Math.round((sell.amount * (sharesToAllocate / sell.shares)) * 1000) / 1000
-      const startDate = store.activeAccount.settings.startDate
+      const startDate = account.settings.startDate
       const newPosition = {
         startWeek: sell.week,
         date: startDate,
@@ -949,8 +997,8 @@ function _processSellData(sellsImport) {
       }
       newPosition.positionKey = store.getPositionKey(newPosition, 'buy')
       store.ensurePositionMetaKey(newPosition)
-      store.applyPositionMetaToPosition(store.activeAccount, newPosition)
-      store.activeAccount.positions.push(newPosition)
+      store.applyPositionMetaToPosition(account, newPosition)
+      account.positions.push(newPosition)
       sell.allocated.push({
         positionKey: newPosition.positionKey,
         shares: sharesToAllocate,
@@ -964,7 +1012,8 @@ function _processSellData(sellsImport) {
 
 // Function to recalculate week totals for actuals that need it
 function calculateWeeklyTotals() {
-  if (!store.activeAccount || !store.activeAccount.actuals) {
+  const account = getWorkingAccount()
+  if (!account || !account.actuals) {
     return { weeksProcessed: 0, weeksUpdated: 0 }
   }
 
@@ -972,7 +1021,7 @@ function calculateWeeklyTotals() {
   const brokerMap = store.getBrokerageMap()
 
   // Find weeks that need recalculation
-  const weeksToRecalculate = store.activeAccount.actuals
+  const weeksToRecalculate = account.actuals
     .filter(actual => (!actual.amount || actual.amount === 0) && actual.data.length > 0)
     .sort((a, b) => a.week - b.week)
 
@@ -1020,7 +1069,7 @@ function _calculateWeekTotal(weekData, brokerMap) {
 
 // Migration: Move notes from actuals to a separate notes array
 function migrateNotesToArray() {
-  const account = store.activeAccount
+  const account = getWorkingAccount()
   if (!account || !Array.isArray(account.actuals) || account.actuals.length === 0) return
   // Only run if the first actual has a 'notes' attribute
   if (!('notes' in account.actuals[0])) return
@@ -1057,6 +1106,22 @@ store.showImportTransactionsModal = show
           <button type="button" class="btn-close" @click="close"></button>
         </div>
         <div class="modal-body">
+          <div class="mb-3">
+            <label for="importTargetAccount" class="form-label">Import target account</label>
+            <select
+              id="importTargetAccount"
+              class="form-select"
+              v-model.number="selectedImportAccountId"
+            >
+              <option v-for="account in store.db.accounts" :key="account.id" :value="account.id">
+                {{ account.name }}
+              </option>
+            </select>
+            <div class="form-text">
+              Select which account this CSV import updates. This does not change the selected account used in projections/reports.
+            </div>
+          </div>
+
           <ul class="nav nav-tabs import-tabs" role="tablist">
             <li class="nav-item" role="presentation">
               <button
@@ -1230,7 +1295,7 @@ store.showImportTransactionsModal = show
             type="button" 
             class="btn btn-primary"
             @click="processTransactionImport" 
-            :disabled="!transactionCsvFile || isProcessingTransactions"
+            :disabled="!transactionCsvFile || isProcessingTransactions || !selectedImportAccountId"
           >
             Import Transactions
           </button>
@@ -1239,7 +1304,7 @@ store.showImportTransactionsModal = show
             type="button" 
             class="btn btn-primary"
             @click="processPositionsImport" 
-            :disabled="!positionsCsvFile || isProcessingPositions"
+            :disabled="!positionsCsvFile || isProcessingPositions || !selectedImportAccountId"
           >
             Import Current Positions
           </button>

@@ -14,19 +14,14 @@ const isFixedTopRoute = computed(() =>
 )
 const isOnSummarizer = computed(() => route.path === '/summarizer')
 
-// Add computed property for current page name
-const currentPageName = computed(() => {
-  switch(route.path) {
-    case '/': return 'Projections';
-    case '/reporting': return 'Reports';
-    case '/summarizer': return 'Weekly Performance';
-    case '/data-manager': return 'Data Manager';
-    default: return 'Select Page';
-  }
-})
-
 // Reference to collapse element
 const navbarCollapse = ref(null)
+const selectedAccountId = computed({
+  get: () => Number(store.selectedAccountId),
+  set: (value) => {
+    store.setSelectedAccount(Number(value))
+  }
+})
 
 // Function to close mobile menu
 const closeMenu = () => {
@@ -50,15 +45,53 @@ onMounted(() => {
     store.loadData()
   }
 })
+
+const openEditSelectedAccount = () => {
+  if (!store.activeAccount || !store.openEditAccountModal) return
+  store.openEditAccountModal(store.activeAccount)
+  closeMenu()
+}
+
+const openAddAccount = () => {
+  if (!store.openEditAccountModal) return
+  store.openEditAccountModal()
+  closeMenu()
+}
 </script>
 
 <template>
   <nav id="appNav" class="navbar navbar-expand-lg navbar-dark bg-primary mb-3"
        :class="{ 'fixed-top': isFixedTopRoute }">
     <div class="container-fluid">
-      <a href="#" class="navbar-brand" @click.prevent="store.showManageAccountModal" data-bs-toggle="tooltip" data-bs-title="Operation More Bacon">
-        O.M.B. &nbsp;|&nbsp; <span class="small">{{ store.activeAccount.name }}</span>
-      </a>
+      <div class="navbar-brand d-flex align-items-center gap-2 mb-0" data-bs-toggle="tooltip" data-bs-title="Operation More Bacon">
+        <span>O.M.B.</span>
+        <span class="opacity-75">|</span>
+        <select
+          class="form-select form-select-sm account-select"
+          v-model.number="selectedAccountId"
+          aria-label="Select account"
+        >
+          <option v-for="account in store.db.accounts" :key="account.id" :value="account.id">
+            {{ account.name }}
+          </option>
+        </select>
+        <button
+          class="btn btn-link btn-sm text-white p-0 account-edit-btn"
+          type="button"
+          title="Edit selected account"
+          @click="openEditSelectedAccount"
+        >
+          <i class="bi bi-pencil-square"></i>
+        </button>
+        <button
+          class="btn btn-link btn-sm text-white p-0 account-edit-btn"
+          type="button"
+          title="Add account"
+          @click="openAddAccount"
+        >
+          <i class="bi bi-plus-circle"></i>
+        </button>
+      </div>
       <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarContent"
         aria-controls="navbarContent" aria-expanded="false" aria-label="Toggle navigation">
         <span class="navbar-toggler-icon"></span>
@@ -66,36 +99,19 @@ onMounted(() => {
       
       <div class="collapse navbar-collapse justify-content-end" id="navbarContent" ref="navbarCollapse">
         <ul class="navbar-nav align-items-center">
-          <!-- Add the Import CSV button -->
           <li class="nav-item">
-            <a href="#" class="nav-link" @click.prevent="store.showImportTransactionsModal(); closeMenu()">
-              <i class="bi bi-file-earmark-arrow-up"></i> Import CSV
-            </a>
+            <router-link to="/" class="nav-link" :class="{ 'active': route.path === '/' }">Projections</router-link>
           </li>
-
           <li class="nav-item">
-            <a href="#" class="nav-link" @click.prevent="store.showManageAccountModal(); closeMenu()">
-              Manage / Switch Accounts
-            </a>
+            <router-link to="/reporting" class="nav-link" :class="{ 'active': route.path === '/reporting' }">Reports</router-link>
           </li>
           
-          <!-- Dynamic page selector dropdown -->
           <li class="nav-item dropdown">
             <a class="nav-link dropdown-toggle" href="#" id="pageSelector" role="button" data-bs-toggle="dropdown"
               aria-expanded="false">
-              {{ currentPageName }}
+              Utilities
             </a>
             <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="pageSelector">
-              <li>
-                <router-link to="/" class="dropdown-item" :class="{ 'active': route.path === '/' }">
-                  Projections
-                </router-link>
-              </li>
-              <li>
-                <router-link to="/reporting" class="dropdown-item" :class="{ 'active': route.path === '/reporting' }">
-                  Reports
-                </router-link>
-              </li>
               <li>
                 <router-link to="/summarizer" class="dropdown-item" :class="{ 'active': route.path === '/summarizer' }">
                   Weekly Performance
@@ -105,6 +121,11 @@ onMounted(() => {
                 <router-link to="/data-manager" class="dropdown-item" :class="{ 'active': route.path === '/data-manager' }">
                   Data Manager
                 </router-link>
+              </li>
+              <li>
+                <a href="#" class="dropdown-item" @click.prevent="store.showImportTransactionsModal(); closeMenu()">
+                  <i class="bi bi-file-earmark-arrow-up"></i> Import CSV
+                </a>
               </li>
             </ul>
           </li>
@@ -147,5 +168,19 @@ onMounted(() => {
 .dropdown-item.active {
   background-color: var(--bs-primary);
   color: white;
+}
+
+.account-select {
+  width: 220px;
+}
+
+.account-edit-btn {
+  line-height: 1;
+}
+
+@media (max-width: 767.98px) {
+  .account-select {
+    width: 160px;
+  }
 }
 </style>

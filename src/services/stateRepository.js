@@ -200,13 +200,15 @@ function normalizeEnvelope(envelope) {
   const updatedAt = envelope.meta?.updatedAt || new Date().toISOString()
   const updatedByDevice = envelope.meta?.updatedByDevice || resolveDeviceId()
   const lastSyncedRevision = envelope.meta?.lastSyncedRevision ?? null
+  const lastDriveSyncAt = envelope.meta?.lastDriveSyncAt || null
 
   return {
     meta: {
       revision: Number.isFinite(revision) && revision > 0 ? revision : 1,
       updatedAt,
       updatedByDevice,
-      lastSyncedRevision
+      lastSyncedRevision,
+      lastDriveSyncAt
     },
     data: safeData
   }
@@ -223,7 +225,8 @@ function createEnvelopeFromData(data, previousMeta = null) {
       revision,
       updatedAt: now,
       updatedByDevice: previousMeta?.updatedByDevice || resolveDeviceId(),
-      lastSyncedRevision: previousMeta?.lastSyncedRevision ?? null
+      lastSyncedRevision: previousMeta?.lastSyncedRevision ?? null,
+      lastDriveSyncAt: previousMeta?.lastDriveSyncAt || null
     },
     data: safeData
   }
@@ -720,12 +723,17 @@ export async function saveAppState(data, previousMeta = null) {
       .then(async () => {
         if (!queuedEnvelope) return
         const driveRepository = new DriveStateRepository()
+        const syncAt = new Date().toISOString()
+        queuedEnvelope.meta.lastSyncedRevision = queuedEnvelope?.meta?.revision ?? null
+        queuedEnvelope.meta.lastDriveSyncAt = syncAt
         emitSyncCenterEvent('drive-mirror-start', {
           revision: queuedEnvelope?.meta?.revision ?? null
         })
         await driveRepository.save(queuedEnvelope, { strictRemote: true })
+        await localRepository.save(queuedEnvelope)
         emitSyncCenterEvent('drive-mirror-complete', {
-          revision: queuedEnvelope?.meta?.revision ?? null
+          revision: queuedEnvelope?.meta?.revision ?? null,
+          syncedAt: syncAt
         })
       })
       .catch(error => {

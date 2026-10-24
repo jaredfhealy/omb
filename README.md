@@ -112,7 +112,7 @@ When connected, each local save is mirrored to Drive. Drive writes snapshot the 
 
 To import existing data from prior backups:
 
-1. Open the app and go to **Manage / Switch Accounts**
+1. Open the app and select the target account from the account dropdown in the navbar
 2. Click **Restore**
 3. Select your full backup JSON
 4. Confirm restore and verify tabs/charts

@@ -66,6 +66,8 @@ const driveSyncResultClass = computed(() => {
   if (result === 'in-progress') return 'text-primary'
   return 'text-muted'
 })
+const persistedLastDriveSyncAt = computed(() => store.persistenceMeta?.lastDriveSyncAt || null)
+const persistedLastSyncedRevision = computed(() => store.persistenceMeta?.lastSyncedRevision ?? null)
 const driveFilesColumns = [
   {
     key: 'name',
@@ -304,10 +306,34 @@ function createLocalEnvelopeForSync() {
       revision: 1,
       updatedAt: new Date().toISOString(),
       updatedByDevice: 'local-device',
-      lastSyncedRevision: null
+      lastSyncedRevision: null,
+      lastDriveSyncAt: null
     },
     data: cloneForEditor(store.db)
   }
+}
+
+function applyDriveSyncMeta(meta, fallbackAt = null) {
+  const safeMeta = meta && typeof meta === 'object' ? meta : {}
+  const syncedAt = safeMeta.lastDriveSyncAt || fallbackAt || null
+
+  store.persistenceMeta = {
+    ...(store.persistenceMeta || {}),
+    ...safeMeta,
+    lastDriveSyncAt: syncedAt
+  }
+
+  store.syncCenter.driveLastSuccessAt = syncedAt
+}
+
+function stampEnvelopeSyncMeta(envelope, syncedAt = new Date().toISOString()) {
+  if (!envelope || typeof envelope !== 'object') return syncedAt
+  if (!envelope.meta || typeof envelope.meta !== 'object') {
+    envelope.meta = {}
+  }
+  envelope.meta.lastSyncedRevision = Number(envelope?.meta?.revision || 0) || null
+  envelope.meta.lastDriveSyncAt = syncedAt
+  return syncedAt
 }
 
 async function applyRemoteEnvelope(remoteEnvelope) {
@@ -455,7 +481,9 @@ async function connectDrive() {
     const remoteEnvelope = await repository.findDriveEnvelope()
 
     if (!remoteEnvelope) {
-      await repository.save(localEnvelope)
+      const syncAt = stampEnvelopeSyncMeta(localEnvelope)
+      const savedEnvelope = await repository.save(localEnvelope)
+      applyDriveSyncMeta(savedEnvelope?.meta || localEnvelope.meta, syncAt)
       setDriveStatus('Google Drive connected and initialized with this device data. Reloading the page…', 'success')
       window.setTimeout(() => {
         window.location.reload()
@@ -464,6 +492,13 @@ async function connectDrive() {
     }
 
     if (!envelopeDiffers(localEnvelope, remoteEnvelope)) {
+      if (!remoteEnvelope?.meta?.lastDriveSyncAt || !remoteEnvelope?.meta?.lastSyncedRevision) {
+        const syncAt = stampEnvelopeSyncMeta(remoteEnvelope)
+        const savedEnvelope = await repository.save(remoteEnvelope)
+        applyDriveSyncMeta(savedEnvelope?.meta || remoteEnvelope.meta, syncAt)
+      } else {
+      applyDriveSyncMeta(remoteEnvelope?.meta, remoteEnvelope?.meta?.lastDriveSyncAt || remoteEnvelope?.meta?.updatedAt || null)
+      }
       setDriveStatus('Google Drive connected. Local and Drive data are already in sync. Reloading the page…', 'success')
       window.setTimeout(() => {
         window.location.reload()
@@ -473,7 +508,9 @@ async function connectDrive() {
 
     const useLocalAsSource = await confirmDriveInitialSourceSelection()
     if (useLocalAsSource) {
-      await repository.save(localEnvelope)
+      const syncAt = stampEnvelopeSyncMeta(localEnvelope)
+      const savedEnvelope = await repository.save(localEnvelope)
+      applyDriveSyncMeta(savedEnvelope?.meta || localEnvelope.meta, syncAt)
       setDriveStatus('Google Drive connected. This device data is now the synced source. Reloading the page…', 'success')
       window.setTimeout(() => {
         window.location.reload()
@@ -768,9 +805,40 @@ async function disconnectDrive() {
     const approved = await confirmDriveDisconnect()
     if (!approved) return
 
+    const deletedFileCount = await runDriveOperationWithRetry(async (repository) => {
+      if (!driveConnected.value) {
+        await repository.connect()
+      }
+      const [mainFiles, backupFiles] = await Promise.all([
+        repository.listFiles(),
+        repository.listBackupFiles()
+      ])
+      const filesToDelete = [...(mainFiles || []), ...(backupFiles || [])]
+      for (const file of filesToDelete) {
+        await repository.deleteFile(file.id)
+      }
+      return filesToDelete.length
+    })
+
     const repository = new DriveStateRepository()
     await repository.disconnect()
-    setDriveStatus('Google Drive disconnected. Reloading the page…', 'warning')
+
+    store.persistenceMeta = {
+      ...(store.persistenceMeta || {}),
+      lastSyncedRevision: null,
+      lastDriveSyncAt: null
+    }
+    store.syncCenter.driveLastSuccessAt = null
+    store.syncCenter.driveLastAttemptAt = null
+    store.syncCenter.driveLastResult = 'idle'
+    store.syncCenter.driveLastError = ''
+    await store.saveChanges()
+
+    driveFiles.value = []
+    const deletedText = deletedFileCount > 0
+      ? ` Deleted ${deletedFileCount} Drive file${deletedFileCount === 1 ? '' : 's'}.`
+      : ''
+    setDriveStatus(`Google Drive disconnected.${deletedText} Reloading the page…`, 'warning')
     window.setTimeout(() => {
       window.location.reload()
     }, 300)
@@ -799,6 +867,15 @@ async function syncDriveNow() {
     const action = determineSyncAction(localEnvelope, remoteEnvelope)
 
     if (action === 'noop') {
+      if (remoteEnvelope && (!remoteEnvelope?.meta?.lastDriveSyncAt || !remoteEnvelope?.meta?.lastSyncedRevision)) {
+        const syncAt = stampEnvelopeSyncMeta(remoteEnvelope)
+        const savedEnvelope = await runDriveOperationWithRetry(async (repository) => {
+          return await repository.save(remoteEnvelope)
+        })
+        applyDriveSyncMeta(savedEnvelope?.meta || remoteEnvelope.meta, syncAt)
+      } else {
+        applyDriveSyncMeta(remoteEnvelope?.meta, remoteEnvelope?.meta?.lastDriveSyncAt || remoteEnvelope?.meta?.updatedAt || null)
+      }
       setDriveStatus('Drive sync complete. Local and Drive are already in sync.', 'info')
       markDriveSyncResult('noop', 'no changes')
       await listDriveFiles({ silent: true })
@@ -806,9 +883,11 @@ async function syncDriveNow() {
     }
 
     if (action === 'push') {
-      await runDriveOperationWithRetry(async (repository) => {
+      const syncAt = stampEnvelopeSyncMeta(localEnvelope)
+      const savedEnvelope = await runDriveOperationWithRetry(async (repository) => {
         return await repository.save(localEnvelope)
       })
+      applyDriveSyncMeta(savedEnvelope?.meta || localEnvelope.meta, syncAt)
       setDriveStatus('Drive sync complete. Pushed local changes to Drive.', 'success')
       markDriveSyncResult('success', 'pushed local to Drive')
       await listDriveFiles({ silent: true })
@@ -825,9 +904,11 @@ async function syncDriveNow() {
 
     const conflictResolution = await resolveDriveSyncConflict(localEnvelope, remoteEnvelope)
     if (conflictResolution === 'local') {
-      await runDriveOperationWithRetry(async (repository) => {
+      const syncAt = stampEnvelopeSyncMeta(localEnvelope)
+      const savedEnvelope = await runDriveOperationWithRetry(async (repository) => {
         return await repository.save(localEnvelope)
       })
+      applyDriveSyncMeta(savedEnvelope?.meta || localEnvelope.meta, syncAt)
       setDriveStatus('Drive sync conflict resolved. Local data was pushed to Drive.', 'warning')
       markDriveSyncResult('conflict-resolved', 'conflict resolved with local source')
       await listDriveFiles({ silent: true })
@@ -878,15 +959,30 @@ async function confirmImportOverwrite() {
 }
 
 async function confirmDriveDisconnect() {
-  const message = 'Disconnect Google Drive on this browser? Local IndexedDB data remains unchanged.'
+  const message = 'Disconnecting will delete all appDataFolder files for this app in Google Drive and clear the browser connection token.\n\nLocal application data remains safe from this action.'
 
   if (store.confirm) {
     return await new Promise(resolve => {
-      store.confirm(message, () => resolve(true), () => resolve(false))
+      store.confirm(
+        message,
+        () => resolve(true),
+        () => resolve(false),
+        {
+          confirmText: 'DELETE',
+          cancelText: 'Cancel',
+          confirmButtonClass: 'btn-danger',
+          cancelButtonClass: 'btn-success',
+          requiredInputText: 'DELETE DRIVE',
+          requiredInputLabel: 'Type DELETE DRIVE to confirm',
+          requiredInputPlaceholder: 'DELETE DRIVE'
+        }
+      )
     })
   }
 
-  return window.confirm(message)
+  if (!window.confirm(message)) return false
+  const typed = window.prompt('Type DELETE DRIVE to confirm this action.')
+  return typed === 'DELETE DRIVE'
 }
 
 function applyNormalizedPayload(normalizedPayload) {
@@ -943,7 +1039,8 @@ async function importJsonFile(event) {
           revision: 1,
           updatedAt: new Date().toISOString(),
           updatedByDevice: 'local-device',
-          lastSyncedRevision: null
+          lastSyncedRevision: null,
+          lastDriveSyncAt: null
         },
         data: envelopeData
       }))
@@ -954,7 +1051,8 @@ async function importJsonFile(event) {
           revision: 1,
           updatedAt: new Date().toISOString(),
           updatedByDevice: 'local-device',
-          lastSyncedRevision: null
+          lastSyncedRevision: null,
+          lastDriveSyncAt: null
         },
         data: normalized
       }))
@@ -1062,7 +1160,7 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="btn-group" role="group" aria-label="Download actions">
-            <button class="btn btn-outline-primary" title="Download the current saved local data envelope (meta + data)" @click="downloadLocalCopy">Download Local Copy</button>
+            <button class="btn btn-outline-primary" title="Download the current saved local data envelope (meta + data)" @click="downloadLocalCopy">Download Backup</button>
           </div>
 
           <div v-if="hasUnsavedChanges" class="btn-group" role="group" aria-label="Editor changes actions">
@@ -1123,9 +1221,8 @@ onBeforeUnmount(() => {
               <strong>Last sync result:</strong>
               <span class="ms-1" :class="driveSyncResultClass">{{ driveSyncResultLabel }}</span>
             </div>
-            <div><strong>Last action:</strong> {{ driveSyncStatus.lastAction || 'none' }}</div>
-            <div><strong>Last attempt:</strong> {{ formatLocalTimestamp(driveSyncStatus.lastAttemptAt) }}</div>
-            <div><strong>Last completed:</strong> {{ formatLocalTimestamp(driveSyncStatus.lastCompletedAt) }}</div>
+            <div><strong>Last Drive sync:</strong> {{ formatLocalTimestamp(persistedLastDriveSyncAt) }}</div>
+            <div><strong>Last synced revision:</strong> {{ persistedLastSyncedRevision ?? 'n/a' }}</div>
             <div v-if="driveSyncStatus.lastError" class="text-danger">
               <strong>Last error:</strong> {{ driveSyncStatus.lastError }}
             </div>

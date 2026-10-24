@@ -20,23 +20,6 @@ const editAccount = (account) => {
   store.openEditAccountModal(account)
 }
 
-const deleteAccount = (account) => {
-  if (store.confirm) {
-    close()
-    store.confirm(
-      `Are you sure you want to delete ${account.name}?`,
-      async () => {
-        store.db.accounts = store.db.accounts.filter(a => a.id !== account.id)
-        if (store.selectedAccountId === account.id) {
-          store.setSelectedAccount(store.db.accounts[0]?.id, { recalculate: false })
-        }
-        await store.saveChangesAndRecalculate()
-        show()
-      }
-    )
-  }
-}
-
 const addNewAccount = () => {
   close()
   store.openEditAccountModal()
@@ -90,9 +73,6 @@ store.showManageAccountModal = () => show()
                 <td>
                   <button class="btn btn-sm btn-link" @click="editAccount(account)">
                     <i class="bi bi-pencil-square"></i>
-                  </button>
-                  <button class="btn btn-sm btn-link text-danger" @click="deleteAccount(account)">
-                    <i class="bi bi-trash"></i>
                   </button>
                 </td>
               </tr>

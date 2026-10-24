@@ -192,10 +192,16 @@ export const useAppStore = defineStore('app', {
         }
 
         if (type === 'drive-mirror-complete') {
+          const syncedAt = detail.syncedAt || at
           this.syncCenter.driveLastAttemptAt = at
-          this.syncCenter.driveLastSuccessAt = at
+          this.syncCenter.driveLastSuccessAt = syncedAt
           this.syncCenter.driveLastResult = 'success'
           this.syncCenter.driveLastError = ''
+          if (!this.persistenceMeta || typeof this.persistenceMeta !== 'object') {
+            this.persistenceMeta = {}
+          }
+          this.persistenceMeta.lastDriveSyncAt = syncedAt
+          this.persistenceMeta.lastSyncedRevision = detail.revision ?? this.persistenceMeta.lastSyncedRevision ?? null
           return
         }
 
@@ -252,6 +258,7 @@ export const useAppStore = defineStore('app', {
         this.syncCenter.driveConnected = isDriveConnected()
         const { data, meta, source } = await loadAppState()
         this.persistenceMeta = meta
+        this.syncCenter.driveLastSuccessAt = meta?.lastDriveSyncAt || null
 
         if (data && Array.isArray(data.accounts)) {
           const migrated = ensureAccountCollections(data)
@@ -652,6 +659,13 @@ export const useAppStore = defineStore('app', {
       if (!this.activeAccount || !Array.isArray(this.activeAccount.positions)) return
       this.activeAccount.positions.forEach(position => {
         this.applyPositionMetaToPosition(this.activeAccount, position)
+      })
+    },
+
+    applyPositionMetadataForAccount(account) {
+      if (!account || !Array.isArray(account.positions)) return
+      account.positions.forEach(position => {
+        this.applyPositionMetaToPosition(account, position)
       })
     },
 

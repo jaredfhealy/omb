@@ -22,9 +22,9 @@ const isFixedNavRoute = computed(() =>
 )
 
 // Set up the confirm method
-store.confirm = (message, callback, cancelCallback) => {
+store.confirm = (message, callback, cancelCallback, options = {}) => {
   if (confirmModal.value) {
-    confirmModal.value.show(message, callback, cancelCallback);
+    confirmModal.value.show(message, callback, cancelCallback, options)
   } else {
     console.error('ConfirmModal ref is not available');
   }

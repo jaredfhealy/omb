@@ -21,6 +21,7 @@ const statusClass = computed(() => {
   if (result === 'syncing') return 'text-primary'
   if (result === 'success') return 'text-success'
   if (result === 'failed') return 'text-danger'
+  if (store.syncCenter.driveConnected) return 'text-success'
   return 'text-muted'
 })
 
@@ -76,8 +77,8 @@ async function openDataManagerSync() {
         :class="{
           'bg-danger': store.syncCenterNeedsAttention,
           'bg-primary': store.syncCenter.driveLastResult === 'syncing',
-          'bg-success': store.syncCenter.driveLastResult === 'success',
-          'bg-secondary': !store.syncCenterNeedsAttention && store.syncCenter.driveLastResult !== 'success' && store.syncCenter.driveLastResult !== 'syncing'
+          'bg-success': store.syncCenter.driveLastResult === 'success' || (store.syncCenter.driveConnected && store.syncCenter.driveLastResult !== 'syncing' && !store.syncCenterNeedsAttention),
+          'bg-secondary': !store.syncCenterNeedsAttention && !store.syncCenter.driveConnected && store.syncCenter.driveLastResult !== 'success' && store.syncCenter.driveLastResult !== 'syncing'
         }"
       ></span>
     </button>
@@ -91,39 +92,45 @@ async function openDataManagerSync() {
       role="dialog"
       aria-modal="true"
     >
-      <div class="offcanvas-header py-2">
+      <div class="offcanvas-header py-2 sync-center-header">
         <h5 id="syncCenterTitle" class="offcanvas-title fs-6">Data Status</h5>
         <button type="button" class="btn-close text-reset" aria-label="Close" @click="store.toggleSyncCenter()"></button>
       </div>
-      <div class="offcanvas-body pt-0 pb-2 small">
-        <div><strong>Storage:</strong> {{ storageModeLabel }}</div>
-        <div><strong>Revision:</strong> {{ revision }}</div>
-        <div><strong>Last saved:</strong> {{ lastSavedAt }}</div>
-        <hr class="my-2" />
-        <div><strong>Drive:</strong> {{ store.syncCenter.driveConnected ? 'Connected' : 'Not connected' }}</div>
-        <div><strong>Status:</strong> <span :class="statusClass">{{ statusLabel }}</span></div>
-        <div><strong>Last Drive sync:</strong> {{ formatLocalTimestamp(store.syncCenter.driveLastSuccessAt) }}</div>
-        <div v-if="store.syncCenter.driveLastError" class="text-danger mt-1">
-          <strong>Error:</strong> {{ store.syncCenter.driveLastError }}
+      <div class="offcanvas-body pt-2 pb-2 small">
+        <div class="sync-section">
+          <div><strong>Storage:</strong> {{ storageModeLabel }}</div>
+          <div><strong>Revision:</strong> {{ revision }}</div>
+          <div><strong>Last saved:</strong> {{ lastSavedAt }}</div>
         </div>
-        <div class="d-flex gap-2 mt-2">
-          <button
-            type="button"
-            class="btn btn-sm btn-outline-secondary"
-            :disabled="!store.syncCenter.driveConfigured || !store.syncCenter.driveConnected || syncing"
-            @click="runSyncNow"
-          >
-            {{ syncing ? 'Syncing…' : 'Sync now' }}
-          </button>
-          <button
-            v-if="!isDataManagerRoute"
-            type="button"
-            class="btn btn-sm btn-outline-primary"
-            @click="openDataManagerSync"
-          >
-            Open Data Manager
-          </button>
+
+        <div class="sync-section sync-section-drive">
+          <div><strong>Drive:</strong> {{ store.syncCenter.driveConnected ? 'Connected' : 'Not connected' }}</div>
+          <div><strong>Status:</strong> <span :class="statusClass">{{ statusLabel }}</span></div>
+          <div><strong>Last Drive sync:</strong> {{ formatLocalTimestamp(store.syncCenter.driveLastSuccessAt) }}</div>
+          <div v-if="store.syncCenter.driveLastError" class="text-danger mt-1">
+            <strong>Error:</strong> {{ store.syncCenter.driveLastError }}
+          </div>
+          <div class="sync-drive-actions">
+            <button
+              type="button"
+              class="btn btn-sm btn-outline-secondary"
+              :disabled="!store.syncCenter.driveConfigured || !store.syncCenter.driveConnected || syncing"
+              @click="runSyncNow"
+            >
+              {{ syncing ? 'Syncing…' : 'Sync now' }}
+            </button>
+          </div>
         </div>
+
+        <button
+          v-if="!isDataManagerRoute"
+          type="button"
+          class="btn btn-sm btn-outline-primary sync-data-manager-btn"
+          @click="openDataManagerSync"
+        >
+          <i class="bi bi-arrow-up-left me-1"></i>
+          Open Data Manager
+        </button>
       </div>
     </div>
     <div
@@ -163,7 +170,38 @@ async function openDataManagerSync() {
 }
 
 .sync-center-offcanvas {
-  width: min(340px, calc(100vw - 1.25rem));
+  --bs-offcanvas-width: min(490px, calc(100vw - 1.25rem));
+}
+
+.sync-center-header {
+  border-bottom: 1px solid var(--bs-border-color);
+}
+
+.sync-section {
+  border: 1px solid var(--bs-border-color);
+  border-radius: 0.35rem;
+  padding: 0.5rem 0.65rem;
+  margin-bottom: 0.5rem;
+  background-color: rgba(var(--bs-body-bg-rgb), 0.4);
+}
+
+.sync-section > div + div {
+  margin-top: 0.15rem;
+}
+
+.sync-data-manager-btn {
+  margin-top: 0.2rem;
+}
+
+.sync-drive-actions {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.65rem;
+}
+
+.sync-section-drive {
+  position: relative;
+  padding-right: 7.25rem;
 }
 
 .sync-dot {
@@ -171,6 +209,8 @@ async function openDataManagerSync() {
   height: 0.55rem;
   border-radius: 50%;
   display: inline-block;
+  position: relative;
+  top: -3px;
 }
 
 .btn-close-sm {
@@ -180,5 +220,21 @@ async function openDataManagerSync() {
 .sync-center-tab-text {
   text-align: center;
   letter-spacing: 0.01em;
+  position: relative;
+  top: -3px;
+}
+
+.sync-center-tab > i {
+  position: relative;
+  top: -3px;
+  transform: rotate(90deg);
+}
+
+.sync-center-tab.btn-outline-secondary:hover,
+.sync-center-tab.btn-outline-secondary:focus,
+.sync-center-tab.btn-outline-secondary:active {
+  background-color: #b3bac1 !important;
+  border-color: #b3bac1 !important;
+  color: #1f2937 !important;
 }
 </style>

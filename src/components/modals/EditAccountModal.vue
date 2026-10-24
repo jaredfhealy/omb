@@ -50,6 +50,35 @@ const close = () => {
   isVisible.value = false
 }
 
+const deleteAccount = async () => {
+  if (!isEdit.value) return
+  if (!store.confirm) return
+  if (store.db.accounts.length <= 1) {
+    alert('At least one account is required. Add another account before deleting this one.')
+    return
+  }
+
+  const accountName = account.name
+  close()
+  store.confirm(
+    `Delete account "${accountName}"? This cannot be undone.`,
+    async () => {
+      store.db.accounts = store.db.accounts.filter(a => Number(a.id) !== Number(account.id))
+      if (Number(store.selectedAccountId) === Number(account.id)) {
+        store.setSelectedAccount(store.db.accounts[0]?.id, { recalculate: false })
+      }
+      await store.saveChangesAndRecalculate()
+    },
+    null,
+    {
+      confirmText: 'Delete',
+      cancelText: 'Cancel',
+      confirmButtonClass: 'btn-danger confirm-delete-btn',
+      cancelButtonClass: 'btn-success'
+    }
+  )
+}
+
 const save = async () => {
   if (!account.name.trim()) {
     alert('Account name is required')
@@ -154,6 +183,13 @@ store.openEditAccountModal = (existingAccount = null) => show(existingAccount)
             </div>
             
             <div class="d-flex justify-content-end">
+              <button
+                v-if="isEdit"
+                type="button"
+                class="btn btn-outline-danger me-auto"
+                @click="deleteAccount">
+                <i class="bi bi-trash"></i> Delete Account
+              </button>
               <button type="button" class="btn btn-secondary me-2" @click="close">Cancel</button>
               <button type="submit" class="btn btn-primary">Save</button>
             </div>
