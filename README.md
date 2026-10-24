@@ -12,18 +12,21 @@ Canonical project specs and architectural decisions are stored in-repo:
 
 - Frontend: Vue 3 + Pinia + Vue Router + Bootstrap + Chart.js
 - Backend: Node + Express (`server/index.js`)
-- Persistence: SQLite (`server/db.js`)
-- State model: single JSON payload in `app_state` table (`id=1`)
-- Network bind: `0.0.0.0` (LAN/Tailscale friendly)
+- Primary persistence: IndexedDB (browser local-first envelope)
+- State model: single JSON payload (`data`) plus local sync metadata (`meta.revision`, `meta.updatedAt`, `meta.updatedByDevice`, `meta.lastSyncedRevision`)
+- Network bind: `0.0.0.0` for local browser access on the machine/network
 
-Database file path: `server/data/app.db` (gitignored)
+### Persistence model
 
-## API
+- Always local-first: IndexedDB is the primary runtime persistence layer.
+- If Google Drive is connected in this browser, saves are mirrored to Drive with backup snapshots.
 
-- `GET /api/state` → returns `{ state, updatedAt }`
-- `PUT /api/state` → saves full state object payload
-- `GET /api/backup/export` → returns current full state payload
-- `POST /api/backup/import` → imports full state payload
+Environment flags:
+
+- `VITE_GOOGLE_CLIENT_ID=...` (Google OAuth client ID for Drive sync)
+- `VITE_GOOGLE_DRIVE_APPDATA_FILENAME=omb-data-envelope.json` (optional custom appDataFolder file name)
+- `VITE_GOOGLE_DRIVE_SCOPE=https://www.googleapis.com/auth/drive.appdata`
+- `VITE_GOOGLE_REDIRECT_URI=https://your-domain.example/...` (optional explicit redirect URI for OAuth)
 
 ## Development
 
@@ -39,11 +42,7 @@ Run frontend + backend together:
 npm run dev
 ```
 
-Run frontend + backend for Tailscale/mobile testing (binds Vite to `0.0.0.0:5174`):
-
-```bash
-npm run dev:tailscale
-```
+This runs the app on `http://localhost:5173` by default.
 
 Run backend only:
 
@@ -57,26 +56,57 @@ Build production assets:
 npm run build
 ```
 
-## Tailscale access (no port in URL)
+## GitHub Pages (project site mode)
 
-The frontend now uses relative `/api` calls by default, and Vite proxies `/api` to backend `:3001` in dev.
+This repo includes a GitHub Actions workflow at [.github/workflows/deploy-pages.yml](./.github/workflows/deploy-pages.yml) that deploys to GitHub Pages as a project site.
 
-If your machine is `gaminglaptop1.tail511f93.ts.net`, you can expose the app on the tailnet URL without port using Tailscale Serve:
+- Expected URL: `https://jaredfhealy.github.io/omb/`
+- Workflow sets `VITE_PUBLIC_BASE_PATH=/omb/` during build.
+- Vue Router uses `import.meta.env.BASE_URL` so route resolution works under the project path.
+
+To enable:
+
+1. Push to `main` (or run the workflow manually from Actions).
+2. In GitHub repository settings, ensure **Pages** is configured to use **GitHub Actions**.
+3. (Optional) To enable Drive sync in production, add these **Actions Variables** in repository or `github-pages` environment settings:
+   - `VITE_GOOGLE_CLIENT_ID`
+   - `VITE_GOOGLE_DRIVE_APPDATA_FILENAME`
+   - `VITE_GOOGLE_DRIVE_BACKUP_PREFIX`
+   - `VITE_GOOGLE_DRIVE_BACKUP_RETENTION`
+   - `VITE_GOOGLE_DRIVE_SCOPE`
+   - `VITE_GOOGLE_REDIRECT_URI`
+4. After first successful deploy, open the `github-pages` environment URL from the workflow summary.
+
+## Local development and production hosting
+
+The app is designed to run in two browser environments:
+
+- Local development: `http://localhost:5173`
+- Production: `https://jaredfhealy.github.io/omb/`
+
+## Google Drive sync
+
+Drive sync is optional and user-initiated (Connect Drive in Data Manager). Core app persistence remains local-first.
+
+To enable Drive sync in a browser build:
+
+1. Create a Google Cloud OAuth client for a web app.
+2. Add the app domain to the authorized JavaScript origins.
+3. Add the redirect URI used by the app (if needed).
+4. Set these environment variables before running the frontend build:
 
 ```bash
-tailscale serve --bg --https=443 / http://127.0.0.1:5174
+VITE_GOOGLE_CLIENT_ID=your-google-client-id
+VITE_GOOGLE_DRIVE_APPDATA_FILENAME=omb-data-envelope.json
+VITE_GOOGLE_DRIVE_BACKUP_PREFIX=omb-backup-
+VITE_GOOGLE_DRIVE_BACKUP_RETENTION=20
+VITE_GOOGLE_DRIVE_SCOPE=https://www.googleapis.com/auth/drive.appdata
 ```
 
-Then open:
-
-`https://gaminglaptop1.tail511f93.ts.net`
-
-To inspect/clear serve config:
-
-```bash
-tailscale serve status
-tailscale serve reset
-```
+If `VITE_GOOGLE_CLIENT_ID` is not set, Drive sync remains unavailable and the app stays local-only.
+For GitHub Pages, these values must be present in GitHub Actions Variables because `.env.local` is not used by the deployment runner.
+Drive OAuth is user-initiated from the UI and is not triggered automatically during app bootstrap.
+When connected, each local save is mirrored to Drive. Drive writes snapshot the previous main data envelope into timestamped backup files in `appDataFolder` and prune old backups based on retention.
 
 ## Data migration workflow
 

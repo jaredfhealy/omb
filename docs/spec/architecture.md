@@ -1,30 +1,28 @@
 # Architecture
 
-Last verified: 2026-10-14
+Last verified: 2026-10-21
 
 ## Runtime topology
 
 - Frontend: Vue 3 + Pinia + Vue Router + Bootstrap + Chart.js
 - Backend: Node.js + Express (`server/index.js`)
-- Persistence: SQLite via `better-sqlite3` (`server/db.js`)
+- Primary persistence: IndexedDB (browser-local envelope store)
 
 ## Deployment model
 
 - Local-only application (no cloud dependency for runtime persistence).
 - API bind address: `0.0.0.0` for LAN/Tailscale access.
-- Persistence file: `server/data/app.db` (gitignored).
 
 ## State persistence strategy
 
-- Single JSON payload persisted in SQLite `app_state` table (`id=1`).
-- Client loads and saves full payload through local API.
-
-## API surface
-
-- `GET /api/state` → returns `{ state, updatedAt }`
-- `PUT /api/state` → saves full state payload
-- `GET /api/backup/export` → returns full current payload
-- `POST /api/backup/import` → imports full payload
+- Primary runtime load/save uses IndexedDB envelope storage in the browser.
+- Envelope stores:
+  - `meta.revision`
+  - `meta.updatedAt`
+  - `meta.updatedByDevice`
+  - `meta.lastSyncedRevision`
+  - `data` (application payload shape)
+- If Google Drive is connected, local saves are mirrored to Drive asynchronously with backup snapshots.
 
 ## Cross-cutting constraints
 

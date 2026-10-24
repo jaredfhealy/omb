@@ -38,7 +38,7 @@ function migrateProfitAllocation() {
     }
   })
   if (migrated) {
-    store.saveBacon()
+    void store.saveChangesAndRecalculate()
   }
 }
 
@@ -393,7 +393,7 @@ watch(
 
 // --- Merge Action ---
 // When merge is triggered, assigns a mergeGroup id to selected positions
-const mergePositions = () => {
+const mergePositions = async () => {
   // Get the selected positions (by positionKey)
   const selected = store.activeAccount.positions.filter(p => selectedPositionKeys.value.includes(p.positionKey))
   if (selected.length < 2) return
@@ -416,7 +416,7 @@ const mergePositions = () => {
       }
     })
   }
-  store.saveBacon()
+  await store.saveChangesAndRecalculate()
   clearSelection()
 }
 
@@ -442,13 +442,13 @@ const removePosition = (index) => {
   if (!item || !item.manual) return
   confirmModalRef.value.show(
     `Are you sure you want to remove manual position for ${item.symbol}?`,
-    () => {
+    async () => {
       // Find the actual index in the positions array
       const actualIndex = store.activeAccount.positions.findIndex(p => p === item)
       if (actualIndex !== -1) {
         store.removePositionMeta(item)
         store.activeAccount.positions.splice(actualIndex, 1)
-        store.saveBacon()
+        await store.saveChangesAndRecalculate()
       }
     }
   )
@@ -602,7 +602,7 @@ function openMergedGroupEditModal(mergedItem) {
 }
 
 // Save handler for merged group modal
-function saveMergedGroupEdit() {
+async function saveMergedGroupEdit() {
   const groupId = mergedGroupEdit.value.group
   const startWeek = mergedGroupEdit.value.startWeek
   const currentPrice = mergedGroupEdit.value.currentPrice
@@ -614,12 +614,12 @@ function saveMergedGroupEdit() {
       pos.currentPrice = currentPrice
     }
   })
-  store.saveBacon()
+  await store.saveChangesAndRecalculate()
   mergedGroupEdit.value.visible = false
 }
 
 // Remove a position from a merge group
-function removeFromMergeGroup(groupId, positionKey) {
+async function removeFromMergeGroup(groupId, positionKey) {
   // Otherwise, just remove from the selected position
   const pos = store.activeAccount.positions.find(p => p.positionKey === positionKey)
   if (pos && pos.mergeGroup === groupId) {
@@ -630,11 +630,8 @@ function removeFromMergeGroup(groupId, positionKey) {
   if (groupPositions.length === 1) {
     // Remove mergeGroup from all positions in the group
     groupPositions.forEach(p => { delete p.mergeGroup })
-    store.saveBacon()
   }
-  else {
-    store.saveBacon()
-  }
+  await store.saveChangesAndRecalculate()
 }
 </script>
 

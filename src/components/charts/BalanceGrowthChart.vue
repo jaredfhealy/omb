@@ -309,8 +309,7 @@ const chartRef = ref(null)
 defineExpose({ resetZoom })
 
 const switchAccount = async (accountId) => {
-  store.db.selectedAccountId = Number(accountId) // Ensure it's a number
-  store.calculateProjections()
+  store.setSelectedAccount(Number(accountId))
 }
 </script>
 

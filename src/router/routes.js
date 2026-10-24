@@ -27,6 +27,11 @@ export const routes = [
     component: () => import('../views/tools/TransactionSummarizer.vue')
   },
   {
+    path: '/data-manager',
+    name: 'DataManager',
+    component: () => import('../views/DataManager.vue')
+  },
+  {
     path: '/:pathMatch(.*)*',
     redirect: '/'
   }

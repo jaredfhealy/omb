@@ -183,6 +183,41 @@ const calculateSummary = () => {
     summaryData.value = allRows
     return
   }
+
+  const getExpirationFromSymbol = (symbol, fallbackDate) => {
+    if (!symbol) return fallbackDate
+    const dateMatch = symbol.match(/\d{2}\/\d{2}\/\d{4}/)
+    return dateMatch ? dateMatch[0] : fallbackDate
+  }
+
+  const actionEquals = (row, action) => (row?.type || '').toLowerCase() === action.toLowerCase()
+
+  const getNumericStrike = (row) => {
+    if (!row || row.strike === '-' || Number.isNaN(Number(row.strike))) return null
+    return Number(row.strike)
+  }
+
+  const isCloseSpreadPair = (curr, next) => {
+    const currExpiry = getExpirationFromSymbol(curr.symbol, curr.date)
+    const nextExpiry = getExpirationFromSymbol(next.symbol, next.date)
+    const currStrike = getNumericStrike(curr)
+    const nextStrike = getNumericStrike(next)
+
+    return (
+      ((actionEquals(curr, 'Sell to Close') && actionEquals(next, 'Buy to Close')) ||
+        (actionEquals(curr, 'Buy to Close') && actionEquals(next, 'Sell to Close'))) &&
+      curr.account === next.account &&
+      curr.date === next.date &&
+      curr.ticker === next.ticker &&
+      Math.abs(Number(curr.quantity)) === Math.abs(Number(next.quantity)) &&
+      curr.contractType === next.contractType &&
+      currExpiry === nextExpiry &&
+      currStrike !== null &&
+      nextStrike !== null &&
+      currStrike !== nextStrike
+    )
+  }
+
   // Group rolls (Open/Close can be in any order)
   let groupedRows = []
   let usedIndexes = new Set()
@@ -193,26 +228,66 @@ const calculateSummary = () => {
     for (let j = i + 1; j < allRows.length; j++) {
       if (usedIndexes.has(j)) continue
       const next = allRows[j]
+
+      if (isCloseSpreadPair(curr, next)) {
+        const currStrike = getNumericStrike(curr)
+        const nextStrike = getNumericStrike(next)
+        const lowerStrike = Math.min(currStrike, nextStrike)
+        const upperStrike = Math.max(currStrike, nextStrike)
+        const spreadWidth = upperStrike - lowerStrike
+        const netPremium = parseFloat(curr.premium) + parseFloat(next.premium)
+        const expiry = getExpirationFromSymbol(curr.symbol, curr.date)
+        const primaryRow = actionEquals(curr, 'Sell to Close') ? curr : next
+        const contractCount = Math.abs(Number(curr.quantity) || 0)
+
+        let ror = '-'
+        if (spreadWidth > 0 && contractCount > 0) {
+          const capitalAtRisk = contractCount * spreadWidth * 100
+          if (capitalAtRisk > 0) {
+            ror = ((netPremium / capitalAtRisk) * 100).toFixed(2)
+          }
+        }
+
+        groupedRows.push({
+          ...primaryRow,
+          description: `Closed ${primaryRow.contractType.toLowerCase()} spread expiring ${expiry}`,
+          strike: `${lowerStrike.toFixed(2)} / ${upperStrike.toFixed(2)}`,
+          premium: netPremium.toFixed(2),
+          ror: ror !== '-' ? ror : '-'
+        })
+        usedIndexes.add(i)
+        usedIndexes.add(j)
+        foundPair = true
+        break
+      }
+
+      const currIsClose = curr.type === 'Buy to Close' || curr.type === 'Sell to Close'
+      const nextIsClose = next.type === 'Buy to Close' || next.type === 'Sell to Close'
+      const currIsOpen = curr.type === 'Sell to Open' || curr.type === 'Buy to Open'
+      const nextIsOpen = next.type === 'Sell to Open' || next.type === 'Buy to Open'
+
       // Must be one Open, one Close, same ticker, quantity, contractType
       const isRollPair =
-        ((curr.type === 'Sell to Open' && next.type === 'Buy to Close') || (curr.type === 'Buy to Close' && next.type === 'Sell to Open')) &&
+        ((currIsOpen && nextIsClose) || (currIsClose && nextIsOpen)) &&
         curr.ticker === next.ticker &&
         curr.quantity === next.quantity &&
         curr.contractType === next.contractType
       if (isRollPair) {
+        const closeLeg = currIsClose ? curr : next
+        const openLeg = currIsOpen ? curr : next
         // Parse dates from symbol
-        const currDateMatch = curr.symbol.match(/\d{2}\/\d{2}\/\d{4}/)
-        const nextDateMatch = next.symbol.match(/\d{2}\/\d{2}\/\d{4}/)
-        const fromDate = curr.type === 'Buy to Close' ? (currDateMatch ? currDateMatch[0] : curr.date) : (nextDateMatch ? nextDateMatch[0] : next.date)
-        const toDate = curr.type === 'Sell to Open' ? (currDateMatch ? currDateMatch[0] : curr.date) : (nextDateMatch ? nextDateMatch[0] : next.date)
+        const closeLegDateMatch = closeLeg.symbol.match(/\d{2}\/\d{2}\/\d{4}/)
+        const openLegDateMatch = openLeg.symbol.match(/\d{2}\/\d{2}\/\d{4}/)
+        const fromDate = closeLegDateMatch ? closeLegDateMatch[0] : closeLeg.date
+        const toDate = openLegDateMatch ? openLegDateMatch[0] : openLeg.date
         // Set strike column for roll
-        let rollStrike = curr.type === 'Buy to Close' ? next.strike : curr.strike
+        let rollStrike = openLeg.strike
         if (curr.strike !== next.strike && curr.strike !== '-' && next.strike !== '-') {
           rollStrike = `${curr.strike} to ${next.strike}`
         }
         // Calculate ROR for roll
         let ror = '-'
-        let strikeForROR = (curr.strike !== '-' && !isNaN(curr.strike)) ? parseFloat(curr.strike) : (next.strike !== '-' && !isNaN(next.strike) ? parseFloat(next.strike) : null)
+        let strikeForROR = (openLeg.strike !== '-' && !isNaN(openLeg.strike)) ? parseFloat(openLeg.strike) : (closeLeg.strike !== '-' && !isNaN(closeLeg.strike) ? parseFloat(closeLeg.strike) : null)
         if (strikeForROR && curr.quantity) {
           const cost = Math.abs(curr.quantity * strikeForROR * 100)
           if (cost > 0) {
@@ -221,7 +296,7 @@ const calculateSummary = () => {
           }
         }
         groupedRows.push({
-          ...(curr.type === 'Sell to Open' ? curr : next),
+          ...openLeg,
           description: `Rolled from ${fromDate} to ${toDate}`,
           premium: (parseFloat(curr.premium) + parseFloat(next.premium)).toFixed(2),
           rollFrom: fromDate,
@@ -308,12 +383,12 @@ async function copyAsImage() {
 </script>
 
 <template>
-  <div class="container">
+  <div class="container-fluid app-page-shell summarizer-page-shell">
     <div class="row mb-4">
       <div class="col">
         <div class="card">
           <div class="card-header">
-            <h4>Schwab Transaction Summarizer</h4>
+            <h4>Weekly Performance</h4>
           </div>
           <div class="card-body">
             <div class="mb-3 row align-items-end">
@@ -463,11 +538,12 @@ async function copyAsImage() {
 </template>
 
 <style scoped>
+.summarizer-page-shell {
+  margin-bottom: 30px;
+}
+
 .card-body {
   background-color: white;
-}
-.container {
-  margin-bottom: 30px;
 }
 
 .expired-pill {

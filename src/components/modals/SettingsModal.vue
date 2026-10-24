@@ -17,9 +17,9 @@ function closeSettings() {
   showSettingsModal.value = false
 }
 
-function saveSettings() {
+async function saveSettings() {
   store.activeAccount.settings = { ...settingsEdit.value }
-  store.calculateProjections()
+  await store.saveChangesAndRecalculate()
   closeSettings()
 }
 

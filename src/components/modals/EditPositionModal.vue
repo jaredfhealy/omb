@@ -81,7 +81,7 @@ const close = () => {
   originalMetaFields.value = null
 }
 
-const save = () => {
+const save = async () => {
   // If editing a merged group, update all positions in the group
   if (mergedGroupID.value) {
     const groupId = mergedGroupID.value
@@ -93,7 +93,7 @@ const save = () => {
         pos.currentPrice = currentPrice
       }
     })
-    store.saveBacon()
+    await store.saveChangesAndRecalculate()
     close()
     return
   }
@@ -168,7 +168,7 @@ const save = () => {
       }
     }
   }
-  store.saveBacon()
+  await store.saveChangesAndRecalculate()
   close()
 }
 

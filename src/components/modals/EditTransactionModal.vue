@@ -39,7 +39,7 @@ function closeEditModal() {
   errors.value = []
 }
 
-function saveTransactionEdit() {
+async function saveTransactionEdit() {
   // Reset errors
   errors.value = []
 
@@ -68,7 +68,7 @@ function saveTransactionEdit() {
     store.activeAccount.transactions[editingIndex.value] = transaction
   }
 
-  store.calculateProjections()
+  await store.saveChangesAndRecalculate()
   closeEditModal()
 }
 

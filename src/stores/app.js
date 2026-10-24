@@ -1,7 +1,93 @@
 // stores/app.js
 import { defineStore } from 'pinia'
 import { nextTick } from 'vue'
-import { loadState, saveState } from '@/services/stateApi'
+import { getSyncCenterEventName, isDriveConnected, isDrivePersistenceConfigured, loadAppState, saveAppState } from '@/services/stateRepository'
+
+const SELECTED_ACCOUNT_ID_KEY = 'omb.selectedAccountId.v1'
+
+function loadSelectedAccountIdPreference() {
+  try {
+    const raw = localStorage.getItem(SELECTED_ACCOUNT_ID_KEY)
+    if (!raw) return null
+    const parsed = Number(raw)
+    return Number.isFinite(parsed) ? parsed : null
+  } catch (error) {
+    return null
+  }
+}
+
+function persistSelectedAccountIdPreference(accountId) {
+  try {
+    if (!Number.isFinite(Number(accountId))) return
+    localStorage.setItem(SELECTED_ACCOUNT_ID_KEY, String(Number(accountId)))
+  } catch (error) {
+    // local preference persistence is best-effort
+  }
+}
+
+function resolveSelectedAccountId(accounts, preferredId = null) {
+  const safeAccounts = Array.isArray(accounts) ? accounts : []
+  if (!safeAccounts.length) return null
+
+  const preferred = Number(preferredId)
+  if (Number.isFinite(preferred) && safeAccounts.some(account => Number(account?.id) === preferred)) {
+    return preferred
+  }
+
+  const localPreferred = loadSelectedAccountIdPreference()
+  if (Number.isFinite(localPreferred) && safeAccounts.some(account => Number(account?.id) === localPreferred)) {
+    return localPreferred
+  }
+
+  return Number(safeAccounts[0]?.id) || null
+}
+
+function ensureAccountCollections(dbState) {
+  if (!dbState || !Array.isArray(dbState.accounts)) return false
+
+  let migrated = false
+  dbState.accounts.forEach(account => {
+    if (!account.transactions) {
+      account.transactions = []
+      migrated = true
+    }
+    if (!account.actuals) {
+      account.actuals = []
+      migrated = true
+    }
+    if (!account.positions) {
+      account.positions = []
+      migrated = true
+    }
+    if (!account.sells) {
+      account.sells = []
+      migrated = true
+    }
+    if (!account.notes) {
+      account.notes = []
+      migrated = true
+    }
+    if (!account.positionMeta) {
+      account.positionMeta = []
+      migrated = true
+    }
+  })
+
+  return migrated
+}
+
+function createPersistableStateSnapshot(dbState) {
+  try {
+    const snapshot = JSON.parse(JSON.stringify(dbState))
+    if (snapshot && typeof snapshot === 'object') {
+      delete snapshot.selectedAccountId
+      delete snapshot.lastUpdated
+    }
+    return snapshot
+  } catch (error) {
+    throw new Error(`Failed to serialize state for persistence: ${error?.message || error}`)
+  }
+}
 
 export const useAppStore = defineStore('app', {
   state: () => ({
@@ -23,11 +109,24 @@ export const useAppStore = defineStore('app', {
           years: 4
         }
       }],
-      selectedAccountId: 1
     },
+    selectedAccountId: 1,
     user: null,
     projections: [],
     loading: true,
+    persistenceMeta: null,
+    persistenceError: null,
+    syncCenter: {
+      open: false,
+      driveConfigured: isDrivePersistenceConfigured(),
+      driveConnected: isDriveConnected(),
+      localSaveAt: null,
+      driveLastAttemptAt: null,
+      driveLastSuccessAt: null,
+      driveLastResult: 'idle',
+      driveLastError: ''
+    },
+    syncCenterListenerBound: false,
 
     // UI State
     activeTab: 'yearly',
@@ -38,78 +137,156 @@ export const useAppStore = defineStore('app', {
 
   getters: {
     activeAccount(state) {
-      return state.db.accounts.find(a => a.id === state.db.selectedAccountId)
+      const selected = state.db.accounts.find(a => Number(a.id) === Number(state.selectedAccountId))
+      return selected || state.db.accounts[0] || null
     },
 
-    weeks(state) {
-      return state.activeAccount.settings.years * 52
+    weeks() {
+      const years = Number(this.activeAccount?.settings?.years || 0)
+      return years > 0 ? years * 52 : 0
     },
 
-    unselectedAccounts(state) {
-      return state.db.accounts.filter(a => a.id !== state.db.selectedAccountId)
+    unselectedAccounts() {
+      const activeId = Number(this.activeAccount?.id)
+      return this.db.accounts.filter(a => Number(a.id) !== activeId)
     },
 
     isBelowXL: (state) => state.windowWidth < 1200,
+    syncCenterNeedsAttention(state) {
+      return state.syncCenter.driveLastResult === 'failed'
+    }
   },
 
   actions: {
-    // State API interactions
-    async getBaconStash() {
+    bindSyncCenterListener() {
+      if (this.syncCenterListenerBound || typeof window === 'undefined') return
+
+      const eventName = getSyncCenterEventName()
+      this._syncCenterListener = (event) => {
+        const detail = event?.detail || {}
+        const type = String(detail.type || '')
+        const at = detail.at || new Date().toISOString()
+
+        this.syncCenter.driveConfigured = isDrivePersistenceConfigured()
+        this.syncCenter.driveConnected = isDriveConnected()
+
+        if (type === 'local-save-complete') {
+          this.syncCenter.localSaveAt = at
+          return
+        }
+
+        if (type === 'drive-connection') {
+          this.syncCenter.driveConnected = Boolean(detail.connected)
+          if (!detail.connected) {
+            this.syncCenter.driveLastResult = 'idle'
+            this.syncCenter.driveLastError = ''
+          }
+          return
+        }
+
+        if (type === 'drive-mirror-queued' || type === 'drive-mirror-start') {
+          this.syncCenter.driveLastAttemptAt = at
+          this.syncCenter.driveLastResult = 'syncing'
+          this.syncCenter.driveLastError = ''
+          return
+        }
+
+        if (type === 'drive-mirror-complete') {
+          this.syncCenter.driveLastAttemptAt = at
+          this.syncCenter.driveLastSuccessAt = at
+          this.syncCenter.driveLastResult = 'success'
+          this.syncCenter.driveLastError = ''
+          return
+        }
+
+        if (type === 'drive-mirror-failed') {
+          this.syncCenter.driveLastAttemptAt = at
+          this.syncCenter.driveLastResult = 'failed'
+          this.syncCenter.driveLastError = String(detail.error || 'Drive sync failed')
+        }
+      }
+
+      window.addEventListener(eventName, this._syncCenterListener)
+      this.syncCenterListenerBound = true
+    },
+
+    unbindSyncCenterListener() {
+      if (!this.syncCenterListenerBound || typeof window === 'undefined' || !this._syncCenterListener) return
+      window.removeEventListener(getSyncCenterEventName(), this._syncCenterListener)
+      this._syncCenterListener = null
+      this.syncCenterListenerBound = false
+    },
+
+    toggleSyncCenter() {
+      this.syncCenter.open = !this.syncCenter.open
+    },
+
+    setSelectedAccount(accountId, { recalculate = true } = {}) {
+      const resolved = resolveSelectedAccountId(this.db.accounts, accountId)
+      if (!Number.isFinite(Number(resolved))) return
+      this.selectedAccountId = Number(resolved)
+      persistSelectedAccountIdPreference(this.selectedAccountId)
+      if (recalculate) {
+        this.calculateProjections()
+      }
+    },
+
+    ensureSelectedAccount() {
+      const resolved = resolveSelectedAccountId(this.db.accounts, this.selectedAccountId)
+      if (!Number.isFinite(Number(resolved))) {
+        this.selectedAccountId = null
+        return
+      }
+      this.selectedAccountId = Number(resolved)
+      persistSelectedAccountIdPreference(this.selectedAccountId)
+    },
+
+    async syncNow() {
+      await this.saveChanges()
+    },
+
+    // State persistence interactions
+    async loadData() {
       try {
-        const data = await loadState()
+        this.syncCenter.driveConfigured = isDrivePersistenceConfigured()
+        this.syncCenter.driveConnected = isDriveConnected()
+        const { data, meta, source } = await loadAppState()
+        this.persistenceMeta = meta
 
         if (data && Array.isArray(data.accounts)) {
-          let migrated = false
-          data.accounts.forEach(account => {
-            if (!account.transactions) {
-              account.transactions = []
-              migrated = true
-            }
-            if (!account.actuals) {
-              account.actuals = []
-              migrated = true
-            }
-            if (!account.positions) {
-              account.positions = []
-              migrated = true
-            }
-            if (!account.sells) {
-              account.sells = []
-              migrated = true
-            }
-            if (!account.notes) {
-              account.notes = []
-              migrated = true
-            }
-            if (!account.positionMeta) {
-              account.positionMeta = []
-              migrated = true
-            }
-          })
-          this.db = data
+          const migrated = ensureAccountCollections(data)
+          this.db = createPersistableStateSnapshot(data)
+          this.ensureSelectedAccount()
           this.applyPositionMetadataForActiveAccount()
-          if (migrated) {
-            this.saveBacon()
+          if (migrated && source !== 'legacy-api-migrated') {
+            await this.saveChanges()
           }
         }
+        this.persistenceError = null
         this.calculateProjections()
       } catch (error) {
-        console.error('Failed to fetch the bacon:', error)
+        console.error('Failed to load data:', error)
+        this.persistenceError = `Failed to load local state: ${error?.message || error}`
         this.calculateProjections()
       }
     },
     
-    async saveBacon() {
+    async saveChanges() {
       try {
-        const dataToSave = {
-          ...this.db,
-          lastUpdated: new Date().toISOString()
-        }
-        await saveState(dataToSave)
+        const dataToSave = createPersistableStateSnapshot(this.db)
+        const { meta } = await saveAppState(dataToSave, this.persistenceMeta)
+        this.persistenceMeta = meta
+        this.persistenceError = null
         this.initTooltips()  // Initialize tooltips after save
       } catch (error) {
-        console.error('Failed to save the bacon:', error)
+        console.error('Failed to save changes:', error)
+        this.persistenceError = `Failed to save local state: ${error?.message || error}`
       }
+    },
+
+    async saveChangesAndRecalculate() {
+      await this.saveChanges()
+      this.calculateProjections()
     },
 
     // Core Data Actions
@@ -291,11 +468,7 @@ export const useAppStore = defineStore('app', {
         p.averageROR = allTimeAverageROR?.toFixed(2)
       })
 
-      if (!this.loading) {
-        this.saveBacon()
-      } else {
-        this.loading = false
-      }
+      this.loading = false
     },
 
     // Only used locally by calculateProjections

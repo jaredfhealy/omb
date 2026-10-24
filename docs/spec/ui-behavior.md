@@ -6,6 +6,7 @@ Last verified: 2026-10-14
 
 - Root page should not introduce global scrolling from table-heavy views.
 - Inner data regions (table/list/modal body regions) own scrolling behavior.
+- Top-level routed views should use the shared `.app-page-shell` utility for consistent horizontal gutters across pages.
 
 ## Tab patterns
 
@@ -34,6 +35,13 @@ Last verified: 2026-10-14
 
 - Weekly modal presents summary/positions and transactions via tabbed layout.
 - Raw transaction counts and note affordances should be visible from the weekly table.
+
+## Data management workflows
+
+- Top-level navigation includes a Data Manager page for advanced JSON inspection/editing.
+- Data Manager clearly warns that direct edits are risky and may affect projections/import workflows.
+- Save/apply actions should require explicit user intent (confirmation) and surface validation/save failures.
+- Data import/export actions live in Data Manager (not Manage/Switch Accounts modal) and run through local-first persistence behavior.
 
 ## Import workflows
 

@@ -7,6 +7,11 @@ const store = useAppStore()
 const route = useRoute()
 
 // Add state to track authentication
+const isFixedTopRoute = computed(() =>
+  route.path.startsWith('/summarizer') ||
+  route.path.startsWith('/data-manager') ||
+  route.path.startsWith('/reporting')
+)
 const isOnSummarizer = computed(() => route.path === '/summarizer')
 
 // Add computed property for current page name
@@ -14,7 +19,8 @@ const currentPageName = computed(() => {
   switch(route.path) {
     case '/': return 'Projections';
     case '/reporting': return 'Reports';
-    case '/summarizer': return 'Summarizer';
+    case '/summarizer': return 'Weekly Performance';
+    case '/data-manager': return 'Data Manager';
     default: return 'Select Page';
   }
 })
@@ -41,14 +47,14 @@ watch(() => route.path, () => {
 // Load persisted state for all pages except the standalone summarizer tool
 onMounted(() => {
   if (!isOnSummarizer.value) {
-    store.getBaconStash()
+    store.loadData()
   }
 })
 </script>
 
 <template>
   <nav id="appNav" class="navbar navbar-expand-lg navbar-dark bg-primary mb-3"
-       :class="{ 'fixed-top': isOnSummarizer }">
+       :class="{ 'fixed-top': isFixedTopRoute }">
     <div class="container-fluid">
       <a href="#" class="navbar-brand" @click.prevent="store.showManageAccountModal" data-bs-toggle="tooltip" data-bs-title="Operation More Bacon">
         O.M.B. &nbsp;|&nbsp; <span class="small">{{ store.activeAccount.name }}</span>
@@ -92,7 +98,12 @@ onMounted(() => {
               </li>
               <li>
                 <router-link to="/summarizer" class="dropdown-item" :class="{ 'active': route.path === '/summarizer' }">
-                  Schwab Transaction Summarizer
+                  Weekly Performance
+                </router-link>
+              </li>
+              <li>
+                <router-link to="/data-manager" class="dropdown-item" :class="{ 'active': route.path === '/data-manager' }">
+                  Data Manager
                 </router-link>
               </li>
             </ul>
