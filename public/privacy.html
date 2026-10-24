@@ -112,15 +112,20 @@
 
       <h2>3. Optional Google Drive Sync</h2>
       <p>
-        If you choose to connect Google Drive, OMB may store encrypted or plain JSON app state files in your Google Drive
-        <code>appDataFolder</code> using your authorization.
-      </p>
-      <p>
         OMB requests only the Google OAuth scope needed for app-specific data storage
         (<code>https://www.googleapis.com/auth/drive.appdata</code>).
       </p>
       <p>
-        You may disconnect Drive sync at any time. Disconnect operations can remove OMB appData files based on in-app actions.
+        If you choose to connect Google Drive, OMB may store encrypted or plain JSON app state files in your Google
+        Drive <code>appDataFolder</code> using your authorization. This permission is used only to create, update, and
+        read OMB backup/state files needed for cross-device access and synchronization of your app data.
+      </p>
+      <p>
+        This scope does <strong>not</strong> grant OMB access to your other Google Drive files and does
+        <strong>not</strong> allow OMB to write outside the hidden <code>appDataFolder</code> reserved for app-specific data.
+      </p>
+      <p>
+        You may disconnect Drive sync at any time. You also have full control to delete all OMB appData files through the app.
       </p>
 
       <h2>4. No Sale of Personal Data</h2>
