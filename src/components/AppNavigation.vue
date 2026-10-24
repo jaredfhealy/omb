@@ -5,6 +5,7 @@ import { useRoute } from 'vue-router'
 
 const store = useAppStore()
 const route = useRoute()
+const baseUrl = import.meta.env.BASE_URL || '/'
 
 // Add state to track authentication
 const isFixedTopRoute = computed(() =>
@@ -125,6 +126,41 @@ const openAddAccount = () => {
               <li>
                 <a href="#" class="dropdown-item" @click.prevent="store.showImportTransactionsModal(); closeMenu()">
                   <i class="bi bi-file-earmark-arrow-up"></i> Import CSV
+                </a>
+              </li>
+            </ul>
+          </li>
+
+          <li class="nav-item dropdown">
+            <a
+              class="nav-link dropdown-toggle py-1"
+              href="#"
+              id="infoMenu"
+              role="button"
+              data-bs-toggle="dropdown"
+              aria-expanded="false"
+              title="Information">
+              <i class="bi bi-info-circle"></i>
+            </a>
+            <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="infoMenu">
+              <li>
+                <a
+                  class="dropdown-item"
+                  :href="`${baseUrl}privacy.html`"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  @click="closeMenu">
+                  Privacy Policy
+                </a>
+              </li>
+              <li>
+                <a
+                  class="dropdown-item"
+                  :href="`${baseUrl}terms.html`"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  @click="closeMenu">
+                  Terms of Service
                 </a>
               </li>
             </ul>
