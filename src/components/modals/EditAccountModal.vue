@@ -50,7 +50,7 @@ const close = () => {
   isVisible.value = false
 }
 
-const save = () => {
+const save = async () => {
   if (!account.name.trim()) {
     alert('Account name is required')
     return
@@ -81,11 +81,11 @@ const save = () => {
   } else {
     // Add new account
     store.db.accounts.push(JSON.parse(JSON.stringify(account)))
-    store.db.selectedAccountId = account.id
+    store.setSelectedAccount(account.id, { recalculate: false })
   }
 
+  await store.saveChangesAndRecalculate()
   close()
-  store.calculateProjections()
   
   // Set the active tab to "yearly" after saving
   store.activeTab = 'yearly'

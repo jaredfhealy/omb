@@ -24,7 +24,7 @@ const close = () => {
   row.value = null
 }
 
-const save = () => {
+const save = async () => {
   const week = row.value.week
 
   // Find the actual for this week to get the weekStart date
@@ -41,7 +41,7 @@ const save = () => {
       note: row.value.note.trim()
     })
   }
-  store.saveBacon()
+  await store.saveChangesAndRecalculate()
   close()
 }
 

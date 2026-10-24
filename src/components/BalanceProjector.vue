@@ -63,7 +63,7 @@ watch(() => store.activeTab, (nextTab) => {
 let cleanupResizeListener
 
 onMounted(() => {
-  store.getBaconStash()
+  store.loadData()
   cleanupResizeListener = store.setupWindowResizeListener()
 })
 

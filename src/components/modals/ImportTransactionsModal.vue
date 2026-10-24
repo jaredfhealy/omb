@@ -143,8 +143,8 @@ const processTransactionImport = async () => {
         transactionImportResults.value = results
         transactionError.value = ''
         
-        // Trigger projections and save
-        store.calculateProjections()
+        // Persist imported state first, then refresh projections from saved state
+        await store.saveChangesAndRecalculate()
         refreshPendingAfterClose.value = true
       } catch (error) {
         transactionError.value = error.message || 'An error occurred during import'
@@ -246,7 +246,7 @@ const processPositionsImport = async () => {
         const results = await importCurrentPositionsFromCSV(positionsCsvFile.value)
         positionsImportResults.value = results
         positionsError.value = ''
-        store.calculateProjections()
+        await store.saveChangesAndRecalculate()
         refreshPendingAfterClose.value = true
       } catch (error) {
         positionsError.value = error.message || 'An error occurred during positions import'
@@ -320,7 +320,6 @@ async function importCurrentPositionsFromCSV(file) {
   symbolsUpdated = matchedSymbols.size
 
   store.activeAccount.brokerageSnapshot = snapshot
-  await store.saveBacon()
 
   return {
     rowsProcessed: positionsRows.length,
@@ -607,7 +606,12 @@ function _processData(dataRows, brokerMap) {
       })
       
       weeksChanged.push(weekNumber)
+      return
     }
+
+    existingEntry.data = [...weekData]
+    existingEntry.growth = 0
+    weeksChanged.push(weekNumber)
   })
 
   return {

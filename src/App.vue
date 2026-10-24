@@ -1,8 +1,9 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onBeforeUnmount, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import AppNavigation from '@/components/AppNavigation.vue'
+import SyncCenter from '@/components/SyncCenter.vue'
 import {
   ConfirmModal,
   EditAccountModal,
@@ -14,7 +15,11 @@ import {
 const store = useAppStore()
 const route = useRoute()
 const confirmModal = ref(null)
-const isOnSummarizer = computed(() => route.path === '/summarizer')
+const isFixedNavRoute = computed(() =>
+  route.path.startsWith('/summarizer') ||
+  route.path.startsWith('/data-manager') ||
+  route.path.startsWith('/reporting')
+)
 
 // Set up the confirm method
 store.confirm = (message, callback, cancelCallback) => {
@@ -24,16 +29,30 @@ store.confirm = (message, callback, cancelCallback) => {
     console.error('ConfirmModal ref is not available');
   }
 }
+
+onMounted(() => {
+  store.bindSyncCenterListener()
+})
+
+onBeforeUnmount(() => {
+  store.unbindSyncCenterListener()
+})
 </script>
 
 <template>
   <AppNavigation />
+  <div v-if="store.persistenceError" class="alert alert-danger rounded-0 mb-0 px-3 py-2 d-flex justify-content-between align-items-center" role="alert">
+    <span>{{ store.persistenceError }}</span>
+    <button type="button" class="btn btn-sm btn-outline-light ms-3" @click="store.persistenceError = null">Dismiss</button>
+  </div>
   <div :class="[
     'container-fluid',
-    { 'fixed-nav': isOnSummarizer }
+    { 'fixed-nav': isFixedNavRoute }
   ]" v-cloak>
     <router-view/>
   </div>
+
+  <SyncCenter />
   
   <!-- Global Modals - fix the ref name -->
   <ConfirmModal ref="confirmModal" />
@@ -77,6 +96,9 @@ body,
 
 .fixed-nav {
   padding-top: 72px;
+  height: 100vh;
+  overflow-y: auto;
+  overflow-x: auto;
 }
 
 #confirm-modal {

@@ -63,9 +63,9 @@ function removeTransaction(transaction) {
   if (store.confirm) {
     store.confirm(
       `Are you sure you want to delete the week ${transaction.startWeek} ${transaction.type} for $${transaction.amount}?`,
-      () => {
+      async () => {
         store.activeAccount.transactions.splice(transaction.originalIndex, 1)
-        store.calculateProjections()
+        await store.saveChangesAndRecalculate()
       }
     )
   }

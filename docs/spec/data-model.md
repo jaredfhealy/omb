@@ -1,17 +1,29 @@
 # Data Model
 
-Last verified: 2026-10-14
+Last verified: 2026-10-21
 
 ## Persistence container
 
-The app persists one JSON object in SQLite `app_state` (`id=1`).
-
-## Top-level shape
+Primary runtime persistence is an IndexedDB envelope containing:
 
 ```js
 {
-  selectedAccountId: Number,
-  lastUpdated: ISOString,
+  meta: {
+    revision: Number,
+    updatedAt: ISOString,
+    updatedByDevice: String,
+    lastSyncedRevision: Number | null
+  },
+  data: AppData
+}
+```
+
+## Top-level shape
+
+`data` shape:
+
+```js
+{
   accounts: Account[]
 }
 ```

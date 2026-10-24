@@ -1,8 +1,10 @@
 <script setup>
 import { ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 
 const store = useAppStore()
+const router = useRouter()
 const isVisible = ref(false)
 
 const show = () => {
@@ -23,12 +25,12 @@ const deleteAccount = (account) => {
     close()
     store.confirm(
       `Are you sure you want to delete ${account.name}?`,
-      () => {
+      async () => {
         store.db.accounts = store.db.accounts.filter(a => a.id !== account.id)
-        if (store.db.selectedAccountId === account.id) {
-          store.db.selectedAccountId = store.db.accounts[0].id
+        if (store.selectedAccountId === account.id) {
+          store.setSelectedAccount(store.db.accounts[0]?.id, { recalculate: false })
         }
-        store.calculateProjections()
+        await store.saveChangesAndRecalculate()
         show()
       }
     )
@@ -40,65 +42,15 @@ const addNewAccount = () => {
   store.openEditAccountModal()
 }
 
-function downloadBackup() {
-  close()
-  const data = JSON.stringify(store.db, null, 2)
-  const blob = new Blob([data], { type: 'application/json' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  const backupPrefix = store.activeAccount?.name
-    ? store.activeAccount.name.replace(/\s+/g, '_')
-    : 'operation_more_bacon'
-  a.href = url
-  a.download = `${backupPrefix}_backup_${store.formatDate(new Date())}.json`
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
-}
-
-async function restoreBackup(file) {
-  if (!file) return
-
-  try {
-    const text = await file.text()
-    const backupData = JSON.parse(text)
-
-    // Verify backup data structure
-    if (!backupData.accounts || !Array.isArray(backupData.accounts)) {
-      throw new Error('Invalid backup file format')
-    }
-
-    // Make sure each account has transactions or an empty array
-    backupData.accounts.forEach(account => {
-      if (!account.transactions) account.transactions = []
-    })
-
-    // Close the modal before showing confirmation
-    close()
-    
-    // Use the store's confirm method directly
-    if (store.confirm) {
-      store.confirm(
-        'Warning: This will overwrite all current data. Make sure you have saved a backup of your current data before proceeding. Continue?',
-        () => {
-          // Update store data
-          store.db = backupData
-          store.calculateProjections()
-        }
-      )
-    }
-  } catch (error) {
-    alert('Error restoring backup: Invalid file format')
-    console.error('Restore error:', error)
-  }
-}
-
 // Add a function to switch to an account
-const switchToAccount = (accountId) => {
+const switchToAccount = async (accountId) => {
   close()
-  store.db.selectedAccountId = Number(accountId)
-  store.calculateProjections()
+  store.setSelectedAccount(Number(accountId))
+}
+
+const openDataManager = () => {
+  close()
+  router.push('/data-manager')
 }
 
 // Expose show function to store
@@ -125,7 +77,7 @@ store.showManageAccountModal = () => show()
               <tr v-for="account in store.db.accounts" :key="account.id">
                 <td>
                   <!-- Current account: show as bold text -->
-                  <span v-if="account.id === store.db.selectedAccountId" class="fw-bold">
+                  <span v-if="account.id === store.selectedAccountId" class="fw-bold">
                     {{ account.name }}
                   </span>
                   
@@ -147,40 +99,23 @@ store.showManageAccountModal = () => show()
             </tbody>
           </table>
 
-          <div class="d-flex justify-content-between align-items-center mt-3">
-            <div class="btn-group">
-              <button class="btn btn-outline-secondary" 
-                :class="store.isBelowXL ? 'btn-sm' : ''" 
-                @click.prevent="downloadBackup" data-bs-toggle="tooltip"
-                data-bs-title="Download data backup">
-                <i class="bi bi-download"></i> Backup
-              </button>
-              <button class="btn btn-outline-danger" 
-                :class="store.isBelowXL ? 'btn-sm' : ''"
-                @click.prevent="$refs.backupInput.click()" data-bs-toggle="tooltip"
-                data-bs-title="Restore data from backup">
-                <i class="bi bi-upload"></i> Restore
-              </button>
-            </div>
+          <div class="d-flex justify-content-between align-items-center mt-3 gap-2 flex-wrap">
+            <button
+              class="btn btn-outline-secondary"
+              :class="store.isBelowXL ? 'btn-sm' : ''"
+              @click="openDataManager">
+              <i class="bi bi-database"></i> Open Data Manager
+            </button>
 
-            <div>
-              <button class="btn btn-primary"
-                :class="store.isBelowXL ? 'btn-sm' : ''"
-                @click="addNewAccount">
-                <i class="bi bi-plus-circle"></i> Add New Account
-              </button>
-            </div>
+            <button class="btn btn-primary"
+              :class="store.isBelowXL ? 'btn-sm' : ''"
+              @click="addNewAccount">
+              <i class="bi bi-plus-circle"></i> Add New Account
+            </button>
           </div>
         </div>
       </div>
     </div>
     <div class="modal-backdrop fade show"></div>
-
-    <input 
-      type="file" 
-      @change="e => restoreBackup(e.target.files[0])" 
-      accept=".json"
-      class="d-none"
-      ref="backupInput">
   </div>
 </template>

@@ -4,6 +4,7 @@ import path from 'path'
 
 // https://vite.dev/config/
 export default defineConfig({
+  base: process.env.VITE_PUBLIC_BASE_PATH || '/',
   plugins: [vue()],
   resolve: {
     alias: {
@@ -12,10 +13,9 @@ export default defineConfig({
   },
   server: {
     host: '0.0.0.0',
-    port: 5174,
+    port: 5173,
     strictPort: true,
-    allowedHosts: ['gaminglaptop1.tail511f93.ts.net', '.tail511f93.ts.net'],
-    hmr: false,
+    hmr: true,
     proxy: {
       '/api': {
         target: 'http://127.0.0.1:3001',
