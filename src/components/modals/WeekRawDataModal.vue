@@ -9,17 +9,19 @@ const activeTab = ref('summary')
 
 const showModal = computed(() => selectedWeek.value !== null)
 
-const actualWeekEntry = computed(() => {
-  if (selectedWeek.value === null) return null
-  return store.activeAccount?.actuals?.find(a => Number(a.week) === Number(selectedWeek.value)) || null
+const weekRows = computed(() => {
+  return Array.isArray(store.activeAccount?.importedTransactions)
+    ? store.activeAccount.importedTransactions.filter(row => Number(row?.week) === Number(selectedWeek.value))
+    : []
 })
 
-const weekRows = computed(() => {
-  return Array.isArray(actualWeekEntry.value?.data) ? actualWeekEntry.value.data : []
+const projectionWeek = computed(() => {
+  if (selectedWeek.value === null) return null
+  return store.projections.find(p => Number(p.week) === Number(selectedWeek.value)) || null
 })
 
 const weekGrowth = computed(() => {
-  const growth = actualWeekEntry.value?.growth
+  const growth = projectionWeek.value?.actualGrowth
   return growth === null || growth === undefined ? null : Number(growth)
 })
 
@@ -28,11 +30,6 @@ const weekNetCashFlow = computed(() => {
     const amount = Number(row?.amount)
     return Number.isFinite(amount) ? sum + amount : sum
   }, 0)
-})
-
-const projectionWeek = computed(() => {
-  if (selectedWeek.value === null) return null
-  return store.projections.find(p => Number(p.week) === Number(selectedWeek.value)) || null
 })
 
 const rowSummary = computed(() => {

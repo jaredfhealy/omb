@@ -8,14 +8,13 @@ const showModal = computed(() => row.value !== null)
 if (!Array.isArray(store.activeAccount.notes)) store.activeAccount.notes = []
 
 const show = (week) => {
-  // Find the week in actuals to get the growth value
-  const actual = store.activeAccount.actuals.find(a => Number(a.week) === week)
+  const projection = store.projections.find(p => Number(p.week) === Number(week))
 
   // Find the note for this week in the notes array
   const noteEntry = store.activeAccount.notes.find(n => Number(n.week) === week)
   row.value = {
     week,
-    growth: actual?.growth ?? null,
+    growth: projection?.actualGrowth ?? null,
     note: noteEntry?.note || ''
   }
 }
@@ -27,9 +26,7 @@ const close = () => {
 const save = async () => {
   const week = row.value.week
 
-  // Find the actual for this week to get the weekStart date
-  const actual = store.activeAccount.actuals.find(a => Number(a.week) === week)
-  const weekStart = actual?.weekStart || null
+  const weekStart = store.calculateWeekStartEnd(week).weekStart || null
 
   // Remove any existing note for this week
   store.activeAccount.notes = store.activeAccount.notes.filter(n => Number(n.week) !== week)

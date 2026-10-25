@@ -360,8 +360,10 @@ const hasSelection = computed(() => {
 })
 
 function getWeekRawTransactionCount(week) {
-  const actualWeekEntry = store.activeAccount?.actuals?.find(a => Number(a.week) === Number(week))
-  return Array.isArray(actualWeekEntry?.data) ? actualWeekEntry.data.length : 0
+  const importedRows = Array.isArray(store.activeAccount?.importedTransactions)
+    ? store.activeAccount.importedTransactions.filter(row => Number(row?.week) === Number(week))
+    : []
+  return importedRows.length
 }
 
 function hasWeekNote(week) {

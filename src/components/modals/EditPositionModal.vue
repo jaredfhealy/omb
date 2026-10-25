@@ -173,46 +173,64 @@ const save = async () => {
 }
 
 const allocatedSellRows = computed(() => {
-  if (!position.positionKey || !store.activeAccount?.sells) return []
+  if (!position.positionKey) return []
 
+  const relRows = Array.isArray(store.activeAccount?.relPositionTransactions)
+    ? store.activeAccount.relPositionTransactions
+    : []
+  const importedById = new Map(
+    (Array.isArray(store.activeAccount?.importedTransactions) ? store.activeAccount.importedTransactions : [])
+      .filter(row => row?.id)
+      .map(row => [String(row.id), row])
+  )
   const baseCostPerShare = position.shares > 0 ? position.costBasis / position.shares : 0
   const isShortPosition = position.positionType === 'short' || Number(position.costBasis || 0) < 0
   const totalCoveredShares = Number(position.soldShares || 0)
   const totalCoverCost = Number(position.sellAmount || 0)
-  const assignedWeek = Number(position.assignedWeek || 0)
   const rows = []
 
-  store.activeAccount.sells.forEach(sell => {
-    if (!Array.isArray(sell.allocated) || !sell.shares || !sell.amount) return
-    const sellAction = (sell.action || '').toString().toLowerCase()
-    if (Number(sell.week || 0) < assignedWeek) return
+  relRows.forEach(rel => {
+    if (String(rel?.positionKey || '') !== String(position.positionKey || '')) return
+    const eventKind = String(rel?.eventKind || '').toLowerCase()
+    if (!eventKind || eventKind === 'open') return
 
-    sell.allocated.forEach(allocation => {
-      if (allocation.positionKey !== position.positionKey) return
-      const allocatedShares = Number(allocation.shares || 0)
-      if (allocatedShares <= 0) return
-      const proceeds = (Number(sell.amount) * allocatedShares) / Number(sell.shares)
-      let allocatedCostBasis = baseCostPerShare * allocatedShares
-      let realizedPL = proceeds - allocatedCostBasis
+    const allocatedShares = Number(rel?.allocatedShares ?? rel?.quantity ?? 0)
+    if (!Number.isFinite(allocatedShares) || allocatedShares <= 0) return
 
-      if (isShortPosition && sellAction.includes('short')) {
-        allocatedCostBasis = totalCoveredShares > 0 ? (totalCoverCost * allocatedShares) / totalCoveredShares : 0
-        realizedPL = proceeds - allocatedCostBasis
-      }
+    const sourceRow = rel?.sourceTransactionId
+      ? importedById.get(String(rel.sourceTransactionId))
+      : null
+    const fallbackAmount = Number(sourceRow?.amount)
+    const relAmount = Number(rel?.allocatedAmount)
+    const proceeds = Number.isFinite(relAmount)
+      ? relAmount
+      : (Number.isFinite(fallbackAmount) ? fallbackAmount : 0)
 
-      rows.push({
-        sellWeek: Number(sell.week),
-        sellDate: sell.date || '',
-        shares: allocatedShares,
-        proceeds,
-        avgSellPrice: proceeds / allocatedShares,
-        allocatedCostBasis,
-        realizedPL
-      })
+    let allocatedCostBasis = baseCostPerShare * allocatedShares
+    let realizedPL = proceeds - allocatedCostBasis
+
+    if (isShortPosition) {
+      allocatedCostBasis = totalCoveredShares > 0 ? (totalCoverCost * allocatedShares) / totalCoveredShares : 0
+      realizedPL = proceeds - allocatedCostBasis
+    }
+
+    rows.push({
+      sellWeek: Number(rel?.eventWeek || sourceRow?.week || 0),
+      sellDate: rel?.eventDate || sourceRow?.date || '',
+      shares: allocatedShares,
+      proceeds,
+      avgSellPrice: proceeds / allocatedShares,
+      allocatedCostBasis,
+      realizedPL
     })
   })
 
-  rows.sort((a, b) => a.sellWeek - b.sellWeek)
+  rows.sort((a, b) => {
+    if (a.sellWeek !== b.sellWeek) return a.sellWeek - b.sellWeek
+    if (a.sellDate < b.sellDate) return -1
+    if (a.sellDate > b.sellDate) return 1
+    return 0
+  })
   return rows
 })
 

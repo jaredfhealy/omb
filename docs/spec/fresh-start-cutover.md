@@ -7,35 +7,31 @@ This document defines v2 cutover behavior for a fresh-start release (no data mig
 ## Policy
 
 - No v1 -> v2 migration is required.
-- Existing local data may be reset.
-- Users may optionally export a backup before reset.
+- Existing local data is not read by runtime app flows.
+- v2 is treated as the baseline model for this app iteration.
 
 ## Startup contract
 
-1. On startup, read local metadata.
+1. On startup, read v2 metadata/object stores only.
 2. If `meta.dataModel === 'v2'`, continue normally.
-3. If `meta.dataModel` is missing or not `v2`, show a one-time blocking alert:
-   - explain that the local data model changed
-   - offer optional export/backup action
-   - offer "Proceed with reset" action
-4. On user confirmation, clear old local data and initialize default v2 seed state.
-5. Persist `meta.dataModel = 'v2'`.
+3. If no valid v2 envelope exists, initialize default v2 seed state.
+4. Persist `meta.dataModel = 'v2'`.
 
 ## UX requirements
 
-- Reset alert is shown only before successful v2 initialization.
-- Export/backup failure must be surfaced explicitly and must not block reset.
+- No migration/reset prompt is required in runtime flows.
+- Any legacy backup/recovery is a manual developer/operator workflow (out of band).
 - After reset, app should be immediately usable for manual setup (cash flows, projections, positions, trades).
 - Import workflows remain optional, not mandatory.
 
 ## Verification checklist
 
 - App initializes valid default v2 state on first launch/reset.
-- Old local v1 payloads are not partially read by v2 flows.
-- Reset path is atomic: either old state remains untouched, or new v2 state is fully initialized.
+- Old local v1 payloads are not read by v2 runtime flows.
+- Startup path is atomic: either v2 state loads, or new v2 state is fully initialized.
 - App does not require import completion before normal use.
 
 ## Out of scope
 
-- Backward-compatible reads of v1 structures.
+- Backward-compatible reads of v1 structures in runtime app flows.
 - Data-preserving transforms from v1 local stores to v2 collections.

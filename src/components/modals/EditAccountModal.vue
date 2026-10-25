@@ -12,8 +12,13 @@ const defaultAccountTemplate = {
   name: '',
   description: '',
   transactions: [],
-  actuals: [],
+  importedTransactions: [],
   positions: [],
+  notes: [],
+  trades: [],
+  relTradeTransactions: [],
+  relPositionTransactions: [],
+  positionMeta: [],
   settings: {
     startDate: new Date().toISOString().split('T')[0],
     startingBalance: 5000,
@@ -25,6 +30,24 @@ const defaultAccountTemplate = {
 // Initialize with defaults
 const account = reactive({...defaultAccountTemplate})
 
+function resetWorkingAccount(nextValues = {}) {
+  Object.keys(account).forEach((key) => {
+    delete account[key]
+  })
+  Object.assign(account, JSON.parse(JSON.stringify(defaultAccountTemplate)), nextValues)
+}
+
+function getNextAccountId() {
+  const existingIds = Array.isArray(store.db.accounts)
+    ? store.db.accounts
+        .map((entry) => Number(entry?.id))
+        .filter((value) => Number.isFinite(value) && value > 0)
+    : []
+
+  const maxId = existingIds.length > 0 ? Math.max(...existingIds) : 0
+  return maxId + 1
+}
+
 // Update this to explicitly use the flag instead of checking account.id
 const isEdit = computed(() => !isNewAccount.value)
 
@@ -32,16 +55,13 @@ const show = (existingAccount = null) => {
   if (existingAccount) {
     // Editing an existing account
     isNewAccount.value = false
-    Object.assign(account, JSON.parse(JSON.stringify(existingAccount)))
+    resetWorkingAccount(existingAccount)
   } else {
     // Creating a new account - reset to defaults
     isNewAccount.value = true
-    
-    // Reset to defaults first
-    Object.assign(account, {...defaultAccountTemplate})
-    
-    // Then just set the new ID
-    account.id = Date.now()
+    resetWorkingAccount({
+      id: getNextAccountId()
+    })
   }
   isVisible.value = true
 }

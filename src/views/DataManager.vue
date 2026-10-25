@@ -4,7 +4,15 @@ import JSONEditor from 'jsoneditor'
 import 'jsoneditor/dist/jsoneditor.min.css'
 import DataTable from '@/components/custom/DataTable.vue'
 import { useAppStore } from '@/stores/app'
-import { DriveStateRepository, isDriveConnected, isDrivePersistenceConfigured } from '@/services/stateRepository'
+import {
+  DriveStateRepository,
+  convertAppStateToV2Collections,
+  convertV2CollectionsToAppState,
+  isDriveConnected,
+  isDrivePersistenceConfigured,
+  loadLocalEnvelope,
+  normalizeV2CollectionsData
+} from '@/services/stateRepository'
 
 const store = useAppStore()
 
@@ -166,44 +174,11 @@ function isEnvelopeShape(payload) {
   )
 }
 
-function validateAndNormalizePayload(payload) {
+function validateAndNormalizeV2Collections(payload) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    throw new Error('Root payload must be a JSON object.')
+    throw new Error('Envelope data must be a JSON object containing v2 collections.')
   }
-  if (!Array.isArray(payload.accounts)) {
-    throw new Error('Payload must include an accounts array.')
-  }
-  if (payload.accounts.length === 0) {
-    throw new Error('At least one account is required.')
-  }
-
-  const defaultSettings = {
-    startDate: new Date().toISOString().split('T')[0],
-    startingBalance: 5000,
-    weeklyReturn: 1,
-    years: 4
-  }
-
-  const normalizedAccounts = payload.accounts.map((account, index) => ({
-    ...account,
-    id: Number(account?.id) || (index + 1),
-    transactions: Array.isArray(account?.transactions) ? account.transactions : [],
-    actuals: Array.isArray(account?.actuals) ? account.actuals : [],
-    positions: Array.isArray(account?.positions) ? account.positions : [],
-    sells: Array.isArray(account?.sells) ? account.sells : [],
-    notes: Array.isArray(account?.notes) ? account.notes : [],
-    positionMeta: Array.isArray(account?.positionMeta) ? account.positionMeta : [],
-    settings: {
-      ...defaultSettings,
-      ...(account?.settings || {})
-    }
-  }))
-
-  const { selectedAccountId: _selectedAccountId, lastUpdated: _lastUpdated, ...rest } = payload
-  return {
-    ...rest,
-    accounts: normalizedAccounts
-  }
+  return normalizeV2CollectionsData(payload)
 }
 
 function createEditor() {
@@ -218,23 +193,28 @@ function createEditor() {
       editorParseError.value = ''
     }
   })
-  editor.set(cloneForEditor(createLocalEnvelopeForSync()))
-  hasUnsavedChanges.value = false
+  refreshFromStore()
 }
 
-function refreshFromStore() {
+async function refreshFromStore() {
   if (!editor) return
-  editor.set(cloneForEditor(createLocalEnvelopeForSync()))
-  hasUnsavedChanges.value = false
-  editorParseError.value = ''
-  setStatus('Editor refreshed from persisted envelope state.', 'info')
+  try {
+    const localEnvelope = await loadLocalEnvelope()
+    editor.set(cloneForEditor(localEnvelope || createLocalEnvelopeForSync()))
+    hasUnsavedChanges.value = false
+    editorParseError.value = ''
+    setStatus('Editor refreshed from persisted envelope state.', 'info')
+  } catch (error) {
+    editor.set(cloneForEditor(createLocalEnvelopeForSync()))
+    hasUnsavedChanges.value = false
+    editorParseError.value = String(error?.message || error || '')
+    setStatus('Could not load persisted envelope directly; showing current in-memory snapshot.', 'warning')
+  }
 }
 
 function undoAllEditorChanges() {
   if (!editor) return
-  editor.set(cloneForEditor(createLocalEnvelopeForSync()))
-  hasUnsavedChanges.value = false
-  editorParseError.value = ''
+  refreshFromStore()
   setStatus('All unsaved JSON edits were undone.', 'info')
 }
 
@@ -301,15 +281,17 @@ function downloadJsonFile(fileName, payload) {
 }
 
 function createLocalEnvelopeForSync() {
+  const collections = convertAppStateToV2Collections(store.db)
   return {
     meta: store.persistenceMeta || {
+      dataModel: 'v2',
       revision: 1,
       updatedAt: new Date().toISOString(),
       updatedByDevice: 'local-device',
       lastSyncedRevision: null,
       lastDriveSyncAt: null
     },
-    data: cloneForEditor(store.db)
+    data: cloneForEditor(collections)
   }
 }
 
@@ -337,7 +319,8 @@ function stampEnvelopeSyncMeta(envelope, syncedAt = new Date().toISOString()) {
 }
 
 async function applyRemoteEnvelope(remoteEnvelope) {
-  store.db = validateAndNormalizePayload(remoteEnvelope.data || {})
+  const normalizedCollections = validateAndNormalizeV2Collections(remoteEnvelope.data || {})
+  store.db = convertV2CollectionsToAppState(normalizedCollections)
   store.ensureSelectedAccount()
   store.persistenceMeta = remoteEnvelope.meta
   store.applyPositionMetadataForActiveAccount()
@@ -385,23 +368,13 @@ function determineSyncAction(localEnvelope, remoteEnvelope) {
 }
 
 function summarizeAccountCollectionDiff(localAccount, remoteAccount) {
-  const collections = ['transactions', 'actuals', 'positions', 'sells', 'notes']
-  const diffs = collections
-    .map((key) => {
-      const localCount = Array.isArray(localAccount?.[key]) ? localAccount[key].length : 0
-      const remoteCount = Array.isArray(remoteAccount?.[key]) ? remoteAccount[key].length : 0
-      if (localCount === remoteCount) return ''
-      return `${key} ${localCount}→${remoteCount}`
-    })
-    .filter(Boolean)
-
-  if (JSON.stringify(localAccount?.settings || {}) !== JSON.stringify(remoteAccount?.settings || {})) {
-    diffs.unshift('settings changed')
-  }
+  const diffs = []
   if (String(localAccount?.name || '') !== String(remoteAccount?.name || '')) {
-    diffs.unshift('name changed')
+    diffs.push('name changed')
   }
-
+  if (JSON.stringify(localAccount?.settings || {}) !== JSON.stringify(remoteAccount?.settings || {})) {
+    diffs.push('settings changed')
+  }
   return diffs
 }
 
@@ -415,9 +388,18 @@ function buildEnvelopeChangeSummary(localEnvelope, remoteEnvelope) {
 
   lines.push(`Accounts: local ${localAccounts.length}, Drive ${remoteAccounts.length}`)
 
+  const collectionKeys = ['importedTransactions', 'cashFlows', 'positions', 'trades', 'relTradeTransactions', 'relPositionTransactions', 'notes']
+  collectionKeys.forEach((key) => {
+    const localCount = Array.isArray(localState?.[key]) ? localState[key].length : 0
+    const remoteCount = Array.isArray(remoteState?.[key]) ? remoteState[key].length : 0
+    if (localCount !== remoteCount) {
+      lines.push(`${key}: local ${localCount}, Drive ${remoteCount}`)
+    }
+  })
+
   const localById = new Map(localAccounts.map(account => [String(account?.id), account]))
   const remoteById = new Map(remoteAccounts.map(account => [String(account?.id), account]))
-  const allIds = Array.from(new Set([...localById.keys(), ...remoteById.keys()])).sort((a, b) => Number(a) - Number(b))
+  const allIds = Array.from(new Set([...localById.keys(), ...remoteById.keys()])).sort((a, b) => String(a).localeCompare(String(b)))
 
   const onlyLocalIds = allIds.filter(id => localById.has(id) && !remoteById.has(id))
   const onlyRemoteIds = allIds.filter(id => remoteById.has(id) && !localById.has(id))
@@ -986,7 +968,7 @@ async function confirmDriveDisconnect() {
 }
 
 function applyNormalizedPayload(normalizedPayload) {
-  store.db = normalizedPayload
+  store.db = convertV2CollectionsToAppState(normalizedPayload)
   store.ensureSelectedAccount()
   store.applyPositionMetadataForActiveAccount()
 
@@ -1009,7 +991,7 @@ async function applyChanges() {
     const payload = isEnvelopeShape(parsed)
       ? parsed.data
       : parsed
-    const normalized = validateAndNormalizePayload(payload)
+    const normalized = validateAndNormalizeV2Collections(payload)
     applyNormalizedPayload(normalized)
     await store.saveChangesAndRecalculate()
     setStatus('Changes applied and persisted.', 'success')
@@ -1033,9 +1015,10 @@ async function importJsonFile(event) {
     const parsed = JSON.parse(text)
     if (isEnvelopeShape(parsed)) {
       const envelopeData = parsed.data
-      validateAndNormalizePayload(envelopeData)
+      validateAndNormalizeV2Collections(envelopeData)
       editor.set(cloneForEditor({
         meta: parsed.meta || {
+          dataModel: 'v2',
           revision: 1,
           updatedAt: new Date().toISOString(),
           updatedByDevice: 'local-device',
@@ -1045,9 +1028,12 @@ async function importJsonFile(event) {
         data: envelopeData
       }))
     } else {
-      const normalized = validateAndNormalizePayload(parsed)
+      const normalized = Array.isArray(parsed?.accounts)
+        ? convertAppStateToV2Collections(parsed)
+        : validateAndNormalizeV2Collections(parsed)
       editor.set(cloneForEditor({
         meta: store.persistenceMeta || {
+          dataModel: 'v2',
           revision: 1,
           updatedAt: new Date().toISOString(),
           updatedByDevice: 'local-device',
