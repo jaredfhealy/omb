@@ -159,11 +159,35 @@ function getPositionOpenTimestamp(position) {
   return getDateTimestamp(position?.date) ?? getWeekBoundaryTimestamp(position?.assignedWeek, 'start')
 }
 
+function getPositionCloseRelations(position) {
+  const relRows = Array.isArray(store.activeAccount?.relPositionTransactions)
+    ? store.activeAccount.relPositionTransactions
+    : []
+  const positionId = String(position?.id || '')
+  const positionKey = String(position?.positionKey || '')
+  return relRows.filter((rel) => {
+    const eventKind = String(rel?.eventKind || '').toLowerCase()
+    if (eventKind === 'open') return false
+    const relPositionId = String(rel?.positionId || '')
+    const relPositionKey = String(rel?.positionKey || '')
+    if (positionId && relPositionId && relPositionId === positionId) return true
+    if (positionKey && relPositionKey && relPositionKey === positionKey) return true
+    return false
+  })
+}
+
 function getPositionLatestSellTimestamp(position) {
-  if (!store.activeAccount?.sells || !position?.positionKey) return null
-  const sellTimestamps = store.activeAccount.sells
-    .filter(sell => Array.isArray(sell.allocated) && sell.allocated.some(a => a.positionKey === position.positionKey))
-    .map(sell => getDateTimestamp(sell.date) ?? getWeekBoundaryTimestamp(sell.week, 'end'))
+  if (!position) return null
+  const importedById = new Map(
+    (Array.isArray(store.activeAccount?.importedTransactions) ? store.activeAccount.importedTransactions : [])
+      .filter(row => row?.id)
+      .map(row => [String(row.id), row])
+  )
+  const sellTimestamps = getPositionCloseRelations(position)
+    .map((rel) => {
+      const source = rel?.sourceTransactionId ? importedById.get(String(rel.sourceTransactionId)) : null
+      return getDateTimestamp(rel?.eventDate || source?.date) ?? getWeekBoundaryTimestamp(rel?.eventWeek || source?.week, 'end')
+    })
     .filter(timestamp => timestamp !== null)
 
   if (!sellTimestamps.length) {
@@ -561,10 +585,18 @@ function comparePositionsByOpeningSequenceDesc(a, b) {
 }
 
 function getLatestSellWeek(position) {
-  if (!store.activeAccount?.sells || !position?.positionKey) return null
-  const weeks = store.activeAccount.sells
-    .filter(sell => Array.isArray(sell.allocated) && sell.allocated.some(a => a.positionKey === position.positionKey))
-    .map(sell => Number(sell.week))
+  if (!position) return null
+  const importedById = new Map(
+    (Array.isArray(store.activeAccount?.importedTransactions) ? store.activeAccount.importedTransactions : [])
+      .filter(row => row?.id)
+      .map(row => [String(row.id), row])
+  )
+  const weeks = getPositionCloseRelations(position)
+    .map((rel) => {
+      if (Number.isFinite(Number(rel?.eventWeek))) return Number(rel.eventWeek)
+      const source = rel?.sourceTransactionId ? importedById.get(String(rel.sourceTransactionId)) : null
+      return Number(source?.week)
+    })
     .filter(week => !Number.isNaN(week))
   if (!weeks.length) return null
   return Math.max(...weeks)

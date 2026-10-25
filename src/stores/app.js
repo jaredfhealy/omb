@@ -46,25 +46,37 @@ function ensureAccountCollections(dbState) {
   if (!dbState || !Array.isArray(dbState.accounts)) return false
 
   let migrated = false
+  if (dbState.accounts.length === 0) {
+    dbState.accounts.push(createDefaultAccount())
+    migrated = true
+  }
   dbState.accounts.forEach(account => {
     if (!account.transactions) {
       account.transactions = []
       migrated = true
     }
-    if (!account.actuals) {
-      account.actuals = []
+    if (!account.importedTransactions) {
+      account.importedTransactions = []
       migrated = true
     }
     if (!account.positions) {
       account.positions = []
       migrated = true
     }
-    if (!account.sells) {
-      account.sells = []
-      migrated = true
-    }
     if (!account.notes) {
       account.notes = []
+      migrated = true
+    }
+    if (!account.trades) {
+      account.trades = []
+      migrated = true
+    }
+    if (!account.relTradeTransactions) {
+      account.relTradeTransactions = []
+      migrated = true
+    }
+    if (!account.relPositionTransactions) {
+      account.relPositionTransactions = []
       migrated = true
     }
     if (!account.positionMeta) {
@@ -74,6 +86,27 @@ function ensureAccountCollections(dbState) {
   })
 
   return migrated
+}
+
+function createDefaultAccount() {
+  return {
+    id: 1,
+    name: 'Default',
+    transactions: [],
+    importedTransactions: [],
+    positions: [],
+    notes: [],
+    trades: [],
+    relTradeTransactions: [],
+    relPositionTransactions: [],
+    positionMeta: [],
+    settings: {
+      startDate: new Date().toISOString().split('T')[0],
+      startingBalance: 5000,
+      weeklyReturn: 1,
+      years: 4
+    }
+  }
 }
 
 function createPersistableStateSnapshot(dbState) {
@@ -93,22 +126,7 @@ export const useAppStore = defineStore('app', {
   state: () => ({
     // Core data
     db: {
-      accounts: [{
-        id: 1,
-        name: 'Default',
-        transactions: [],
-        actuals: [],
-        positions: [],
-        sells: [],
-        notes: [],
-        positionMeta: [],
-        settings: {
-          startDate: new Date().toISOString().split('T')[0],
-          startingBalance: 5000,
-          weeklyReturn: 1,
-          years: 4
-        }
-      }],
+      accounts: [createDefaultAccount()],
     },
     selectedAccountId: 1,
     user: null,
@@ -265,9 +283,15 @@ export const useAppStore = defineStore('app', {
           this.db = createPersistableStateSnapshot(data)
           this.ensureSelectedAccount()
           this.applyPositionMetadataForActiveAccount()
-          if (migrated && source !== 'legacy-api-migrated') {
+          if (migrated) {
             await this.saveChanges()
           }
+        } else if (source === 'empty') {
+          this.db = createPersistableStateSnapshot({
+            accounts: [createDefaultAccount()]
+          })
+          this.ensureSelectedAccount()
+          await this.saveChanges()
         }
         this.persistenceError = null
         this.calculateProjections()
@@ -299,26 +323,20 @@ export const useAppStore = defineStore('app', {
     // Core Data Actions
     calculateProjections() {
       this.projections = []
+      if (!this.activeAccount?.settings) return
       let startBalance = this.activeAccount.settings.startingBalance
       let actualRORs = []
       let actualGrowths = []
+      const actualGrowthByWeek = this._getWeeklyActualGrowthMap()
+      const positionCloseCashByWeek = this._getPositionCloseCashByWeekMap()
 
       for (let week = 1; week <= this.weeks; week++) {
         const transactions = this._getTransactionsForWeek(week)
 
         // Calculate shares sold this week and previous week
-        let sharesSold = 0
+        const sharesSold = Number(positionCloseCashByWeek.get(week) || 0)
         let startSharesBalance = 0
-        let sharesSoldPreviousWeek = 0
-        const sells = this.activeAccount.sells || []
-        for (let i = 0; i < sells.length; i++) {
-          const sell = sells[i]
-          if (sell.week === week) {
-            sharesSold += sell.amount || 0
-          } else if (sell.week === week - 1) {
-            sharesSoldPreviousWeek += sell.amount || 0
-          }
-        }
+        const sharesSoldPreviousWeek = Number(positionCloseCashByWeek.get(week - 1) || 0)
 
         // Calculate shares bought this week and previous week, and shares held at start of week
         let sharesBought = 0
@@ -353,8 +371,8 @@ export const useAppStore = defineStore('app', {
         weekEndDate.setDate(weekEndDate.getDate() + 6)  // Add 6 days to get end of week
         const today = new Date()
 
-        // Get actual entry
-        const actualEntry = this.activeAccount.actuals.find(a => Number(a.week) === week)
+        const hasActualGrowth = actualGrowthByWeek.has(week)
+        const actualGrowth = hasActualGrowth ? Number(actualGrowthByWeek.get(week) || 0) : null
         
         // Determine which growth value to use
         let growth
@@ -363,16 +381,16 @@ export const useAppStore = defineStore('app', {
           weekStartDate <= today && today <= weekEndDate
         )) {
           // For completed or current week, use actual growth (including 0)
-          growth = actualEntry ? Number(actualEntry.growth) : 0
+          growth = actualGrowth ?? 0
         } else {
           // For future weeks:
           // If there's an actual entry, use it, otherwise use projected
-          growth = actualEntry ? Number(actualEntry.growth) : projectedGrowth
+          growth = actualGrowth ?? projectedGrowth
         }
 
         // Track actual growths when available
-        if (actualEntry) {
-          actualGrowths.push(Number(actualEntry.growth))
+        if (hasActualGrowth) {
+          actualGrowths.push(actualGrowth)
         }
 
         // Calculate trailing growth averages
@@ -401,7 +419,7 @@ export const useAppStore = defineStore('app', {
         const weekROR = (Number(growth) / (startBalance + startSharesBalance) * 100)
 
         // Track RORs when available
-        if (weekROR !== null) {
+        if (hasActualGrowth && weekROR !== null) {
           actualRORs.push(weekROR)
         }
 
@@ -437,7 +455,7 @@ export const useAppStore = defineStore('app', {
           withdrawal: transactions.totalWithdrawals,
           withdrawalsByCategory: transactions.withdrawals,
           projectedGrowth,
-          actualGrowth: actualEntry ? Number(actualEntry.growth) : null,
+          actualGrowth,
           actualROR: weekROR,
           averageROR: 0,
           trailing4WeekRORAvg: trailing4WeekRORAvg?.toFixed(2),
@@ -476,6 +494,86 @@ export const useAppStore = defineStore('app', {
       })
 
       this.loading = false
+    },
+
+    _getWeeklyActualGrowthMap() {
+      const growthByWeek = new Map()
+      const importedRows = Array.isArray(this.activeAccount?.importedTransactions)
+        ? this.activeAccount.importedTransactions
+        : []
+      if (!importedRows.length) return growthByWeek
+
+      let weeklyTotalTypes = []
+      try {
+        const brokerMap = this.getBrokerageMap(this.activeAccount?.formatKey || 'schwab')
+        weeklyTotalTypes = Array.isArray(brokerMap?.weeklyTotalTypes) ? brokerMap.weeklyTotalTypes : []
+      } catch (error) {
+        weeklyTotalTypes = []
+      }
+      const allowedActions = new Set(weeklyTotalTypes.map(action => String(action || '').toLowerCase()))
+
+      importedRows.forEach((row) => {
+        const week = Number(row?.week)
+        if (!Number.isFinite(week) || week <= 0) return
+        if (!growthByWeek.has(week)) growthByWeek.set(week, 0)
+
+        const action = String(row?.action || '').trim().toLowerCase()
+        if (!allowedActions.has(action)) return
+
+        const amount = Number(row?.amount)
+        if (!Number.isFinite(amount)) return
+        const current = Number(growthByWeek.get(week) || 0)
+        growthByWeek.set(week, Math.round((current + amount) * 100) / 100)
+      })
+
+      return growthByWeek
+    },
+
+    _getPositionCloseCashByWeekMap() {
+      const closeCashByWeek = new Map()
+      const relRows = Array.isArray(this.activeAccount?.relPositionTransactions)
+        ? this.activeAccount.relPositionTransactions
+        : []
+
+      if (relRows.length > 0) {
+        const importedById = new Map(
+          (Array.isArray(this.activeAccount?.importedTransactions) ? this.activeAccount.importedTransactions : [])
+            .filter(row => row?.id)
+            .map(row => [String(row.id), row])
+        )
+
+        relRows.forEach((rel) => {
+          const eventKind = String(rel?.eventKind || '').toLowerCase()
+          if (!eventKind || eventKind === 'open') return
+
+          const week = Number(rel?.eventWeek)
+          if (!Number.isFinite(week) || week <= 0) return
+
+          let amount = Number(rel?.allocatedAmount)
+          if (!Number.isFinite(amount) && rel?.sourceTransactionId) {
+            const sourceRow = importedById.get(String(rel.sourceTransactionId))
+            amount = Number(sourceRow?.amount)
+          }
+          if (!Number.isFinite(amount)) return
+
+          const current = Number(closeCashByWeek.get(week) || 0)
+          closeCashByWeek.set(week, Math.round((current + amount) * 100) / 100)
+        })
+
+        return closeCashByWeek
+      }
+
+      const positions = Array.isArray(this.activeAccount?.positions) ? this.activeAccount.positions : []
+      positions.forEach((position) => {
+        const week = Number(position?.soldWeek)
+        if (!Number.isFinite(week) || week <= 0) return
+        const amount = Number(position?.sellAmount)
+        if (!Number.isFinite(amount)) return
+        const current = Number(closeCashByWeek.get(week) || 0)
+        closeCashByWeek.set(week, Math.round((current + amount) * 100) / 100)
+      })
+
+      return closeCashByWeek
     },
 
     // Only used locally by calculateProjections

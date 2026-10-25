@@ -105,79 +105,88 @@ const calculateSummary = () => {
     summaryData.value = []
     return
   }
-  let actualsToProcess = []
+  let rowsToProcess = []
   if (selectedAccount.value === 'all') {
     if (store.db && Array.isArray(store.db.accounts)) {
       store.db.accounts.forEach(acc => {
-        if (Array.isArray(acc.actuals)) {
-          acc.actuals.forEach(a => {
-            if (a.week >= selectedWeek.value && a.week <= endWeek.value) actualsToProcess.push({ actual: a, accountName: acc.name })
+        if (Array.isArray(acc.importedTransactions)) {
+          acc.importedTransactions.forEach(txn => {
+            const week = Number(txn?.week || 0)
+            if (week >= Number(selectedWeek.value) && week <= Number(endWeek.value)) {
+              rowsToProcess.push({ txn, accountName: acc.name })
+            }
           })
         }
       })
     }
   } else {
     const acc = store.db.accounts[selectedAccount.value]
-    if (acc && Array.isArray(acc.actuals)) {
-      acc.actuals.forEach(a => {
-        if (a.week >= selectedWeek.value && a.week <= endWeek.value) actualsToProcess.push({ actual: a, accountName: acc.name })
+    if (acc && Array.isArray(acc.importedTransactions)) {
+      acc.importedTransactions.forEach(txn => {
+        const week = Number(txn?.week || 0)
+        if (week >= Number(selectedWeek.value) && week <= Number(endWeek.value)) {
+          rowsToProcess.push({ txn, accountName: acc.name })
+        }
       })
     }
   }
   // Combine all transactions for this week from all selected accounts
   let allRows = []
-  actualsToProcess.forEach(({ actual, accountName }) => {
-    if (Array.isArray(actual.data)) {
-      allRows.push(...actual.data.map(txn => {
-        // Only include actions in brokerMap.weeklyTotalTypes
-        if (!brokerMap.weeklyTotalTypes.includes(txn.action.toLowerCase())) {
-          return null
-        }
-        let ticker = txn.symbol
-        let contractType = '-'
-        let strike = '-'
-        let qty = txn.quantity
-        const optMatch = txn.symbol.match(/^([\w.-]+) (\d{2}\/\d{2}\/\d{4}) ([\d.]+) ([CP])$/)
-        if (optMatch) {
-          ticker = optMatch[1]
-          strike = optMatch[3]
-          contractType = optMatch[4] === 'C' ? 'Call' : 'Put'
-        } else if (txn.symbol && txn.symbol.match(/^[A-Z.\-]+$/)) {
-          ticker = txn.symbol
-          // Use action in Title Case instead of 'Stock'
-          contractType = txn.action
-            ? txn.action.replace(/\w\S*/g, w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-            : '-'
-          strike = '-'
-        }
-        // Symbol filter logic (enforced at data level)
-        if (symbolFilter.value) {
-          if (!ticker || ticker.toUpperCase() !== symbolFilter.value) {
-            return null
-          }
-        }
-        // Only collect expired contracts for the section if only one week is selected
-        if (txn.action && txn.action.toLowerCase() === 'expired' && !symbolFilter.value && selectedWeek.value === endWeek.value) {
-          expiredContracts.value.push(txn.symbol + " [" + txn.quantity + "]")
-          return null
-        }
-        let type = txn.action
-        return {
-          date: txn.date,
-          account: accountName,
-          ticker,
-          contractType,
-          strike,
-          quantity: qty,
-          description: txn.description,
-          premium: txn.amount,
-          ror: '-',
-          type,
-          symbol: txn.symbol,
-          action: txn.action
-        }
-      }).filter(Boolean))
+  allRows.push(...rowsToProcess.map(({ txn, accountName }) => {
+    const action = String(txn?.action || '').toLowerCase()
+    // Only include actions in brokerMap.weeklyTotalTypes
+    if (!brokerMap.weeklyTotalTypes.includes(action)) {
+      return null
     }
+    let ticker = txn.symbol
+    let contractType = '-'
+    let strike = '-'
+    let qty = txn.quantity
+    const optMatch = String(txn?.symbol || '').match(/^([\w.-]+) (\d{2}\/\d{2}\/\d{4}) ([\d.]+) ([CP])$/)
+    if (optMatch) {
+      ticker = optMatch[1]
+      strike = optMatch[3]
+      contractType = optMatch[4] === 'C' ? 'Call' : 'Put'
+    } else if (txn.symbol && txn.symbol.match(/^[A-Z.\-]+$/)) {
+      ticker = txn.symbol
+      // Use action in Title Case instead of 'Stock'
+      contractType = txn.action
+        ? txn.action.replace(/\w\S*/g, w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+        : '-'
+      strike = '-'
+    }
+    // Symbol filter logic (enforced at data level)
+    if (symbolFilter.value) {
+      if (!ticker || ticker.toUpperCase() !== symbolFilter.value) {
+        return null
+      }
+    }
+    // Only collect expired contracts for the section if only one week is selected
+    if (txn.action && txn.action.toLowerCase() === 'expired' && !symbolFilter.value && selectedWeek.value === endWeek.value) {
+      expiredContracts.value.push(txn.symbol + " [" + txn.quantity + "]")
+      return null
+    }
+    let type = txn.action
+    return {
+      date: txn.date,
+      account: accountName,
+      ticker,
+      contractType,
+      strike,
+      quantity: qty,
+      description: txn.description,
+      premium: txn.amount,
+      ror: '-',
+      type,
+      symbol: txn.symbol,
+      action: txn.action,
+      executionOrder: Number(txn?.executionOrder || 0)
+    }
+  }).filter(Boolean))
+  allRows.sort((a, b) => {
+    if (a.date < b.date) return -1
+    if (a.date > b.date) return 1
+    return Number(a.executionOrder || 0) - Number(b.executionOrder || 0)
   })
   if (showRawData.value) {
     summaryData.value = allRows

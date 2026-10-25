@@ -22,7 +22,6 @@ const importTargetAccount = ref(null)
 
 // Modal control methods
 const show = () => {
-  migrateNotesToArray() // Trigger migration when modal is displayed
   isVisible.value = true
   resetForm()
   const preferredId = Number(store.activeAccount?.id)
@@ -101,6 +100,97 @@ function getExecutionOrderedRows(dataRows) {
     }))
 
   return ordered
+}
+
+function normalizeSpace(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ')
+}
+
+function toIsoDate(value) {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toISOString().slice(0, 10)
+}
+
+function toFixedString(value, decimals = 6) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return (0).toFixed(decimals)
+  return parsed.toFixed(decimals)
+}
+
+function simpleStableHash(input) {
+  const text = String(input || '')
+  let hash = 2166136261
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i)
+    hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24)
+  }
+  const baseHex = (hash >>> 0).toString(16).padStart(8, '0')
+  return `${baseHex}${baseHex}${baseHex}${baseHex}`.slice(0, 32)
+}
+
+function createSourceFingerprint(row) {
+  const input = [
+    toIsoDate(row?.date),
+    normalizeSpace(row?.action).toLowerCase(),
+    normalizeSpace(row?.symbol).toUpperCase(),
+    normalizeSpace(row?.description),
+    toFixedString(row?.quantity),
+    toFixedString(row?.price),
+    toFixedString(row?.amount),
+    toFixedString(row?.fees ?? 0),
+    Number(row?.executionOrder || 0)
+  ].join('|')
+  return simpleStableHash(input)
+}
+
+function createImportedTransactionId(row) {
+  const fingerprint = createSourceFingerprint(row)
+  return `tx_${simpleStableHash(`${fingerprint}|${Number(row?.sourceLine || 0)}|${Number(row?.executionOrder || 0)}`)}`
+}
+
+function upsertRelPositionTransaction(account, rel) {
+  if (!account) return
+  if (!Array.isArray(account.relPositionTransactions)) {
+    account.relPositionTransactions = []
+  }
+
+  const positionKey = String(rel?.positionKey || '')
+  const sourceTransactionId = String(rel?.sourceTransactionId || '')
+  if (!sourceTransactionId) {
+    console.warn('Skipping relPositionTransactions row without sourceTransactionId.', rel)
+    return
+  }
+  const eventKind = String(rel?.eventKind || 'event').toLowerCase()
+  const eventWeek = Number(rel?.eventWeek || 0)
+  const quantity = Number(rel?.allocatedShares ?? rel?.quantity ?? 0)
+
+  const existing = account.relPositionTransactions.find((row) =>
+    String(row?.positionKey || '') === positionKey &&
+    String(row?.sourceTransactionId || '') === sourceTransactionId &&
+    String(row?.eventKind || '').toLowerCase() === eventKind &&
+    Number(row?.eventWeek || 0) === eventWeek &&
+    Number(row?.allocatedShares ?? row?.quantity ?? 0) === quantity
+  )
+  if (existing) return
+
+  const relId = rel?.id || `relpos_${simpleStableHash(`${positionKey}|${sourceTransactionId}|${eventKind}|${eventWeek}|${quantity}`)}`
+  account.relPositionTransactions.push({
+    id: relId,
+    positionKey: rel?.positionKey || null,
+    sourceTransactionId,
+    eventDate: rel?.eventDate || null,
+    eventWeek: Number.isFinite(Number(rel?.eventWeek)) ? Number(rel.eventWeek) : null,
+    eventKind: rel?.eventKind || 'event',
+    quantity: rel?.quantity === undefined || rel?.quantity === null ? null : Number(rel.quantity),
+    allocatedShares: rel?.allocatedShares === undefined || rel?.allocatedShares === null ? null : Number(rel.allocatedShares),
+    allocatedAmount: rel?.allocatedAmount === undefined || rel?.allocatedAmount === null ? null : Number(rel.allocatedAmount),
+    notes: rel?.notes || null,
+    metadata: rel?.metadata || null,
+    createdAt: rel?.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  })
 }
 
 const handleTransactionFileChange = (event) => {
@@ -195,20 +285,39 @@ async function importTransactionsFromCSV(file, targetAccount) {
     const preservedPositionMeta = Array.isArray(targetAccount.positionMeta)
       ? [...targetAccount.positionMeta]
       : []
+    const existingImportedTransactions = Array.isArray(targetAccount.importedTransactions)
+      ? targetAccount.importedTransactions
+      : []
+    const previousIdToFingerprint = new Map(
+      existingImportedTransactions
+        .filter(row => row?.id)
+        .map(row => [String(row.id), row.sourceFingerprint || createSourceFingerprint(row)])
+    )
+    const preservedTrades = Array.isArray(targetAccount.trades)
+      ? JSON.parse(JSON.stringify(targetAccount.trades))
+      : []
+    const preservedRelTradeTransactions = Array.isArray(targetAccount.relTradeTransactions)
+      ? JSON.parse(JSON.stringify(targetAccount.relTradeTransactions))
+      : []
+    const preservedNotes = Array.isArray(targetAccount.notes)
+      ? JSON.parse(JSON.stringify(targetAccount.notes))
+      : []
 
     // If delete all data is selected, clear all data arrays before import
     if (deleteAllData.value) {
-      targetAccount.actuals = []
+      targetAccount.importedTransactions = []
       targetAccount.positions = []
-      targetAccount.sells = []
+      targetAccount.relPositionTransactions = []
       targetAccount.positionMeta = preservedPositionMeta
+      targetAccount.trades = preservedTrades
+      targetAccount.relTradeTransactions = preservedRelTradeTransactions
+      targetAccount.notes = preservedNotes
     }
     
     // Get broker map for type categorization
     const brokerMap = store.getBrokerageMap(meta.headers.toString())
     
-    // Step 2: Process data rows and assign to actuals array by week
-    // Returns arrays of transactions, positions, and sells for further processing
+    // Step 2: Ingest/import rows and classify for follow-on processors
     const { transactionsImport, positionsImport, sellsImport, processDataResults } = 
       _processData(dataRows, brokerMap)
     
@@ -220,6 +329,55 @@ async function importTransactionsFromCSV(file, targetAccount) {
 
     // Step 5: Process sell data if any
     const sellResults = _processSellData(sellsImport)
+    let unresolvedTradeLinks = 0
+
+    if (deleteAllData.value) {
+      const nextFingerprintToId = new Map(
+        (Array.isArray(targetAccount.importedTransactions) ? targetAccount.importedTransactions : [])
+          .map(row => [row?.sourceFingerprint || createSourceFingerprint(row), row?.id])
+          .filter(([fingerprint, id]) => Boolean(fingerprint) && Boolean(id))
+      )
+
+      const remapSourceTransactionId = (previousId) => {
+        if (!previousId) return { id: null, unresolved: false }
+        const oldId = String(previousId)
+        const fingerprint = previousIdToFingerprint.get(oldId) || oldId
+        const nextId = nextFingerprintToId.get(fingerprint) || null
+        if (!nextId) {
+          return { id: null, unresolved: true }
+        }
+        return { id: String(nextId), unresolved: false }
+      }
+
+      targetAccount.trades = (Array.isArray(targetAccount.trades) ? targetAccount.trades : []).map(trade => {
+        const remap = remapSourceTransactionId(trade?.sourceTransactionId)
+        if (remap.unresolved) unresolvedTradeLinks += 1
+        return {
+          ...trade,
+          sourceTransactionId: remap.id
+        }
+      })
+
+      targetAccount.relTradeTransactions = (Array.isArray(targetAccount.relTradeTransactions) ? targetAccount.relTradeTransactions : []).map(rel => {
+        const remap = remapSourceTransactionId(rel?.sourceTransactionId)
+        if (remap.unresolved) unresolvedTradeLinks += 1
+        return {
+          ...rel,
+          sourceTransactionId: remap.id
+        }
+      })
+
+      targetAccount.notes = (Array.isArray(targetAccount.notes) ? targetAccount.notes : []).map(note => {
+        if (note?.targetCollection !== 'importedTransactions') return note
+        const remap = remapSourceTransactionId(note?.targetId)
+        if (remap.unresolved) unresolvedTradeLinks += 1
+        return {
+          ...note,
+          targetId: remap.id
+        }
+      })
+
+    }
 
     // Final metadata pass: reapply persisted overrides after all lots and allocations settle.
     // This ensures delete+reimport keeps user-edited position fields.
@@ -233,14 +391,12 @@ async function importTransactionsFromCSV(file, targetAccount) {
       weeksChanged: processDataResults.weeksChanged,
       transfersDeleted: transactionResults.transactionsDeleted, // Map to template expected property
       transfersAdded: transactionResults.transactionsAdded, // Map to template expected property
+      unallocatedPositionsCreated: Number(sellResults?.unallocatedPositionsCreated || 0),
       errors: errors,
-      skippedRows: errors.length
+      skippedRows: errors.length,
+      unresolvedTradeLinks: Number(unresolvedTradeLinks || 0)
     }
-    
-    // After processing the import, recalculate any weeks that need it
-    const recalculationResults = calculateWeeklyTotals()
-    results.recalculation = recalculationResults
-    
+
     return results
   } catch (error) {
     console.error('Import transaction error:', error)
@@ -529,11 +685,14 @@ function parseCSV(csvText) {
   }
 }
 
-// Process data rows and organize into actuals and identify transactions/positions
+// Process data rows into imported transaction records and classification buckets
 function _processData(dataRows, brokerMap) {
   const account = getWorkingAccount()
   if (!account) {
     throw new Error('No account available while processing import data')
+  }
+  if (!Array.isArray(account.importedTransactions)) {
+    account.importedTransactions = []
   }
   // Variables used for processing
   let rowsProcessed = 0
@@ -541,17 +700,15 @@ function _processData(dataRows, brokerMap) {
   let positionsImport = []
   let sellsImport = []
   let smallestWeek = Infinity
-  let weeksChanged = []
+  const changedWeeks = new Set()
   
   // Get the account start date
   const startDate = new Date(account.settings.startDate)
   
-  // Create a mapping of transactions by week
-  const dataByWeek = {}
-  
   const orderedRows = getExecutionOrderedRows(dataRows)
+  const importedRows = []
 
-  // First pass: Group all data rows by their corresponding week
+  // First pass: derive week + ids/fingerprint and classify each row
   orderedRows.forEach(dataRow => {
     // Calculate which week this data row belongs to
     const transactionDate = new Date(dataRow.date)
@@ -568,39 +725,47 @@ function _processData(dataRows, brokerMap) {
       smallestWeek = week
     }
     
-    // Initialize the array for this week if it doesn't exist
-    if (!dataByWeek[week]) {
-      dataByWeek[week] = []
+    changedWeeks.add(week)
+
+    const importedRow = {
+      sourceLine: Number.isFinite(Number(dataRow.sourceLine)) ? Number(dataRow.sourceLine) : null,
+      date: dataRow.date,
+      description: dataRow.description || '',
+      amount: Number(dataRow.amount || 0),
+      action: dataRow.action || '',
+      symbol: dataRow.symbol || '',
+      quantity: Number(dataRow.quantity || 0),
+      price: Number(dataRow.price || 0),
+      fees: dataRow.fees === undefined || dataRow.fees === null ? 0 : Number(dataRow.fees || 0),
+      executionOrder: Number(dataRow.executionOrder || 0),
+      week
     }
-    
-    // Add this row to the week's array
-    dataByWeek[week].push(dataRow)
+    importedRow.sourceFingerprint = createSourceFingerprint(importedRow)
+    importedRow.id = createImportedTransactionId(importedRow)
+    importedRows.push(importedRow)
     
     // Identify if this is a transaction, position, or sell based on action
     const action = dataRow.action.toLowerCase()
+    const normalizedRow = {
+      ...dataRow,
+      id: importedRow.id,
+      sourceFingerprint: importedRow.sourceFingerprint,
+      executionOrder: dataRow.executionOrder,
+      week
+    }
     
     // Categorize based on broker map types
     if (brokerMap.transactionTypes.includes(action)) {
       // Add to transactions import for later processing
-      transactionsImport.push({
-        ...dataRow,
-        executionOrder: dataRow.executionOrder,
-        week: week
-      })
+      transactionsImport.push(normalizedRow)
     } else if (brokerMap.positionTypes.includes(action)) {
       // Add to positions import for later processing (only buys)
-      positionsImport.push({
-        ...dataRow,
-        executionOrder: dataRow.executionOrder,
-        week: week
-      })
+      positionsImport.push(normalizedRow)
     } else if (brokerMap.sellTypes && brokerMap.sellTypes.includes(action)) {
       // Add to sells import for later processing (only sells)
       sellsImport.push({
-        ...dataRow,
+        ...normalizedRow,
         action,
-        executionOrder: dataRow.executionOrder,
-        week: week
       })
     }
     
@@ -609,46 +774,31 @@ function _processData(dataRows, brokerMap) {
   
   // If requested, discard the first week's data
   if (discardFirstWeek.value && smallestWeek !== Infinity) {
-    delete dataByWeek[smallestWeek]
-    // Adjust the processed count
-    if (dataByWeek[smallestWeek]) {
-      rowsProcessed -= dataByWeek[smallestWeek].length
+    changedWeeks.delete(Number(smallestWeek))
+    transactionsImport = transactionsImport.filter(row => Number(row?.week) !== Number(smallestWeek))
+    positionsImport = positionsImport.filter(row => Number(row?.week) !== Number(smallestWeek))
+    sellsImport = sellsImport.filter(row => Number(row?.week) !== Number(smallestWeek))
+    for (let i = importedRows.length - 1; i >= 0; i--) {
+      if (Number(importedRows[i]?.week) === Number(smallestWeek)) {
+        importedRows.splice(i, 1)
+      }
     }
   }
 
-  // Always discard the current week (in progress) from actuals, not from imported data
-  const today = new Date()
-  const startDateObj = new Date(account.settings.startDate)
-  const diffTime = today - startDateObj
-  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
-  const currentWeek = Math.floor(diffDays / 7) + 1
-  account.actuals = account.actuals.filter(a => parseInt(a.week) !== currentWeek)
-
-  // Process each week's data into the actuals array
-  const weeksProcessed = Object.keys(dataByWeek).length
-
-  Object.entries(dataByWeek).forEach(([week, weekData]) => {
-    const weekNumber = parseInt(week)
-    
-    // Find existing entry for this week
-    const existingEntry = account.actuals.find(a => parseInt(a.week) === weekNumber)
-    
-    if (!existingEntry) {
-      // Create new entry with data array and hash
-      account.actuals.push({
-        week: weekNumber,
-        growth: 0,
-        data: [...weekData]
-      })
-      
-      weeksChanged.push(weekNumber)
-      return
-    }
-
-    existingEntry.data = [...weekData]
-    existingEntry.growth = 0
-    weeksChanged.push(weekNumber)
-  })
+  const changedWeekList = Array.from(changedWeeks)
+  if (changedWeekList.length) {
+    account.importedTransactions = account.importedTransactions.filter(row => {
+      const week = Number(row?.week || 0)
+      return !changedWeekList.includes(week)
+    })
+    account.importedTransactions.push(...importedRows)
+    account.importedTransactions.sort((a, b) => {
+      const weekA = Number(a?.week || 0)
+      const weekB = Number(b?.week || 0)
+      if (weekA !== weekB) return weekA - weekB
+      return Number(a?.executionOrder || 0) - Number(b?.executionOrder || 0)
+    })
+  }
 
   return {
     transactionsImport,
@@ -656,9 +806,9 @@ function _processData(dataRows, brokerMap) {
     sellsImport,
     processDataResults: {
       rowsProcessed,
-      weeksProcessed,
-      weeksUpdated: weeksChanged.length,
-      weeksChanged
+      weeksProcessed: changedWeekList.length,
+      weeksUpdated: changedWeekList.length,
+      weeksChanged: changedWeekList
     }
   }
 }
@@ -710,7 +860,9 @@ function _processTransactions(transactionsImport) {
       type: isDeposit ? 'deposit' : 'withdrawal',
       description: transaction.description,
       startWeek: parseInt(week),
-      endWeek: parseInt(week)
+      endWeek: parseInt(week),
+      sourceTransactionId: transaction.id || null,
+      isProjected: false
     }
     
     // Check if a matching transaction already exists
@@ -742,7 +894,7 @@ function _processPositions(positionsImport, sellsImport = []) {
   }
   if (!Array.isArray(positionsImport) || positionsImport.length === 0) return
   if (!account.positions) account.positions = []
-  if (!account.sells) account.sells = []
+  if (!account.relPositionTransactions) account.relPositionTransactions = []
 
   const shortSells = (Array.isArray(sellsImport) ? sellsImport : [])
     .filter(sell => (sell.action || '').toString().toLowerCase().includes('short'))
@@ -753,9 +905,11 @@ function _processPositions(positionsImport, sellsImport = []) {
       return (a.executionOrder || 0) - (b.executionOrder || 0)
     })
 
+  const shortSellLots = []
   shortSells.forEach((sell) => {
     const shortPosition = {
       positionKey: '',
+      sourceTransactionId: sell.id || null,
       startWeek: sell.week,
       date: sell.date,
       executionOrder: sell.executionOrder,
@@ -781,7 +935,8 @@ function _processPositions(positionsImport, sellsImport = []) {
     }
 
     const shortSellRecord = {
-      positionKey: `${store.getPositionKey(sell, 'sellshort')}_${sell.executionOrder}`,
+      id: `${store.getPositionKey(sell, 'sellshort')}_${sell.executionOrder}`,
+      sourceTransactionId: sell.id || null,
       week: sell.week,
       date: sell.date,
       action: (sell.action || '').toString().toLowerCase(),
@@ -793,10 +948,17 @@ function _processPositions(positionsImport, sellsImport = []) {
       shortPositionKey: shortPosition.positionKey,
       allocated: []
     }
-    const sellExists = account.sells.some(s => s.positionKey === shortSellRecord.positionKey)
-    if (!sellExists) {
-      account.sells.push(shortSellRecord)
-    }
+    shortSellLots.push(shortSellRecord)
+    upsertRelPositionTransaction(account, {
+      positionKey: shortPosition.positionKey,
+      sourceTransactionId: sell.id || null,
+      eventDate: sell.date,
+      eventWeek: sell.week,
+      eventKind: 'open',
+      quantity: Number(sell.quantity || 0),
+      allocatedShares: Number(sell.quantity || 0),
+      allocatedAmount: Number(sell.amount || 0)
+    })
   })
 
   positionsImport
@@ -813,7 +975,7 @@ function _processPositions(positionsImport, sellsImport = []) {
 
     const buyAmount = Math.abs(Number(data.amount || 0))
 
-    const openShortSells = account.sells
+    const openShortSells = shortSellLots
       .filter(sell =>
         (sell.action || '').includes('short') &&
         sell.symbol === data.symbol &&
@@ -855,6 +1017,17 @@ function _processPositions(positionsImport, sellsImport = []) {
         }
       }
 
+      upsertRelPositionTransaction(account, {
+        positionKey: shortSell.shortPositionKey,
+        sourceTransactionId: data.id || null,
+        eventDate: data.date,
+        eventWeek: data.week,
+        eventKind: 'close',
+        quantity: coverQty,
+        allocatedShares: coverQty,
+        allocatedAmount: -Math.abs(coverCost)
+      })
+
       sharesRemaining -= coverQty
     }
 
@@ -864,6 +1037,7 @@ function _processPositions(positionsImport, sellsImport = []) {
     // Build the position object
     const position = {
       positionKey: '',
+      sourceTransactionId: data.id || null,
       startWeek: null,
       date: data.date,
       executionOrder: data.executionOrder,
@@ -891,6 +1065,16 @@ function _processPositions(positionsImport, sellsImport = []) {
 
     // Add the position to the active account's positions
     account.positions.push(position)
+    upsertRelPositionTransaction(account, {
+      positionKey: position.positionKey,
+      sourceTransactionId: data.id || null,
+      eventDate: data.date,
+      eventWeek: data.week,
+      eventKind: 'open',
+      quantity: sharesRemaining,
+      allocatedShares: sharesRemaining,
+      allocatedAmount: -Math.abs(remainingCostBasis)
+    })
   })
 
   // After adding all positions, sort by assignedWeek
@@ -904,35 +1088,53 @@ function _processSellData(sellsImport) {
   if (!account) {
     throw new Error('No account available while processing sells')
   }
-  if (!Array.isArray(sellsImport) || sellsImport.length === 0) return
-  if (!account.sells) account.sells = []
-  if (!account.positions) account.positions = []
-
-  // Step 1: Add new sells to the account's sells array
-  sellsImport.forEach(data => {
-    if ((data.action || '').toString().toLowerCase().includes('short')) return
-    const sell = {
-      positionKey: '',
-      week: data.week,
-      date: data.date,
-      action: (data.action || '').toString().toLowerCase(),
-      amount: Math.abs(data.amount),
-      shares: data.quantity,
-      symbol: data.symbol,
-      executionOrder: data.executionOrder,
-      allocated: []
+  if (!Array.isArray(sellsImport) || sellsImport.length === 0) {
+    return {
+      sellsProcessed: 0,
+      unallocatedPositionsCreated: 0
     }
-    sell.positionKey = `${store.getPositionKey(sell, 'sell')}_${data.executionOrder}`
-    // Check if this sell already exists
-    const exists = account.sells.some(s => s.positionKey === sell.positionKey)
-    if (exists) return
-    account.sells.push(sell)
-  })
+  }
+  if (!account.positions) account.positions = []
+  if (!account.relPositionTransactions) account.relPositionTransactions = []
+  let unallocatedPositionsCreated = 0
 
-  // Step 2: Allocate sells to open positions (FIFO)
-  account.sells.forEach(sell => {
-    if (sell.allocated && sell.allocated.length > 0) return // Already allocated
-    if ((sell.action || '').includes('short')) return // "sell short" opens a short; do not allocate as long-position close
+  const sellsToProcess = sellsImport
+    .filter(data => !((data.action || '').toString().toLowerCase().includes('short')))
+    .map(data => {
+      const sell = {
+        sourceTransactionId: data.id || null,
+        week: data.week,
+        date: data.date,
+        action: (data.action || '').toString().toLowerCase(),
+        amount: Math.abs(data.amount),
+        shares: data.quantity,
+        symbol: data.symbol,
+        executionOrder: data.executionOrder,
+        allocated: []
+      }
+      return sell
+    })
+    .sort((a, b) => {
+      if (Number(a.week || 0) !== Number(b.week || 0)) return Number(a.week || 0) - Number(b.week || 0)
+      if (a.date < b.date) return -1
+      if (a.date > b.date) return 1
+      return Number(a.executionOrder || 0) - Number(b.executionOrder || 0)
+    })
+
+  // Step 1: Process each sell in-order (FIFO allocation)
+  sellsToProcess.forEach(sell => {
+    const sellSourceId = String(sell.sourceTransactionId || '')
+    const hasExistingAllocation = Boolean(
+      sellSourceId &&
+      account.relPositionTransactions.some((rel) =>
+        String(rel?.sourceTransactionId || '') === sellSourceId &&
+        String(rel?.eventKind || '').toLowerCase() === 'close'
+      )
+    )
+    if (hasExistingAllocation) return
+
+    if (sell.allocated && sell.allocated.length > 0) return
+    if ((sell.action || '').includes('short')) return
     let sharesToAllocate = sell.shares
     // Find open positions for this symbol, FIFO order (by date, then by startWeek)
     const openPositions = account.positions
@@ -960,10 +1162,11 @@ function _processSellData(sellsImport) {
         buyWeek: pos.startWeek,
         sellWeek: sell.week
       })
+      const allocatedAmount = Math.round((sell.amount * (allocateQty / sell.shares)) * 1000) / 1000
       // Update position's soldShares and sellAmount
       pos.soldShares += allocateQty
       // Allocate proportional sellAmount for this position
-      pos.sellAmount += Math.round((sell.amount * (allocateQty / sell.shares)) * 1000) / 1000
+      pos.sellAmount += allocatedAmount
       // Backfill currentPrice as sellAmount / soldShares rounded to 3 decimals
       if (pos.soldShares > 0) {
         pos.currentPrice = Math.round((pos.sellAmount / pos.soldShares) * 1000) / 1000
@@ -972,6 +1175,16 @@ function _processSellData(sellsImport) {
       if (pos.soldShares === pos.shares) {
         pos.soldWeek = sell.week
       }
+      upsertRelPositionTransaction(account, {
+        positionKey: pos.positionKey,
+        sourceTransactionId: sell.sourceTransactionId || null,
+        eventDate: sell.date,
+        eventWeek: sell.week,
+        eventKind: 'close',
+        quantity: allocateQty,
+        allocatedShares: allocateQty,
+        allocatedAmount
+      })
       sharesToAllocate -= allocateQty
       if (sharesToAllocate <= 0) break
     }
@@ -982,6 +1195,7 @@ function _processSellData(sellsImport) {
       const newPosition = {
         startWeek: sell.week,
         date: startDate,
+        sourceTransactionId: sell.sourceTransactionId || null,
         executionOrder: sell.executionOrder,
         costBasis: unallocatedSellAmount,
         offsettingProfits: 0,
@@ -1005,93 +1219,27 @@ function _processSellData(sellsImport) {
         buyWeek: sell.week,
         sellWeek: sell.week
       })
-      console.warn(`Created new unallocated position for ${sharesToAllocate} shares of ${sell.symbol} on week ${sell.week}`)
-    }
-  })
-}
-
-// Function to recalculate week totals for actuals that need it
-function calculateWeeklyTotals() {
-  const account = getWorkingAccount()
-  if (!account || !account.actuals) {
-    return { weeksProcessed: 0, weeksUpdated: 0 }
-  }
-
-  // Get the brokerage map for the current account
-  const brokerMap = store.getBrokerageMap()
-
-  // Find weeks that need recalculation
-  const weeksToRecalculate = account.actuals
-    .filter(actual => (!actual.amount || actual.amount === 0) && actual.data.length > 0)
-    .sort((a, b) => a.week - b.week)
-
-  if (weeksToRecalculate.length === 0) {
-    // No weeks need recalculation
-    return { weeksProcessed: 0, weeksUpdated: 0 }
-  }
-
-  let weeksUpdated = 0
-  // Process each week that needs recalculation
-  weeksToRecalculate.forEach(actual => {
-    // Use the calculation function to get new values
-    const total = _calculateWeekTotal(actual.data || [], brokerMap)
-    
-    // Update the week's growth value if changed
-    if (Number(actual.growth) !== total) {
-      actual.growth = total
-      weeksUpdated++
-    }
-  })
-  
-  return {
-    weeksProcessed: weeksToRecalculate.length,
-    weeksUpdated
-  }
-}
-
-// Isolated function to calculate weekly total from transactions
-function _calculateWeekTotal(weekData, brokerMap) {
-  // Use broker map to identify types that contribute to weekly total
-  const weeklyTotalTypes = brokerMap.weeklyTotalTypes
-  let total = 0
-  if (!weekData || !weekData.length) {
-    return 0
-  }
-  weekData.forEach(dataRow => {
-    const action = dataRow.action.toLowerCase()
-    if (weeklyTotalTypes.includes(action)) {
-      total += dataRow.amount
-    }
-  })
-  // Round the final amount to 2 decimal places
-  return Math.round(total * 100) / 100
-}
-
-// Migration: Move notes from actuals to a separate notes array
-function migrateNotesToArray() {
-  const account = getWorkingAccount()
-  if (!account || !Array.isArray(account.actuals) || account.actuals.length === 0) return
-  // Only run if the first actual has a 'notes' attribute
-  if (!('notes' in account.actuals[0])) return
-
-  if (!Array.isArray(account.notes)) account.notes = []
-
-  account.actuals.forEach(actual => {
-    if (actual.notes && typeof actual.notes === 'string' && actual.notes.trim() !== '') {
-      // Calculate week start date
-      const startDate = new Date(account.settings.startDate)
-      startDate.setDate(startDate.getDate() + (Number(actual.week) - 1) * 7)
-      const isoDate = startDate.toISOString().split('T')[0]
-      account.notes.push({
-        week: Number(actual.week),
-        date: isoDate,
-        note: actual.notes
+      upsertRelPositionTransaction(account, {
+        positionKey: newPosition.positionKey,
+        sourceTransactionId: sell.sourceTransactionId || null,
+        eventDate: sell.date,
+        eventWeek: sell.week,
+        eventKind: 'close',
+        quantity: sharesToAllocate,
+        allocatedShares: sharesToAllocate,
+        allocatedAmount: unallocatedSellAmount
       })
+      unallocatedPositionsCreated += 1
+      console.info(`Created unallocated fallback position for ${sharesToAllocate} shares of ${sell.symbol} on week ${sell.week}`)
     }
-    // Remove the notes attribute from actual
-    delete actual.notes
   })
+
+  return {
+    sellsProcessed: sellsImport.length,
+    unallocatedPositionsCreated
+  }
 }
+
 
 // Expose the show method to the app store
 store.showImportTransactionsModal = show
@@ -1195,7 +1343,7 @@ store.showImportTransactionsModal = show
                   Delete all data before import
                 </label>
                 <div class="form-text">
-                  When checked, all transactions, positions, and weekly transaction data will be deleted before importing new data.
+                  When checked, imported transaction history and derived position/link data are rebuilt. Notes, manual position profit allocations, and trade data are preserved and relinked when possible.
                 </div>
               </div>
               
@@ -1214,12 +1362,12 @@ store.showImportTransactionsModal = show
                 <p>{{ transactionImportResults.weeksUpdated }} of {{ transactionImportResults.weeksProcessed }} weeks updated</p>
                 <p v-if="transactionImportResults.transfersDeleted">{{ transactionImportResults.transfersDeleted }} transactions deleted</p>
                 <p>{{ transactionImportResults.transfersAdded }} deposit/withdrawal transactions added</p>
-                <p v-if="transactionImportResults.skippedRows">{{ transactionImportResults.skippedRows }} rows skipped due to errors</p>
-                <p v-if="transactionImportResults.recalculation?.weeksProcessed">
-                  {{ transactionImportResults.recalculation.weeksUpdated }} of {{ transactionImportResults.recalculation.weeksProcessed }} weeks recalculated
+                <p v-if="transactionImportResults.unallocatedPositionsCreated" class="mb-1">
+                  {{ transactionImportResults.unallocatedPositionsCreated }} unallocated fallback position(s) were created while matching sells.
                 </p>
-                <p v-if="transactionImportResults.recalculation?.weeksWithoutData" class="text-warning">
-                  Warning: Weeks {{ transactionImportResults.recalculation.weeksWithoutData.join(', ') }} have no transaction data
+                <p v-if="transactionImportResults.skippedRows">{{ transactionImportResults.skippedRows }} rows skipped due to errors</p>
+                <p v-if="transactionImportResults.unresolvedTradeLinks" class="text-warning mb-0">
+                  Warning: {{ transactionImportResults.unresolvedTradeLinks }} preserved trade/note link(s) could not be remapped to imported transactions.
                 </p>
               </div>
 
