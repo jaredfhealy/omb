@@ -1,10 +1,14 @@
-# Data Model
+# Data Model (v1 Baseline)
 
-Last verified: 2026-10-21
+Last verified: 2026-10-24
 
-## Persistence container
+This document is the frozen baseline of the current runtime model (v1). It exists to preserve a clear reference while the v2 redesign is implemented.
 
-Primary runtime persistence is an IndexedDB envelope containing:
+For the target model, see [data-model-v2.md](./data-model-v2.md).
+
+## v1 persistence container
+
+Primary runtime persistence in v1 is a single IndexedDB envelope:
 
 ```js
 {
@@ -18,9 +22,7 @@ Primary runtime persistence is an IndexedDB envelope containing:
 }
 ```
 
-## Top-level shape
-
-`data` shape:
+## v1 top-level shape
 
 ```js
 {
@@ -28,7 +30,7 @@ Primary runtime persistence is an IndexedDB envelope containing:
 }
 ```
 
-## Account shape (core fields)
+## v1 account shape (core fields)
 
 ```js
 {
@@ -42,7 +44,7 @@ Primary runtime persistence is an IndexedDB envelope containing:
     weeklyReturn: Number,
     years: Number
   },
-  transactions: Transaction[],
+  transactions: CashFlow[],
   actuals: ActualWeek[],
   positions: Position[],
   sells: SellRecord[],
@@ -51,49 +53,33 @@ Primary runtime persistence is an IndexedDB envelope containing:
 }
 ```
 
-## Position shape (current operational model)
+Note: v1 persisted key is `transactions`; domain terminology now refers to these records as cash flows.
+
+## v1 position shape
 
 ```js
 {
   positionKey: String,
   symbol: String,
-  executionOrder: Number | undefined, // import execution sequence for ordering/tie-breaks
+  executionOrder: Number | undefined,
   shares: Number,
-  costBasis: Number,       // May be negative for short lots
+  costBasis: Number,
   currentPrice: Number,
   assignedWeek: Number,
   soldWeek: Number | null,
   soldShares: Number,
   sellAmount: Number,
-  offsettingProfits: Number, // net options contribution; can be positive (credit) or negative (debit)
+  offsettingProfits: Number,
   startWeek: Number | null,
   profitAllocation: Number,
-  manual: Boolean | null, // true only for user-created manual lots
-  positionType: 'short' | undefined // when modeled as short lot
+  manual: Boolean | null,
+  positionType: 'short' | undefined
 }
 ```
 
-## Data integrity rules
+## v1 known gaps tracked for v2
 
-- Week numbers are 1-based relative to account `settings.startDate`.
-- `positionKey` must be unique per persisted lot/record.
-- Import execution order must be preserved for lot matching logic.
-
-## Position metadata sidecar
-
-`positionMeta` stores position-level overrides that must survive re-imports.
-
-```js
-{
-  key: String, // deterministic identity: symbol + date + side + shares + basis + executionOrder token
-  offsettingProfitsOverride: Number | undefined,
-  profitAllocationOverride: Number | undefined,
-  createdAt: ISOString,
-  updatedAt: ISOString
-}
-```
-
-Rules:
-- Sidecar is keyed independently from `positionKey` so import-created lot keys can be regenerated.
-- Sidecar lookup supports base-identity fallback when execution-order token differs.
-- Overrides are applied to matching lots during load/import/recalculation.
+1. Raw imported brokerage rows are nested under `actuals[].data[]` instead of a centralized ledger collection.
+2. Ordering/traceability fields need clarification and de-duplication (`sourceLine`, `executionOrder`, position-level ordering carryover).
+3. Trade lifecycle modeling requires first-class collections (`trades`, `relTradeTransactions`) and source-transaction linkage constraints.
+4. Single-envelope persistence makes partial updates/querying more expensive than collection-oriented storage.

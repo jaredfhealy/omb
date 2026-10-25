@@ -15,7 +15,7 @@ const store = useAppStore()
     </li>
     <li class="nav-item">
       <a class="nav-link" :class="{ active: store.activeTab === 'recurring' }" @click="store.activeTab = 'recurring'"
-        href="#"><i class="bi bi-arrow-left-right"></i> <span>Transactions</span></a>
+        href="#"><i class="bi bi-arrow-left-right"></i> <span>Cash Flows</span></a>
     </li>
     <li class="nav-item">
       <a class="nav-link" :class="{ active: store.activeTab === 'positions' }" @click="store.activeTab = 'positions'"

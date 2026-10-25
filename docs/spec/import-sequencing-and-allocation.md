@@ -1,8 +1,8 @@
 # Import Sequencing and Allocation
 
-Last verified: 2026-10-14
+Last verified: 2026-10-24
 
-This document defines the required transaction import behavior for Schwab CSV data.
+This document defines the required transaction history import behavior for Schwab CSV data.
 
 ## Normalization rules
 
@@ -21,7 +21,7 @@ This document defines the required transaction import behavior for Schwab CSV da
 - `buy` → buy-side execution
 - `sell` → long-closing execution
 - `sell short` → short-opening execution
-- transfer/journal categories remain transaction records as configured in brokerage map
+- transfer/journal categories remain source-transaction records as configured in brokerage map
 
 ## Lot matching rules
 
@@ -35,7 +35,7 @@ This document defines the required transaction import behavior for Schwab CSV da
 ### Offsetting profits
 
 - Offsetting profits are manual position metadata entered by the user.
-- Import initializes lots with `offsettingProfits = 0` and does not auto-populate from transaction rows.
+- Import initializes lots with `offsettingProfits = 0` and does not auto-populate from source transaction rows.
 - Offsetting profits can be positive (credit) or negative (debit) and may apply to both long and short lots.
 
 ### Buy processing

@@ -12,7 +12,7 @@ Last verified: 2026-10-14
 Per week, projection logic derives:
 
 - `startCashBalance`
-- net recurring transactions
+- net recurring cash flows
 - share-balance effects from position lifecycle
 - actual-vs-projected growth choice
 - `endBalance`
@@ -22,4 +22,4 @@ Per week, projection logic derives:
 
 - Past/current weeks prefer actual outcomes when available.
 - Future weeks use projected return settings.
-- Changes to positions/transactions/settings recalculate dependent rows.
+- Changes to positions/cash flows/settings recalculate dependent rows.

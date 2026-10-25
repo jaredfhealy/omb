@@ -161,7 +161,7 @@ store.clearFilters = clearFilters
     <!-- Move empty state inside DataTable as a slot -->
     <template v-if="filteredTransactions.length === 0" #empty>
       <div class="text-center py-5">
-        <p class="text-muted">No transactions match your filters</p>
+        <p class="text-muted">No cash flows match your filters</p>
         <button class="btn btn-outline-secondary" @click="clearFilters">Reset filters</button>
       </div>
     </template>
@@ -171,7 +171,7 @@ store.clearFilters = clearFilters
 <style>
 /* Remove the container style that's no longer needed */
 
-/* Transaction type and category styling */
+/* Cash flow type and category styling */
 .transaction-type {
   display: flex;
   align-items: center;

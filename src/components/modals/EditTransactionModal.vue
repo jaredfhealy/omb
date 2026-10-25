@@ -104,7 +104,7 @@ store.editTransaction = editTransaction
       <div class="modal-content">
         <div class="modal-header">
           <h5 class="modal-title">
-            {{ editingIndex === null ? 'Add New Transaction' : 'Edit ' +
+            {{ editingIndex === null ? 'Add New Cash Flow' : 'Edit ' +
               editingTransaction.type.charAt(0).toUpperCase() + editingTransaction.type.slice(1) }}
           </h5>
           <button type="button" class="btn-close" @click="closeEditModal"></button>
@@ -117,7 +117,7 @@ store.editTransaction = editTransaction
             </ul>
           </div>
           <div class="form-group mb-3">
-            <label>Transaction Type</label>
+            <label>Cash Flow Type</label>
             <select v-model="editingTransaction.type" class="form-select">
               <option :value="null">-- Select --</option>
               <option value="deposit">Deposit</option>

@@ -126,7 +126,7 @@ const columns = [
   {
     key: 'netTransaction',
     header: {
-      text: 'Net Trans.',
+      text: 'Net Cash Flow',
       tooltip: 'Rows marked with (*) have both deposits and withdrawals'
     },
     class: 'col-6 col-xl',
@@ -173,7 +173,7 @@ const columns = [
     key: 'endBalance',
     header: {
       text: 'End: Total',
-      tooltip: 'Final balance after all transactions and growth'
+      tooltip: 'Final balance after all cash flows and growth'
     },
     class: 'col-6 col-xl',
     value: (item) => store.currency(item.endBalance)
@@ -315,7 +315,7 @@ function editNetTransactionFromRow(week) {
   store.activeTab = 'recurring'
   store.selectedWeek = week
 
-  // Check if there are transactions for this week
+  // Check if there are cash flows for this week
   const hasTransactions = store.activeAccount.transactions.some(t =>
     t.startWeek === week && t.endWeek === week
   )
@@ -559,7 +559,7 @@ const dataTableRef = ref(null)
         </div>
       </template>
 
-      <!-- Net Transaction column with edit icon -->
+      <!-- Net Cash Flow column with edit icon -->
       <template #netTransaction="{ item }">
         <div class="d-flex">
           <i class="bi bi-pencil-square cursor-pointer me-1"

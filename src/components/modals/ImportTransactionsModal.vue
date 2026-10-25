@@ -1132,7 +1132,7 @@ store.showImportTransactionsModal = show
                 :aria-selected="importMode === 'transactions'"
                 @click="importMode = 'transactions'"
               >
-                Transactions
+                Transaction History
               </button>
             </li>
             <li class="nav-item" role="presentation">
