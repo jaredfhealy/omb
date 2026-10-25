@@ -1,6 +1,6 @@
 # UI Behavior and Interaction Rules
 
-Last verified: 2026-10-14
+Last verified: 2026-10-24
 
 ## Layout and scrolling
 
@@ -13,7 +13,7 @@ Last verified: 2026-10-14
 - Use consistent Bootstrap `nav-tabs` + tab-panel pattern for multi-mode surfaces.
 - Keep panel seams visually connected (tab strip and tab body should align).
 - Refresh persistence uses route query state:
-  - `tab` for active tab (`yearly`, `weekly`, `recurring`, `positions`)
+  - `tab` for active tab (`yearly`, `weekly`, `recurring`, `positions`), where `recurring` is the Cash Flows tab key
   - `pf` for positions status filter (`open`, `recent`, `closed`, `all`)
   - `symbols` as comma-separated symbol chips for positions filtering
 - Query state is tab-scoped: when navigating away from Positions, positions-only query params (`pf`, `symbols`) are removed.
@@ -33,7 +33,7 @@ Last verified: 2026-10-14
 
 ## Weekly workflows
 
-- Weekly modal presents summary/positions and transactions via tabbed layout.
+- Weekly modal presents summary/positions and source transactions via tabbed layout.
 - Raw transaction counts and note affordances should be visible from the weekly table.
 
 ## Data management workflows
@@ -43,6 +43,11 @@ Last verified: 2026-10-14
 - Save/apply actions should require explicit user intent (confirmation) and surface validation/save failures.
 - Data import/export actions live in Data Manager (not Manage/Switch Accounts modal) and run through local-first persistence behavior.
 
+## Trade Desk workflows
+
+- Trade management route is `/trade-desk` (canonical).
+- Trade Desk should prioritize active workflows: open/closed filtering, allocation management, and timeline-driven review.
+
 ## Import workflows
 
-- After a successful transactions import or positions import, the app marks a pending refresh and reloads only when the user closes the import modal (Close/OK action), so results can be reviewed first.
+- After a successful transaction history import or positions import, the app marks a pending refresh and reloads only when the user closes the import modal (Close/OK action), so results can be reviewed first.
