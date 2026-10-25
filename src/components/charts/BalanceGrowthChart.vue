@@ -122,7 +122,7 @@ const chartData = computed(() => {
   }
 
   datasets.push({
-    label: 'Transactions',
+    label: 'Cash Flows',
     data: transactionPoints.value.data,
     pointStyle: (context) => {
       const weekLabel = context.chart.data.labels[context.dataIndex]
@@ -193,7 +193,7 @@ const chartOptions = computed(() => {
             const weekLabel = context.chart.data.labels[context.dataIndex]
             const weekData = transactionPoints.value.transactions.find(t => t.week === weekLabel)
             
-            if (context.dataset.label === 'Transactions' && weekData) {
+            if (context.dataset.label === 'Cash Flows' && weekData) {
               const labels = []
               weekData.deposits.forEach(d => {
                 labels.push(`Deposit: $${d.amount.toFixed(2)}${d.ongoing ? ' (Ongoing)' : ''}`)

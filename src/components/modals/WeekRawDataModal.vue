@@ -181,7 +181,7 @@ store.showWeeklyRawDataModal = (week) => show(week)
                   <span>{{ store.currency(rowSummary.startCash) }}</span>
                 </div>
                 <div class="calc-line">
-                  <span>+ Net Transactions</span>
+                  <span>+ Net Cash Flow</span>
                   <span :class="rowSummary.netTransaction < 0 ? 'text-danger' : ''">{{ store.currency(rowSummary.netTransaction) }}</span>
                 </div>
                 <div class="calc-line">
