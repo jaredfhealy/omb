@@ -1,8 +1,59 @@
 # Local-First PWA + Drive Sync (Phase 1)
 
-Last verified: 2026-10-18
+Last verified: 2026-10-25
 
 > Historical note: this document captures Phase 1 planning and includes legacy migration steps that are no longer active in the current runtime.
+
+## Drive Sync v2 contract (single-file snapshot mode)
+
+For the v2 collection model, Drive sync should use a single-file snapshot envelope as the default mode.
+
+### Snapshot envelope (v2)
+
+```js
+{
+  meta: {
+    dataModel: 'v2',
+    revision: Number,
+    updatedAt: ISOString,
+    updatedByDevice: String,
+    collections: {
+      accounts: { count: Number, checksum: String },
+      importedTransactions: { count: Number, checksum: String },
+      cashFlows: { count: Number, checksum: String },
+      positions: { count: Number, checksum: String },
+      trades: { count: Number, checksum: String },
+      relTradeTransactions: { count: Number, checksum: String },
+      relPositionTransactions: { count: Number, checksum: String },
+      notes: { count: Number, checksum: String }
+    }
+  },
+  data: {
+    accounts: Account[],
+    importedTransactions: ImportedTransaction[],
+    cashFlows: CashFlow[],
+    positions: Position[],
+    trades: Trade[],
+    relTradeTransactions: RelTradeTransaction[],
+    relPositionTransactions: RelPositionTransaction[],
+    notes: Note[]
+  }
+}
+```
+
+### Sync behavior (v2 baseline)
+
+1. Local persistence remains source of truth during active usage.
+2. On successful local save, upload the full snapshot envelope to Drive.
+3. Before overwriting the Drive main snapshot, write a timestamped backup snapshot.
+4. Retain/prune backups per configured retention policy.
+5. Restore replaces local v2 collections from the selected snapshot only when `meta.dataModel === 'v2'`.
+
+### Why single-file snapshot mode first
+
+- minimal complexity and high reliability for a single-user local-first app
+- avoids partial multi-file consistency problems
+- keeps a clean upgrade path to per-collection incremental sync later if required
 
 ## Objective
 
