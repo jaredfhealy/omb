@@ -896,6 +896,26 @@ function _processPositions(positionsImport, sellsImport = []) {
   if (!account.positions) account.positions = []
   if (!account.relPositionTransactions) account.relPositionTransactions = []
 
+  const hasEquivalentPosition = (candidate) => {
+    const candidateSource = String(candidate?.sourceTransactionId || '').trim()
+    return account.positions.some((existing) => {
+      const existingSource = String(existing?.sourceTransactionId || '').trim()
+      if (candidateSource && existingSource) {
+        return candidateSource === existingSource
+      }
+      if (candidateSource || existingSource) return false
+      return (
+        String(existing?.symbol || '').toUpperCase() === String(candidate?.symbol || '').toUpperCase() &&
+        String(existing?.date || '') === String(candidate?.date || '') &&
+        Number(existing?.assignedWeek || 0) === Number(candidate?.assignedWeek || 0) &&
+        Number(existing?.shares || 0) === Number(candidate?.shares || 0) &&
+        Number(existing?.costBasis || 0) === Number(candidate?.costBasis || 0) &&
+        Number(existing?.manual ? 1 : 0) === Number(candidate?.manual ? 1 : 0) &&
+        String(existing?.positionType || '') === String(candidate?.positionType || '')
+      )
+    })
+  }
+
   const shortSells = (Array.isArray(sellsImport) ? sellsImport : [])
     .filter(sell => (sell.action || '').toString().toLowerCase().includes('short'))
     .sort((a, b) => {
@@ -929,7 +949,7 @@ function _processPositions(positionsImport, sellsImport = []) {
     shortPosition.positionKey = `${store.getPositionKey(shortPosition, 'short')}_${sell.executionOrder}`
     store.ensurePositionMetaKey(shortPosition)
     store.applyPositionMetaToPosition(account, shortPosition)
-    const exists = account.positions.some(p => p.positionKey === shortPosition.positionKey)
+    const exists = account.positions.some(p => p.positionKey === shortPosition.positionKey) || hasEquivalentPosition(shortPosition)
     if (!exists) {
       account.positions.push(shortPosition)
     }
@@ -1060,7 +1080,7 @@ function _processPositions(positionsImport, sellsImport = []) {
     store.applyPositionMetaToPosition(account, position)
 
     // Check if this positionKey already exists
-    const exists = account.positions.some(p => p.positionKey === position.positionKey)
+    const exists = account.positions.some(p => p.positionKey === position.positionKey) || hasEquivalentPosition(position)
     if (exists) return
 
     // Add the position to the active account's positions
