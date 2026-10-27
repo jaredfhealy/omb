@@ -329,6 +329,7 @@ export const useAppStore = defineStore('app', {
       let actualGrowths = []
       const actualGrowthByWeek = this._getWeeklyActualGrowthMap()
       const positionCloseCashByWeek = this._getPositionCloseCashByWeekMap()
+      const projectionPositions = this._getProjectionPositions()
 
       for (let week = 1; week <= this.weeks; week++) {
         const transactions = this._getTransactionsForWeek(week)
@@ -341,9 +342,8 @@ export const useAppStore = defineStore('app', {
         // Calculate shares bought this week and previous week, and shares held at start of week
         let sharesBought = 0
         let sharesBoughtPreviousWeek = 0
-        const positions = this.activeAccount.positions || []
-        for (let i = 0; i < positions.length; i++) {
-          const position = positions[i]
+        for (let i = 0; i < projectionPositions.length; i++) {
+          const position = projectionPositions[i]
           // Bought (assigned) this week
           if (position.assignedWeek === week) {
             sharesBought += Math.abs(position.costBasis || 0)
@@ -564,7 +564,7 @@ export const useAppStore = defineStore('app', {
         return closeCashByWeek
       }
 
-      const positions = Array.isArray(this.activeAccount?.positions) ? this.activeAccount.positions : []
+      const positions = this._getProjectionPositions()
       positions.forEach((position) => {
         const week = Number(position?.soldWeek)
         if (!Number.isFinite(week) || week <= 0) return
@@ -575,6 +575,42 @@ export const useAppStore = defineStore('app', {
       })
 
       return closeCashByWeek
+    },
+
+    _getProjectionPositions() {
+      const positions = Array.isArray(this.activeAccount?.positions) ? this.activeAccount.positions : []
+      const normalizedByKey = new Map()
+
+      positions.forEach((position) => {
+        const sourceTransactionId = String(position?.sourceTransactionId || '').trim()
+        const dedupeKey = sourceTransactionId
+          ? `src|${sourceTransactionId}`
+          : [
+              'legacy',
+              String(position?.symbol || '').trim().toUpperCase(),
+              String(position?.date || ''),
+              Number(position?.assignedWeek || 0),
+              Number(position?.shares || 0),
+              Number(position?.costBasis || 0),
+              position?.soldWeek === undefined || position?.soldWeek === null ? '' : Number(position.soldWeek),
+              String(position?.positionType || ''),
+              Number(position?.manual ? 1 : 0)
+            ].join('|')
+
+        const existing = normalizedByKey.get(dedupeKey)
+        if (!existing) {
+          normalizedByKey.set(dedupeKey, position)
+          return
+        }
+
+        const existingExecution = Number(existing?.executionOrder || 0)
+        const candidateExecution = Number(position?.executionOrder || 0)
+        if (candidateExecution > existingExecution) {
+          normalizedByKey.set(dedupeKey, position)
+        }
+      })
+
+      return Array.from(normalizedByKey.values())
     },
 
     // Only used locally by calculateProjections
