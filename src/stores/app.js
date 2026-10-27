@@ -536,6 +536,7 @@ export const useAppStore = defineStore('app', {
         : []
 
       if (relRows.length > 0) {
+        const closeEventKinds = new Set(['close', 'closed', 'sell', 'assignment', 'assigned'])
         const importedById = new Map(
           (Array.isArray(this.activeAccount?.importedTransactions) ? this.activeAccount.importedTransactions : [])
             .filter(row => row?.id)
@@ -544,7 +545,7 @@ export const useAppStore = defineStore('app', {
 
         relRows.forEach((rel) => {
           const eventKind = String(rel?.eventKind || '').toLowerCase()
-          if (!eventKind || eventKind === 'open') return
+          if (!closeEventKinds.has(eventKind)) return
 
           const week = Number(rel?.eventWeek)
           if (!Number.isFinite(week) || week <= 0) return
