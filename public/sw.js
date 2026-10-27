@@ -1,4 +1,4 @@
-const CACHE_NAME = 'omb-shell-v2'
+const CACHE_NAME = 'omb-shell-v3'
 const APP_SHELL = [
   './',
   './index.html',
@@ -35,6 +35,26 @@ self.addEventListener('fetch', (event) => {
 
   const requestUrl = new URL(event.request.url)
   if (requestUrl.origin !== self.location.origin) return
+
+  const isNavigationRequest =
+    event.request.mode === 'navigate' ||
+    requestUrl.pathname === '/' ||
+    requestUrl.pathname.endsWith('/index.html')
+
+  if (isNavigationRequest) {
+    event.respondWith(
+      fetch(event.request)
+        .then((networkResponse) => {
+          if (networkResponse && networkResponse.ok) {
+            const responseClone = networkResponse.clone()
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseClone))
+          }
+          return networkResponse
+        })
+        .catch(() => caches.match(event.request).then((cachedResponse) => cachedResponse || caches.match('./index.html')))
+    )
+    return
+  }
 
   event.respondWith(
     caches.match(event.request).then((cachedResponse) => {
