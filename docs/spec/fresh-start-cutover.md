@@ -14,13 +14,15 @@ This document defines v2 cutover behavior for a fresh-start release (no data mig
 
 1. On startup, read v2 metadata/object stores only.
 2. If `meta.dataModel === 'v2'`, continue normally.
-3. If no valid v2 envelope exists, initialize default v2 seed state.
-4. Persist `meta.dataModel = 'v2'`.
+3. If non-v2 local data exists, block startup and require explicit reset confirmation.
+4. Offer optional local backup export before reset.
+5. On confirmation, initialize default v2 seed state.
+6. Persist `meta.dataModel = 'v2'`.
 
 ## UX requirements
 
-- No migration/reset prompt is required in runtime flows.
-- Any legacy backup/recovery is a manual developer/operator workflow (out of band).
+- A one-time blocking reset prompt is required when non-v2 local data is detected.
+- Prompt flow must include optional local backup export before reset.
 - After reset, app should be immediately usable for manual setup (cash flows, projections, positions, trades).
 - Import workflows remain optional, not mandatory.
 
