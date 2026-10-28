@@ -4,6 +4,7 @@ import { nextTick } from 'vue'
 import { getSyncCenterEventName, isDriveConnected, isDrivePersistenceConfigured, loadAppState, saveAppState } from '@/services/stateRepository'
 
 const SELECTED_ACCOUNT_ID_KEY = 'omb.selectedAccountId.v1'
+const NON_V2_RESET_ACK_KEY = 'omb.nonV2ResetHandled.v1'
 
 function loadSelectedAccountIdPreference() {
   try {
@@ -92,6 +93,8 @@ function createDefaultAccount() {
   return {
     id: 1,
     name: 'Default',
+    description: '',
+    formatKey: 'schwab',
     transactions: [],
     importedTransactions: [],
     positions: [],
@@ -120,6 +123,32 @@ function createPersistableStateSnapshot(dbState) {
   } catch (error) {
     throw new Error(`Failed to serialize state for persistence: ${error?.message || error}`)
   }
+}
+
+function setNonV2ResetAcknowledged() {
+  try {
+    localStorage.setItem(NON_V2_RESET_ACK_KEY, '1')
+  } catch (error) {
+    // best effort
+  }
+}
+
+function isNonV2ResetAcknowledged() {
+  try {
+    return localStorage.getItem(NON_V2_RESET_ACK_KEY) === '1'
+  } catch (error) {
+    return false
+  }
+}
+
+function downloadJsonBackup(fileName, payload) {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = fileName
+  anchor.click()
+  URL.revokeObjectURL(url)
 }
 
 export const useAppStore = defineStore('app', {
@@ -274,9 +303,99 @@ export const useAppStore = defineStore('app', {
       try {
         this.syncCenter.driveConfigured = isDrivePersistenceConfigured()
         this.syncCenter.driveConnected = isDriveConnected()
-        const { data, meta, source } = await loadAppState()
+        const { data, meta, source, legacySnapshot } = await loadAppState()
         this.persistenceMeta = meta
         this.syncCenter.driveLastSuccessAt = meta?.lastDriveSyncAt || null
+
+        if (source === 'legacy-reset-required') {
+          const alreadyHandled = isNonV2ResetAcknowledged()
+          if (!alreadyHandled) {
+            const warningMessage = [
+              'Local data was detected, but it is not in the required v2 data model.',
+              '',
+              'Operation More Bacon must reset to a fresh v2 state before continuing.',
+              'You can optionally export a local backup snapshot before reset.'
+            ].join('\n')
+            const shouldProceed = await new Promise(resolve => {
+              if (this.confirm) {
+                this.confirm(
+                  warningMessage,
+                  () => resolve(true),
+                  () => resolve(false),
+                  {
+                    confirmText: 'Continue',
+                    cancelText: 'Cancel'
+                  }
+                )
+                return
+              }
+              resolve(window.confirm(warningMessage))
+            })
+            if (!shouldProceed) {
+              this.persistenceError = 'Startup blocked: v2 reset is required before the app can continue.'
+              this.loading = false
+              return
+            }
+
+            const shouldExport = await new Promise(resolve => {
+              if (this.confirm) {
+                this.confirm(
+                  'Do you want to export a local backup of the non-v2 data before reset?',
+                  () => resolve(true),
+                  () => resolve(false),
+                  {
+                    confirmText: 'Export Backup',
+                    cancelText: 'Skip Export'
+                  }
+                )
+                return
+              }
+              resolve(window.confirm('Export a local backup before reset?'))
+            })
+            if (shouldExport) {
+              downloadJsonBackup(`omb-legacy-backup-${new Date().toISOString().replace(/[:.]/g, '-')}.json`, legacySnapshot || {})
+            }
+          }
+
+          const resetMessage = [
+            'Proceeding will initialize a fresh v2 data seed state and clear non-v2 local data.',
+            'Type RESET to continue.'
+          ].join('\n')
+          const resetApproved = await new Promise(resolve => {
+            if (this.confirm) {
+              this.confirm(
+                resetMessage,
+                () => resolve(true),
+                () => resolve(false),
+                {
+                  confirmText: 'Reset to v2',
+                  cancelText: 'Cancel',
+                  confirmButtonClass: 'btn-danger',
+                  requiredInputText: 'RESET',
+                  requiredInputLabel: 'Type RESET to confirm v2 reset'
+                }
+              )
+              return
+            }
+            resolve(window.confirm('Reset local data to a fresh v2 state now?'))
+          })
+          if (!resetApproved) {
+            this.persistenceError = 'Startup blocked: reset to v2 was cancelled.'
+            this.loading = false
+            return
+          }
+
+          this.db = createPersistableStateSnapshot({
+            accounts: [createDefaultAccount()]
+          })
+          this.persistenceMeta = null
+          this.ensureSelectedAccount()
+          await this.saveChanges()
+          setNonV2ResetAcknowledged()
+          this.persistenceError = null
+          this.calculateProjections()
+          return
+        }
 
         if (data && Array.isArray(data.accounts)) {
           const migrated = ensureAccountCollections(data)

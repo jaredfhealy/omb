@@ -256,7 +256,7 @@ function toIsoDate(value) {
   return date.toISOString().slice(0, 10)
 }
 
-function extractSourceFingerprint(row) {
+export function getNormalizedSourceFingerprintInput(row) {
   const effectiveDate = toIsoDate(row?.date) || ''
   const actionNormalized = normalizeString(row?.action).toLowerCase()
   const symbolNormalized = normalizeString(row?.symbol).toUpperCase()
@@ -266,7 +266,7 @@ function extractSourceFingerprint(row) {
   const amountNormalized = toFixedNumericString(row?.amount)
   const feesNormalized = toFixedNumericString(row?.fees ?? 0)
   const executionOrder = Number(row?.executionOrder || 0)
-  const input = [
+  return [
     effectiveDate,
     actionNormalized,
     symbolNormalized,
@@ -277,11 +277,55 @@ function extractSourceFingerprint(row) {
     feesNormalized,
     executionOrder
   ].join('|')
-  return simpleStableHash(input)
+}
+
+function ensureFingerprintRegistry(registry) {
+  if (!registry || typeof registry !== 'object') {
+    return { hashToInput: new Map() }
+  }
+  if (!(registry.hashToInput instanceof Map)) {
+    registry.hashToInput = new Map()
+  }
+  return registry
+}
+
+function reserveSourceFingerprint(row, registry = null) {
+  const normalizedInput = getNormalizedSourceFingerprintInput(row)
+  const context = ensureFingerprintRegistry(registry)
+  const hashToInput = context.hashToInput
+
+  let suffix = 0
+  while (suffix < 1000) {
+    const token = suffix === 0 ? '' : `|collision:${suffix}`
+    const candidateInput = `${normalizedInput}${token}`
+    const candidateHash = simpleStableHash(candidateInput)
+    const existingInput = hashToInput.get(candidateHash)
+    if (!existingInput || existingInput === normalizedInput) {
+      hashToInput.set(candidateHash, normalizedInput)
+      return candidateHash
+    }
+    suffix += 1
+  }
+
+  throw new Error('Unable to resolve source fingerprint collision after 1000 attempts.')
+}
+
+export function createSourceFingerprint(row, registry = null) {
+  return reserveSourceFingerprint(row, registry)
+}
+
+function extractSourceFingerprint(row) {
+  return createSourceFingerprint(row)
 }
 
 function createRecordId(prefix, ...parts) {
   return simpleStableHash(`${prefix}|${parts.map(part => String(part ?? '')).join('|')}`)
+}
+
+function normalizeRecordId(candidateId, prefix, ...parts) {
+  const raw = String(candidateId || '').trim()
+  if (/^[a-f0-9]{32}$/.test(raw)) return raw
+  return createRecordId(prefix, ...parts)
 }
 
 function resolveV2AccountId(account, accountIndex) {
@@ -368,12 +412,13 @@ function buildV2CollectionsFromAppStateData(data) {
 
     const actuals = Array.isArray(account?.actuals) ? account.actuals : []
     const importedRows = []
+    const fingerprintRegistry = { hashToInput: new Map() }
     if (Array.isArray(account?.importedTransactions) && account.importedTransactions.length > 0) {
       account.importedTransactions.forEach((row, rowIndex) => {
         const executionOrder = Number(row?.executionOrder || rowIndex + 1)
         const sourceLine = Number.isFinite(Number(row?.sourceLine)) ? Number(row.sourceLine) : null
-        const sourceFingerprint = row?.sourceFingerprint || extractSourceFingerprint({ ...row, executionOrder })
-        const id = String(row?.id || createRecordId('tx', accountId, sourceFingerprint, sourceLine ?? executionOrder))
+        const sourceFingerprint = createSourceFingerprint({ ...row, executionOrder }, fingerprintRegistry)
+        const id = normalizeRecordId(row?.id, 'tx', accountId, sourceFingerprint, sourceLine ?? executionOrder)
         importedRows.push({
           id,
           accountId,
@@ -401,7 +446,7 @@ function buildV2CollectionsFromAppStateData(data) {
         rows.forEach((row, rowIndex) => {
           const executionOrder = Number(row?.executionOrder || rowIndex + 1)
           const sourceLine = Number.isFinite(Number(row?.sourceLine)) ? Number(row.sourceLine) : null
-          const sourceFingerprint = extractSourceFingerprint({ ...row, executionOrder })
+          const sourceFingerprint = createSourceFingerprint({ ...row, executionOrder }, fingerprintRegistry)
           const id = createRecordId('tx', accountId, sourceFingerprint, sourceLine ?? executionOrder)
           importedRows.push({
             id,
@@ -425,21 +470,69 @@ function buildV2CollectionsFromAppStateData(data) {
         })
       })
     }
-    collections.importedTransactions.push(...importedRows)
+
+    let maxExecutionOrder = importedRows.reduce((highest, row) => {
+      const current = Number(row?.executionOrder || 0)
+      return current > highest ? current : highest
+    }, 0)
+
+    function addSyntheticImportedTransaction({ seedPrefix, seedValue, eventDate, symbol, amount, quantity, price, week, description }) {
+      maxExecutionOrder += 1
+      const syntheticRow = {
+        date: toIsoDate(eventDate) || toIsoDate(now),
+        action: 'manual-seed',
+        symbol: normalizeString(symbol).toUpperCase(),
+        description: normalizeString(description || 'Manual source transaction'),
+        quantity: Number(quantity || 0),
+        price: Number(price || 0),
+        amount: Number(amount || 0),
+        fees: 0,
+        executionOrder: maxExecutionOrder,
+        sourceLine: null,
+        week: Number.isFinite(Number(week)) ? Number(week) : null
+      }
+      const sourceFingerprint = createSourceFingerprint(syntheticRow, fingerprintRegistry)
+      const id = createRecordId(seedPrefix, accountId, seedValue, sourceFingerprint)
+      const row = {
+        id,
+        accountId,
+        sourceFingerprint,
+        sourceLine: null,
+        executionOrder: syntheticRow.executionOrder,
+        week: syntheticRow.week,
+        date: syntheticRow.date,
+        action: syntheticRow.action,
+        symbol: syntheticRow.symbol,
+        description: syntheticRow.description,
+        quantity: syntheticRow.quantity,
+        price: syntheticRow.price,
+        amount: syntheticRow.amount,
+        fees: syntheticRow.fees,
+        raw: null,
+        createdAt: now,
+        updatedAt: now
+      }
+      importedRows.push(row)
+      return id
+    }
 
     const cashFlows = Array.isArray(account?.transactions) ? account.transactions : []
     cashFlows.forEach((flow, flowIndex) => {
+      const sourceTransactionId = flow?.sourceTransactionId || null
+      const resolvedIsProjected = flow?.isProjected === undefined || flow?.isProjected === null
+        ? !sourceTransactionId
+        : Boolean(flow?.isProjected)
       collections.cashFlows.push({
         id: createRecordId('cf', accountId, flowIndex, flow?.type, flow?.startWeek, flow?.amount),
         accountId,
-        sourceTransactionId: flow?.sourceTransactionId || null,
+        sourceTransactionId,
         type: flow?.type === 'withdrawal' ? 'withdrawal' : 'deposit',
         category: String(flow?.category || 'adjustment'),
         amount: Number(flow?.amount || 0),
         startWeek: Number(flow?.startWeek || 1),
         endWeek: flow?.endWeek === null || flow?.endWeek === undefined ? null : Number(flow.endWeek),
         isRecurring: Number(flow?.endWeek || 0) > Number(flow?.startWeek || 0),
-        isProjected: Boolean(flow?.isProjected),
+        isProjected: resolvedIsProjected,
         notes: flow?.notes ? String(flow.notes) : null,
         createdAt: now,
         updatedAt: now
@@ -453,10 +546,21 @@ function buildV2CollectionsFromAppStateData(data) {
       if (position?.positionKey) {
         positionIdByKey.set(String(position.positionKey), positionId)
       }
+      const sourceTransactionId = position?.sourceTransactionId || addSyntheticImportedTransaction({
+        seedPrefix: 'tx-pos',
+        seedValue: position?.positionKey || positionId,
+        eventDate: position?.date || now,
+        symbol: position?.symbol,
+        amount: position?.costBasis,
+        quantity: position?.shares,
+        price: position?.currentPrice,
+        week: position?.assignedWeek,
+        description: `Synthetic source for position ${position?.positionKey || positionId}`
+      })
       collections.positions.push({
         id: positionId,
         accountId,
-        sourceTransactionId: position?.sourceTransactionId || null,
+        sourceTransactionId,
         positionKey: String(position?.positionKey || positionId),
         symbol: normalizeString(position?.symbol).toUpperCase(),
         shares: Number(position?.shares || 0),
@@ -478,7 +582,17 @@ function buildV2CollectionsFromAppStateData(data) {
     const trades = Array.isArray(account?.trades) ? account.trades : []
     trades.forEach((trade, tradeIndex) => {
       const tradeId = String(trade?.id || createRecordId('trd', accountId, tradeIndex, trade?.symbol || ''))
-      const sourceTransactionId = trade?.sourceTransactionId || null
+      const sourceTransactionId = trade?.sourceTransactionId || addSyntheticImportedTransaction({
+        seedPrefix: 'tx-trd',
+        seedValue: tradeId,
+        eventDate: trade?.openedAt || now,
+        symbol: trade?.symbol,
+        amount: 0,
+        quantity: 0,
+        price: 0,
+        week: null,
+        description: `Synthetic source for trade ${tradeId}`
+      })
       collections.trades.push({
         id: tradeId,
         accountId,
@@ -540,6 +654,8 @@ function buildV2CollectionsFromAppStateData(data) {
         updatedAt: rel?.updatedAt || now
       })
     })
+
+    collections.importedTransactions.push(...importedRows)
 
     const notes = Array.isArray(account?.notes) ? account.notes : []
     notes.forEach((noteRow, noteIndex) => {
@@ -735,15 +851,51 @@ function validateV2Collections(data) {
   const importedIndex = createReferenceIndex(importedTransactions)
   const positionIndex = createReferenceIndex(positions)
   const tradeIndex = createReferenceIndex(trades)
+  const cashFlowIndex = createReferenceIndex(cashFlows)
 
-  const seenRelTradeSource = new Map()
+  const fingerprintRegistry = { hashToInput: new Map() }
+  importedTransactions.forEach((tx) => {
+    const txId = tx?.id || '<missing-id>'
+    if (!tx?.accountId || !accountIndex.has(String(tx.accountId))) {
+      errors.push(`Imported transaction ${txId} references missing accountId ${tx?.accountId || '<missing>'}.`)
+    }
+    if (typeof tx?.sourceFingerprint !== 'string' || !tx.sourceFingerprint.trim()) {
+      errors.push(`Imported transaction ${txId} is missing sourceFingerprint.`)
+    } else {
+      const recomputed = createSourceFingerprint(tx, fingerprintRegistry)
+      if (String(tx.sourceFingerprint) !== recomputed) {
+        errors.push(`Imported transaction ${txId} has a non-normalized sourceFingerprint.`)
+      }
+    }
+    if (!Number.isFinite(Number(tx?.executionOrder)) || Number(tx.executionOrder) <= 0) {
+      errors.push(`Imported transaction ${txId} has invalid executionOrder ${tx?.executionOrder}.`)
+    }
+    const sourceLine = tx?.sourceLine
+    if (!(sourceLine === null || sourceLine === undefined || Number.isFinite(Number(sourceLine)))) {
+      errors.push(`Imported transaction ${txId} has invalid sourceLine ${sourceLine}.`)
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(tx?.date || ''))) {
+      errors.push(`Imported transaction ${txId} has invalid date ${tx?.date || '<missing>'}.`)
+    }
+    const numericFields = ['quantity', 'price', 'amount']
+    numericFields.forEach((fieldName) => {
+      if (!Number.isFinite(Number(tx?.[fieldName]))) {
+        errors.push(`Imported transaction ${txId} has invalid numeric ${fieldName}.`)
+      }
+    })
+    if (!(tx?.fees === null || tx?.fees === undefined || Number.isFinite(Number(tx.fees)))) {
+      errors.push(`Imported transaction ${txId} has invalid fees ${tx.fees}.`)
+    }
+  })
+
+  const seenRelTradeSourceToTrade = new Map()
 
   trades.forEach((trade) => {
     if (!trade?.accountId || !accountIndex.has(String(trade.accountId))) {
       errors.push(`Trade ${trade?.id || '<missing-id>'} references missing accountId ${trade?.accountId || '<missing>'}.`)
     }
     if (!trade?.sourceTransactionId) {
-      warnings.push(`Trade ${trade?.id || '<missing-id>'} missing required sourceTransactionId.`)
+      errors.push(`Trade ${trade?.id || '<missing-id>'} missing required sourceTransactionId.`)
       return
     }
     const source = importedIndex.get(String(trade.sourceTransactionId))
@@ -766,7 +918,7 @@ function validateV2Collections(data) {
       errors.push(`Position ${position?.id || '<missing-id>'} references missing accountId ${position?.accountId || '<missing>'}.`)
     }
     if (!position?.sourceTransactionId) {
-      warnings.push(`Position ${position?.id || '<missing-id>'} missing required sourceTransactionId.`)
+      errors.push(`Position ${position?.id || '<missing-id>'} missing required sourceTransactionId.`)
       return
     }
     const source = importedIndex.get(String(position.sourceTransactionId))
@@ -780,29 +932,56 @@ function validateV2Collections(data) {
   })
 
   relTradeTransactions.forEach((rel) => {
-    if (!rel?.tradeId || !tradeIndex.has(String(rel.tradeId))) {
+    const relId = rel?.id || '<missing-id>'
+    const trade = rel?.tradeId ? tradeIndex.get(String(rel.tradeId)) : null
+    const source = rel?.sourceTransactionId ? importedIndex.get(String(rel.sourceTransactionId)) : null
+
+    if (!rel?.tradeId || !trade) {
       errors.push(`relTradeTransactions ${rel?.id || '<missing-id>'} references missing tradeId ${rel?.tradeId || '<missing>'}.`)
     }
-    if (!rel?.sourceTransactionId || !importedIndex.has(String(rel.sourceTransactionId))) {
+    if (!rel?.sourceTransactionId || !source) {
       errors.push(`relTradeTransactions ${rel?.id || '<missing-id>'} references missing sourceTransactionId ${rel?.sourceTransactionId || '<missing>'}.`)
     }
-    if (rel?.sourceTransactionId) {
-      const key = String(rel.sourceTransactionId)
-      const existingRelId = seenRelTradeSource.get(key)
-      if (existingRelId && existingRelId !== rel?.id) {
-        errors.push(`Duplicate trade linkage for sourceTransactionId ${key} in relTradeTransactions (${existingRelId}, ${rel?.id || '<missing-id>'}).`)
+
+    if (trade && source) {
+      if (String(trade.accountId) !== String(source.accountId)) {
+        errors.push(`relTradeTransactions ${relId} trade/source account mismatch.`)
+      }
+      if (rel?.accountId && String(rel.accountId) !== String(trade.accountId)) {
+        errors.push(`relTradeTransactions ${relId} accountId does not match linked trade.`)
+      }
+      const tradeSymbol = normalizeString(trade?.symbol).toUpperCase()
+      const sourceSymbol = normalizeString(source?.symbol).toUpperCase()
+      if (sourceSymbol && tradeSymbol && sourceSymbol !== tradeSymbol) {
+        errors.push(`relTradeTransactions ${relId} symbol mismatch between trade (${tradeSymbol}) and source (${sourceSymbol}).`)
+      }
+      const sourceKey = String(rel.sourceTransactionId)
+      const existingTradeId = seenRelTradeSourceToTrade.get(sourceKey)
+      if (existingTradeId && existingTradeId !== String(rel.tradeId)) {
+        errors.push(`sourceTransactionId ${sourceKey} is linked to multiple trades (${existingTradeId}, ${rel.tradeId}).`)
       } else {
-        seenRelTradeSource.set(key, rel?.id || key)
+        seenRelTradeSourceToTrade.set(sourceKey, String(rel.tradeId))
       }
     }
   })
 
   relPositionTransactions.forEach((rel) => {
-    if (!rel?.positionId || !positionIndex.has(String(rel.positionId))) {
+    const relId = rel?.id || '<missing-id>'
+    const position = rel?.positionId ? positionIndex.get(String(rel.positionId)) : null
+    const source = rel?.sourceTransactionId ? importedIndex.get(String(rel.sourceTransactionId)) : null
+    if (!rel?.positionId || !position) {
       errors.push(`relPositionTransactions ${rel?.id || '<missing-id>'} references missing positionId ${rel?.positionId || '<missing>'}.`)
     }
-    if (!rel?.sourceTransactionId || !importedIndex.has(String(rel.sourceTransactionId))) {
+    if (!rel?.sourceTransactionId || !source) {
       errors.push(`relPositionTransactions ${rel?.id || '<missing-id>'} references missing sourceTransactionId ${rel?.sourceTransactionId || '<missing>'}.`)
+    }
+    if (position && source) {
+      if (String(position.accountId) !== String(source.accountId)) {
+        errors.push(`relPositionTransactions ${relId} position/source account mismatch.`)
+      }
+      if (rel?.accountId && String(rel.accountId) !== String(position.accountId)) {
+        errors.push(`relPositionTransactions ${relId} accountId does not match linked position.`)
+      }
     }
   })
 
@@ -812,7 +991,7 @@ function validateV2Collections(data) {
       errors.push(`Cash flow ${flow?.id || '<missing-id>'} is projected but has sourceTransactionId ${flow.sourceTransactionId}.`)
     }
     if (!isProjected && !flow?.sourceTransactionId) {
-      warnings.push(`Cash flow ${flow?.id || '<missing-id>'} is non-projected and missing sourceTransactionId.`)
+      errors.push(`Cash flow ${flow?.id || '<missing-id>'} is non-projected and missing sourceTransactionId.`)
     }
     if (flow?.sourceTransactionId && !importedIndex.has(String(flow.sourceTransactionId))) {
       errors.push(`Cash flow ${flow?.id || '<missing-id>'} references missing sourceTransactionId ${flow.sourceTransactionId}.`)
@@ -822,7 +1001,7 @@ function validateV2Collections(data) {
   const targetCollectionMap = {
     weeks: null,
     importedTransactions: importedIndex,
-    cashFlows: createReferenceIndex(cashFlows),
+    cashFlows: cashFlowIndex,
     positions: positionIndex,
     trades: tradeIndex
   }
@@ -840,8 +1019,13 @@ function validateV2Collections(data) {
     }
     if (targetCollection === 'weeks') return
     const targetIndex = targetCollectionMap[targetCollection]
-    if (targetIndex && !targetIndex.has(targetId)) {
+    const target = targetIndex ? targetIndex.get(targetId) : null
+    if (!target) {
       errors.push(`Note ${note?.id || '<missing-id>'} target ${targetCollection}/${targetId} was not found.`)
+      return
+    }
+    if (String(target.accountId || '') !== String(note?.accountId || '')) {
+      errors.push(`Note ${note?.id || '<missing-id>'} target ${targetCollection}/${targetId} is not in the same account scope.`)
     }
   })
 
@@ -928,17 +1112,50 @@ function createDriveAppPropertiesFromEnvelope(envelope, fileType) {
 }
 
 class IndexedDbStateRepository {
-  async load() {
+  async inspect() {
     const db = await openIndexedDb()
     const meta = await idbGetFromStore(db, META_STORE_NAME, META_KEY)
+    const storeNames = Array.from(db.objectStoreNames || [])
+
     if (meta && meta.dataModel === DATA_MODEL_VERSION) {
       const data = {}
       for (const storeName of V2_COLLECTION_STORES) {
         data[storeName] = await idbGetAllFromStore(db, storeName)
       }
-      return normalizeEnvelope({ meta, data })
+      return {
+        kind: 'v2',
+        envelope: normalizeEnvelope({ meta, data })
+      }
     }
 
+    const stores = {}
+    let hasRows = false
+    for (const storeName of storeNames) {
+      const rows = await idbGetAllFromStore(db, storeName)
+      if (rows.length > 0) {
+        stores[storeName] = rows
+        hasRows = true
+      }
+    }
+
+    if (meta || hasRows) {
+      return {
+        kind: 'non-v2',
+        legacySnapshot: {
+          meta: meta || null,
+          stores
+        }
+      }
+    }
+
+    return { kind: 'empty', legacySnapshot: null }
+  }
+
+  async load() {
+    const inspected = await this.inspect()
+    if (inspected.kind === 'v2') {
+      return inspected.envelope
+    }
     return null
   }
 
@@ -1421,12 +1638,21 @@ export async function loadLocalEnvelope() {
 
 export async function loadAppState() {
   const localRepository = getLocalRepository()
-  const localEnvelope = await localRepository.load()
-  if (localEnvelope) {
+  const inspected = await localRepository.inspect()
+  if (inspected.kind === 'v2' && inspected.envelope) {
     return {
-      data: buildAppStateDataFromV2Collections(localEnvelope.data),
-      meta: localEnvelope.meta,
+      data: buildAppStateDataFromV2Collections(inspected.envelope.data),
+      meta: inspected.envelope.meta,
       source: 'indexeddb'
+    }
+  }
+
+  if (inspected.kind === 'non-v2') {
+    return {
+      data: null,
+      meta: null,
+      source: 'legacy-reset-required',
+      legacySnapshot: serializeForStorage(inspected.legacySnapshot)
     }
   }
 

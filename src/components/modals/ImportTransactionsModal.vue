@@ -2,6 +2,10 @@
 import { ref } from 'vue'
 import { useAppStore } from '@/stores/app'
 import Papa from 'papaparse'
+import {
+  createSourceFingerprint as createNormalizedSourceFingerprint,
+  getNormalizedSourceFingerprintInput
+} from '@/services/stateRepository'
 
 const store = useAppStore()
 const isVisible = ref(false)
@@ -113,12 +117,6 @@ function toIsoDate(value) {
   return date.toISOString().slice(0, 10)
 }
 
-function toFixedString(value, decimals = 6) {
-  const parsed = Number(value)
-  if (!Number.isFinite(parsed)) return (0).toFixed(decimals)
-  return parsed.toFixed(decimals)
-}
-
 function simpleStableHash(input) {
   const text = String(input || '')
   let hash = 2166136261
@@ -130,24 +128,24 @@ function simpleStableHash(input) {
   return `${baseHex}${baseHex}${baseHex}${baseHex}`.slice(0, 32)
 }
 
-function createSourceFingerprint(row) {
-  const input = [
-    toIsoDate(row?.date),
-    normalizeSpace(row?.action).toLowerCase(),
-    normalizeSpace(row?.symbol).toUpperCase(),
-    normalizeSpace(row?.description),
-    toFixedString(row?.quantity),
-    toFixedString(row?.price),
-    toFixedString(row?.amount),
-    toFixedString(row?.fees ?? 0),
-    Number(row?.executionOrder || 0)
-  ].join('|')
-  return simpleStableHash(input)
+function createSourceFingerprint(row, registry = null) {
+  return createNormalizedSourceFingerprint(row, registry)
+}
+
+function buildFingerprintRegistry(account, pendingRows = []) {
+  const hashToInput = new Map()
+  const importedRows = Array.isArray(account?.importedTransactions) ? account.importedTransactions : []
+  importedRows.concat(Array.isArray(pendingRows) ? pendingRows : []).forEach((row) => {
+    const fingerprint = String(row?.sourceFingerprint || '').trim()
+    if (!fingerprint) return
+    hashToInput.set(fingerprint, getNormalizedSourceFingerprintInput(row))
+  })
+  return { hashToInput }
 }
 
 function createImportedTransactionId(row) {
-  const fingerprint = createSourceFingerprint(row)
-  return `tx_${simpleStableHash(`${fingerprint}|${Number(row?.sourceLine || 0)}|${Number(row?.executionOrder || 0)}`)}`
+  const fingerprint = String(row?.sourceFingerprint || '').trim() || createSourceFingerprint(row)
+  return simpleStableHash(`${fingerprint}|${Number(row?.sourceLine || 0)}|${Number(row?.executionOrder || 0)}`)
 }
 
 function upsertRelPositionTransaction(account, rel) {
@@ -707,6 +705,7 @@ function _processData(dataRows, brokerMap) {
   
   const orderedRows = getExecutionOrderedRows(dataRows)
   const importedRows = []
+  const fingerprintRegistry = buildFingerprintRegistry(account)
 
   // First pass: derive week + ids/fingerprint and classify each row
   orderedRows.forEach(dataRow => {
@@ -729,18 +728,18 @@ function _processData(dataRows, brokerMap) {
 
     const importedRow = {
       sourceLine: Number.isFinite(Number(dataRow.sourceLine)) ? Number(dataRow.sourceLine) : null,
-      date: dataRow.date,
-      description: dataRow.description || '',
+      date: toIsoDate(dataRow.date),
+      description: normalizeSpace(dataRow.description || ''),
       amount: Number(dataRow.amount || 0),
-      action: dataRow.action || '',
-      symbol: dataRow.symbol || '',
+      action: normalizeSpace(dataRow.action || '').toLowerCase(),
+      symbol: normalizeSpace(dataRow.symbol || '').toUpperCase(),
       quantity: Number(dataRow.quantity || 0),
       price: Number(dataRow.price || 0),
       fees: dataRow.fees === undefined || dataRow.fees === null ? 0 : Number(dataRow.fees || 0),
       executionOrder: Number(dataRow.executionOrder || 0),
       week
     }
-    importedRow.sourceFingerprint = createSourceFingerprint(importedRow)
+    importedRow.sourceFingerprint = createSourceFingerprint(importedRow, fingerprintRegistry)
     importedRow.id = createImportedTransactionId(importedRow)
     importedRows.push(importedRow)
     
@@ -750,6 +749,10 @@ function _processData(dataRows, brokerMap) {
       ...dataRow,
       id: importedRow.id,
       sourceFingerprint: importedRow.sourceFingerprint,
+      action: importedRow.action,
+      symbol: importedRow.symbol,
+      date: importedRow.date,
+      description: importedRow.description,
       executionOrder: dataRow.executionOrder,
       week
     }
