@@ -1899,26 +1899,56 @@ export async function loadLocalEnvelope() {
   return await localRepository.load()
 }
 
+/**
+ * Loads app state from local IndexedDB storage.
+ * 
+ * PURPOSE: High-level entry point for startup data loading. Reads from IndexedDB
+ * and converts v2 collections to app-shape data for use by the Pinia store.
+ * 
+ * PROCESS:
+ * 1. Call localRepository.load() to get v2 envelope from IndexedDB
+ * 2. If v2 data found, convert collections to app-shape and return
+ * 3. If no v2 data (inspect=non-v2), return null with source='legacy-reset-required'
+ * 4. If completely empty, return null with source='empty'
+ * 
+ * ERROR HANDLING: Validation errors during conversion are thrown to caller;
+ * caller determines if reset is needed based on source indicator.
+ * 
+ * @returns {Promise<Object>}
+ *   { data: {...}, meta: {...}, source: 'indexeddb' } — Valid v2 data loaded
+ *   { data: null, meta: null, source: 'legacy-reset-required', legacySnapshot: {...} } — Needs reset
+ *   { data: null, meta: null, source: 'empty' } — No data found
+ * 
+ * @see docs/spec/fresh-start-cutover.md for startup flow context
+ * @see convertV2CollectionsToAppState() for collection shape conversion
+ */
 export async function loadAppState() {
   const localRepository = getLocalRepository()
   const inspected = await localRepository.inspect()
-  if (inspected.kind === 'v2' && inspected.envelope) {
-    return {
-      data: buildAppStateDataFromV2Collections(inspected.envelope.data),
-      meta: inspected.envelope.meta,
-      source: 'indexeddb'
+
+  // If v2 stores exist and meta.dataModel='v2', load full data via load()
+  if (inspected.kind === 'v2') {
+    const envelope = await localRepository.load()
+    if (envelope) {
+      return {
+        data: buildAppStateDataFromV2Collections(envelope.data),
+        meta: envelope.meta,
+        source: 'indexeddb'
+      }
     }
   }
 
+  // If stores exist but not v2 (corrupted or legacy), trigger reset flow
   if (inspected.kind === 'non-v2') {
     return {
       data: null,
       meta: null,
       source: 'legacy-reset-required',
-      legacySnapshot: serializeForStorage(inspected.legacySnapshot)
+      legacySnapshot: inspected.meta || null
     }
   }
 
+  // Completely empty database
   return { data: null, meta: null, source: 'empty' }
 }
 
@@ -1963,4 +1993,77 @@ export async function saveAppState(data, previousMeta = null) {
   }
 
   return { meta: envelope.meta, source: 'indexeddb' }
+}
+
+/**
+ * Restores v2 data from a JSON backup file envelope.
+ * 
+ * PURPOSE: Import a previously exported v2 data snapshot (from DataManager backup)
+ * back into IndexedDB. Used when recovering from data loss or migrating between devices.
+ * 
+ * PROCESS:
+ * 1. Validate that input is a proper v2 envelope (has meta.dataModel='v2' and all collections)
+ * 2. Run integrity validation via validateV2Collections()
+ * 3. Save to IndexedDB via localRepository.save()
+ * 4. Return meta + validation result for caller confirmation
+ * 
+ * VALIDATION: Errors from validateV2Collections() are returned to caller;
+ * warnings are logged but don't block restore (non-critical issues).
+ * 
+ * @param {Object} envelope - V2 data envelope with { meta: {...}, data: {...} }
+ * @returns {Promise<Object>}
+ *   { success: true, meta: {...}, warnings: [...], source: 'restored-from-backup' }
+ *   { success: false, error: 'error message', validationErrors: [...] }
+ * 
+ * @throws {Error} If envelope structure is invalid (not v2, missing collections)
+ * 
+ * @see docs/spec/data-model-v2.md for collection schema
+ * @see validateV2Collections() for integrity constraints
+ */
+export async function restoreAppStateFromBackup(envelope) {
+  // Validate envelope structure
+  if (!envelope || typeof envelope !== 'object') {
+    throw new Error('Restore failed: envelope must be a valid object')
+  }
+
+  if (!envelope.meta || envelope.meta.dataModel !== DATA_MODEL_VERSION) {
+    throw new Error('Restore failed: envelope must have meta.dataModel = "v2"')
+  }
+
+  if (!envelope.data || typeof envelope.data !== 'object') {
+    throw new Error('Restore failed: envelope must have data collections')
+  }
+
+  // Validate that all 9 v2 collections are present (can be empty arrays)
+  const missingCollections = V2_COLLECTION_STORES.filter(
+    store => !Array.isArray(envelope.data[store])
+  )
+  if (missingCollections.length > 0) {
+    throw new Error(`Restore failed: missing collections: ${missingCollections.join(', ')}`)
+  }
+
+  // Run integrity validation
+  const validation = validateV2Collections(envelope.data)
+  if (validation.errors.length > 0) {
+    return {
+      success: false,
+      error: `Restore failed: data integrity validation errors (${validation.errors.length} issues)`,
+      validationErrors: validation.errors
+    }
+  }
+
+  if (validation.warnings.length > 0) {
+    console.warn('Restore data integrity warnings:', validation.warnings)
+  }
+
+  // Save to IndexedDB
+  const localRepository = getLocalRepository()
+  await localRepository.save(envelope)
+
+  return {
+    success: true,
+    meta: envelope.meta,
+    warnings: validation.warnings,
+    source: 'restored-from-backup'
+  }
 }
