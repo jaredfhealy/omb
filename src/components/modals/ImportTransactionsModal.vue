@@ -688,135 +688,6 @@ function _parseAmount(amountStr, defaultValue = 0) {
   return Math.round(parsedValue * 100) / 100
 }
 
-/**
- * DEBUG FUNCTION: Extract and display all BAX transactions from parsed CSV data.
- * Useful for diagnosing why BAX positions are incomplete or missing.
- * 
- * PROCESS:
- * 1. Takes parsed dataRows (from parseCSV output)
- * 2. Filters for all rows where symbol includes "BAX"
- * 3. Groups by action type (Buy, Sell to Open, Buy to Close, Assigned, etc.)
- * 4. Outputs chronologically with all details
- * 5. Counts shares in vs. out for reconciliation
- * 
- * OUTPUTS: Console table with all BAX transactions in order
- * 
- * @param dataRows - Array of parsed transaction objects from parseCSV()
- * @returns { baxTransactions, summary }
- */
-function debugExtractBAXTransactions(dataRows) {
-  if (!Array.isArray(dataRows) || dataRows.length === 0) {
-    console.warn('No dataRows provided to debugExtractBAXTransactions')
-    return { baxTransactions: [], summary: null }
-  }
-
-  // Filter for all BAX rows (symbol contains "BAX")
-  const baxRows = dataRows.filter(row => {
-    const symbol = String(row?.symbol || '').toUpperCase()
-    return symbol.includes('BAX')
-  })
-
-  if (baxRows.length === 0) {
-    console.log('❌ No BAX transactions found in CSV')
-    return { baxTransactions: [], summary: { found: 0 } }
-  }
-
-  // Sort by date (oldest first) for chronological view
-  const sorted = baxRows.sort((a, b) => {
-    const dateA = new Date(a.date || '').getTime()
-    const dateB = new Date(b.date || '').getTime()
-    return dateB - dateA // Reverse sort (newest first like Schwab export)
-  })
-
-  // Categorize by action
-  const byAction = {}
-  let totalBuyShares = 0
-  let totalSellShares = 0
-  let totalAssignedShares = 0
-  let totalBuyAmount = 0
-  let totalSellAmount = 0
-
-  sorted.forEach(row => {
-    const action = String(row.action || '').toLowerCase()
-    if (!byAction[action]) byAction[action] = []
-    byAction[action].push(row)
-
-    const quantity = Number(row.quantity || 0)
-    const amount = Number(row.amount || 0)
-
-    // Track share movements
-    if (action === 'buy' || action.includes('buy')) {
-      totalBuyShares += quantity
-      totalBuyAmount += Math.abs(amount)
-    } else if (action === 'sell' || action.includes('sell')) {
-      totalSellShares += quantity
-      totalSellAmount += Math.abs(amount)
-    } else if (action === 'assigned') {
-      totalAssignedShares += quantity
-    }
-  })
-
-  // Log summary
-  console.log('═════════════════════════════════════════════════════════')
-  console.log('🔍 BAX TRANSACTION ANALYSIS')
-  console.log('═════════════════════════════════════════════════════════')
-  console.log(`Total BAX transactions found: ${baxRows.length}`)
-  console.log(`Date range: ${sorted[sorted.length - 1]?.date} to ${sorted[0]?.date}`)
-  console.log('')
-
-  // Log by action type
-  console.log('📊 TRANSACTIONS BY ACTION TYPE:')
-  Object.entries(byAction).forEach(([action, rows]) => {
-    console.log(`  ${action.toUpperCase()}: ${rows.length} rows`)
-  })
-  console.log('')
-
-  // Log share movement summary
-  console.log('📈 SHARE MOVEMENT SUMMARY:')
-  console.log(`  Total Buy shares: ${totalBuyShares}`)
-  console.log(`  Total Sell shares: ${totalSellShares}`)
-  console.log(`  Total Assigned shares: ${totalAssignedShares}`)
-  console.log(`  Outstanding shares: ${totalBuyShares + totalAssignedShares - totalSellShares}`)
-  console.log('')
-
-  // Log amount movement
-  console.log('💰 AMOUNT MOVEMENT:')
-  console.log(`  Total Buy amount: $${totalBuyAmount.toFixed(2)}`)
-  console.log(`  Total Sell amount: $${totalSellAmount.toFixed(2)}`)
-  console.log('')
-
-  // Log all transactions in detail
-  console.log('📋 ALL BAX TRANSACTIONS (Chronologically):')
-  console.table(sorted.map((row, idx) => ({
-    '#': idx + 1,
-    Date: row.date,
-    Action: row.action,
-    Symbol: row.symbol,
-    Quantity: row.quantity,
-    Price: row.price,
-    Amount: row.amount,
-    Description: (row.description || '').substring(0, 40)
-  })))
-
-  return {
-    baxTransactions: sorted,
-    summary: {
-      found: baxRows.length,
-      byAction,
-      shareMovement: {
-        buy: totalBuyShares,
-        sell: totalSellShares,
-        assigned: totalAssignedShares,
-        outstanding: totalBuyShares + totalAssignedShares - totalSellShares
-      },
-      amountMovement: {
-        buy: totalBuyAmount,
-        sell: totalSellAmount
-      }
-    }
-  }
-}
-
 // CSV parser function
 function parseCSV(csvText) {
   // Parse CSV with Papa Parse
@@ -1121,26 +992,6 @@ function _processData(dataRows, brokerMap) {
     })
   }
 
-  // DIAGNOSTICS: Log classification results before returning
-  console.log('═══════════════════════════════════════')
-  console.log('📊 DATA CLASSIFICATION RESULTS (_processData)')
-  console.log('  Rows processed:', rowsProcessed)
-  console.log('  Transactions classified:', transactionsImport.length)
-  console.log('  Positions classified:', positionsImport.length)
-  console.log('  Sells classified:', sellsImport.length)
-  if (transactionsImport.length > 0) {
-    console.log('  First 3 transactions:')
-    transactionsImport.slice(0, 3).forEach((t, idx) => {
-      console.log(`    [${idx}] ${t.action} week=${t.week} amount=${t.amount}`)
-    })
-  }
-  if (positionsImport.length > 0) {
-    console.log('  First 3 positions:')
-    positionsImport.slice(0, 3).forEach((p, idx) => {
-      console.log(`    [${idx}] ${p.symbol} ${p.action} week=${p.week} qty=${p.quantity}`)
-    })
-  }
-
   return {
     transactionsImport,
     positionsImport,
@@ -1152,28 +1003,6 @@ function _processData(dataRows, brokerMap) {
       weeksChanged: changedWeekList
     }
   }
-  
-  // DIAGNOSTICS: Log classification results (placed after return for visibility check)
-  /*
-  console.log('═══════════════════════════════════════')
-  console.log('📊 DATA CLASSIFICATION RESULTS (_processData)')
-  console.log('  Rows processed:', rowsProcessed)
-  console.log('  Transactions classified:', transactionsImport.length)
-  console.log('  Positions classified:', positionsImport.length)
-  console.log('  Sells classified:', sellsImport.length)
-  if (transactionsImport.length > 0) {
-    console.log('  First 3 transactions:')
-    transactionsImport.slice(0, 3).forEach((t, idx) => {
-      console.log(`    [${idx}] ${t.action} week=${t.week} amount=${t.amount}`)
-    })
-  }
-  if (positionsImport.length > 0) {
-    console.log('  First 3 positions:')
-    positionsImport.slice(0, 3).forEach((p, idx) => {
-      console.log(`    [${idx}] ${p.symbol} ${p.action} week=${p.week} qty=${p.quantity}`)
-    })
-  }
-  */
 }
 
 /**
@@ -1260,17 +1089,6 @@ function _processTransactions(transactionsImport) {
   let transactionsAdded = 0
   let transactionsDeleted = 0
   
-  // DIAGNOSTICS: Log entry point
-  console.log('═══════════════════════════════════════')
-  console.log('💰 PROCESSING TRANSACTIONS')
-  console.log('  transactionsImport.length:', Array.isArray(transactionsImport) ? transactionsImport.length : 'NOT AN ARRAY')
-  if (Array.isArray(transactionsImport) && transactionsImport.length > 0) {
-    console.log('  First 3 transactions:')
-    transactionsImport.slice(0, 3).forEach((t, idx) => {
-      console.log(`    [${idx}] ${t.type} week=${t.week} amount=${t.amount} desc="${t.description}"`)
-    })
-  }
-  
   // Get the account start date
   const startDate = new Date(account.settings.startDate)
   
@@ -1314,9 +1132,6 @@ function _processTransactions(transactionsImport) {
       sourceTransactionId: transaction.id || null,
       isProjected: false
     }
-    
-    // DIAGNOSTICS: Log all transactions being added
-    console.log(`💰 TRANSACTION [${transactionsAdded + 1}] ${transactionObject.type} week=${week} amount=${transactionObject.amount} desc="${transactionObject.description}"`)
     
     // Add the transaction to the account without duplicate detection.
     // WHY: Each CSV row is a separate financial event. Multiple deposits of the same amount
@@ -1374,17 +1189,6 @@ function _processPositions(positionsImport, sellsImport = []) {
 
   const shortSellLots = []
   
-  // DIAGNOSTICS: Log all short sells and positions being imported
-  const baxShorts = shortSells.filter(s => s.symbol === 'BAX')
-  if (baxShorts.length > 0) {
-    console.log('═══════════════════════════════════════')
-    console.log('🔍 POSITION IMPORT DIAGNOSTICS')
-    console.log('  BAX Short sells found:', baxShorts.length)
-    baxShorts.forEach((s, idx) => {
-      console.log(`    [${idx}] week=${s.week}, qty=${s.quantity}, amount=${s.amount}`)
-    })
-  }
-  
   shortSells.forEach((sell) => {
     const shortPosition = {
       positionKey: '',
@@ -1429,15 +1233,6 @@ function _processPositions(positionsImport, sellsImport = []) {
     }
     shortSellLots.push(shortSellRecord)
     
-    // DIAGNOSTICS: Log if this is a BAX short
-    if (sell.symbol === 'BAX') {
-      console.log('🔍 BAX SHORT CREATED')
-      console.log('  week:', sell.week)
-      console.log('  quantity:', Number(sell.quantity || 0))
-      console.log('  amount:', sell.amount)
-      console.log('  Total BAX shorts now:', shortSellLots.filter(s => s.symbol === 'BAX').length)
-    }
-    
     upsertRelPositionTransaction(account, {
       positionKey: shortPosition.positionKey,
       sourceTransactionId: sell.id || null,
@@ -1459,17 +1254,6 @@ function _processPositions(positionsImport, sellsImport = []) {
       return (a.executionOrder || 0) - (b.executionOrder || 0)
     })
     .forEach(data => {
-    // DIAGNOSTICS: Log the start of each buy being processed
-    if (data.symbol === 'BAX') {
-      console.log('═══════════════════════════════════════')
-      console.log('🔍 PROCESSING BAX BUY')
-      console.log('  date:', data.date)
-      console.log('  quantity:', Number(data.quantity || 0))
-      console.log('  amount:', data.amount)
-      console.log('  executionOrder:', data.executionOrder)
-      console.log('  week:', data.week)
-    }
-    
     let sharesRemaining = Number(data.quantity || 0)
     if (sharesRemaining <= 0) return
 
@@ -1490,25 +1274,12 @@ function _processPositions(positionsImport, sellsImport = []) {
         return (a.executionOrder || 0) - (b.executionOrder || 0)
       })
 
-    // DIAGNOSTICS: Log matching shorts for BAX
-    if (data.symbol === 'BAX') {
-      console.log('  Found matching short sells:', openShortSells.length)
-      openShortSells.forEach((s, idx) => {
-        console.log(`    [${idx}] week=${s.week}, remaining=${s.remainingShares} shares`)
-      })
-    }
-
     for (const shortSell of openShortSells) {
       if (sharesRemaining <= 0) break
       const availableShortShares = Number(shortSell.remainingShares || 0)
       if (availableShortShares <= 0) continue
       const coverQty = Math.min(availableShortShares, sharesRemaining)
       const coverCost = Math.round((buyAmount * (coverQty / Number(data.quantity || 1))) * 1000) / 1000
-
-      // DIAGNOSTICS: Log each short allocation for BAX
-      if (data.symbol === 'BAX') {
-        console.log(`  Allocating ${coverQty} shares to cover short (${availableShortShares} available)`)
-      }
 
       shortSell.remainingShares -= coverQty
       shortSell.allocated.push({
@@ -1544,19 +1315,7 @@ function _processPositions(positionsImport, sellsImport = []) {
       sharesRemaining -= coverQty
     }
 
-    // DIAGNOSTICS: Log if this is BAX for debugging
-    if (data.symbol === 'BAX') {
-      console.log('🔍 BAX BUY - SHORT ALLOCATION COMPLETE')
-      console.log('  Initial quantity:', Number(data.quantity || 0))
-      console.log('  Matching short sells found:', openShortSells.length)
-      console.log('  Shares remaining after allocation:', sharesRemaining)
-      console.log('  Will create position:', sharesRemaining > 0)
-    }
-
     if (sharesRemaining <= 0) {
-      if (data.symbol === 'BAX') {
-        console.log('⚠️  BAX BUY - ALL SHARES ALLOCATED TO SHORTS, NO POSITION CREATED')
-      }
       return
     }
 
@@ -1586,44 +1345,15 @@ function _processPositions(positionsImport, sellsImport = []) {
     store.ensurePositionMetaKey(position)
     store.applyPositionMetaToPosition(account, position)
 
-    // DIAGNOSTICS: Log position creation for BAX
-    if (data.symbol === 'BAX') {
-      console.log('🔍 BAX POSITION CREATED')
-      console.log('  positionKey:', position.positionKey)
-      console.log('  sourceTransactionId:', position.sourceTransactionId)
-      console.log('  shares:', position.shares)
-      console.log('  costBasis:', position.costBasis)
-      console.log('  assignedWeek:', position.assignedWeek)
-    }
-
     // Check if this positionKey already exists
     const exists = account.positions.some(p => p.positionKey === position.positionKey) || hasEquivalentPosition(position)
     
-    // DIAGNOSTICS: Log duplicate detection result
-    if (data.symbol === 'BAX') {
-      console.log('🔍 BAX - DUPLICATE CHECK')
-      console.log('  Exact positionKey match:', account.positions.some(p => p.positionKey === position.positionKey))
-      console.log('  Equivalent position detected:', hasEquivalentPosition(position))
-      console.log('  Position already exists:', exists)
-      if (exists) {
-        console.log('  Existing BAX positions:', account.positions.filter(p => p.symbol === 'BAX'))
-      }
-    }
-    
     if (exists) {
-      if (data.symbol === 'BAX') {
-        console.log('⚠️  BAX POSITION SKIPPED - DUPLICATE DETECTED')
-      }
       return
     }
 
     // Add the position to the active account's positions
     account.positions.push(position)
-    
-    if (data.symbol === 'BAX') {
-      console.log('✅ BAX POSITION ADDED TO ACCOUNT')
-      console.log('  Total BAX positions now:', account.positions.filter(p => p.symbol === 'BAX').length)
-    }
     
     upsertRelPositionTransaction(account, {
       positionKey: position.positionKey,
@@ -1800,10 +1530,8 @@ function _processSellData(sellsImport) {
   }
 }
 
-// Expose the show method and debug function to the app store
+// Expose the show method to the app store
 store.showImportTransactionsModal = show
-store.debugExtractBAXTransactions = debugExtractBAXTransactions
-store.parseCSVDebug = parseCSV  // Expose for debugging in console
 </script>
 
 <template>
