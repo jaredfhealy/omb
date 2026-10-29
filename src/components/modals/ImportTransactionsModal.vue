@@ -1803,6 +1803,7 @@ function _processSellData(sellsImport) {
 // Expose the show method and debug function to the app store
 store.showImportTransactionsModal = show
 store.debugExtractBAXTransactions = debugExtractBAXTransactions
+store.parseCSVDebug = parseCSV  // Expose for debugging in console
 </script>
 
 <template>
