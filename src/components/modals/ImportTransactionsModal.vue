@@ -1065,6 +1065,26 @@ function _processData(dataRows, brokerMap) {
     })
   }
 
+  // DIAGNOSTICS: Log classification results before returning
+  console.log('═══════════════════════════════════════')
+  console.log('📊 DATA CLASSIFICATION RESULTS (_processData)')
+  console.log('  Rows processed:', rowsProcessed)
+  console.log('  Transactions classified:', transactionsImport.length)
+  console.log('  Positions classified:', positionsImport.length)
+  console.log('  Sells classified:', sellsImport.length)
+  if (transactionsImport.length > 0) {
+    console.log('  First 3 transactions:')
+    transactionsImport.slice(0, 3).forEach((t, idx) => {
+      console.log(`    [${idx}] ${t.action} week=${t.week} amount=${t.amount}`)
+    })
+  }
+  if (positionsImport.length > 0) {
+    console.log('  First 3 positions:')
+    positionsImport.slice(0, 3).forEach((p, idx) => {
+      console.log(`    [${idx}] ${p.symbol} ${p.action} week=${p.week} qty=${p.quantity}`)
+    })
+  }
+
   return {
     transactionsImport,
     positionsImport,
@@ -1076,6 +1096,28 @@ function _processData(dataRows, brokerMap) {
       weeksChanged: changedWeekList
     }
   }
+  
+  // DIAGNOSTICS: Log classification results (placed after return for visibility check)
+  /*
+  console.log('═══════════════════════════════════════')
+  console.log('📊 DATA CLASSIFICATION RESULTS (_processData)')
+  console.log('  Rows processed:', rowsProcessed)
+  console.log('  Transactions classified:', transactionsImport.length)
+  console.log('  Positions classified:', positionsImport.length)
+  console.log('  Sells classified:', sellsImport.length)
+  if (transactionsImport.length > 0) {
+    console.log('  First 3 transactions:')
+    transactionsImport.slice(0, 3).forEach((t, idx) => {
+      console.log(`    [${idx}] ${t.action} week=${t.week} amount=${t.amount}`)
+    })
+  }
+  if (positionsImport.length > 0) {
+    console.log('  First 3 positions:')
+    positionsImport.slice(0, 3).forEach((p, idx) => {
+      console.log(`    [${idx}] ${p.symbol} ${p.action} week=${p.week} qty=${p.quantity}`)
+    })
+  }
+  */
 }
 
 /**
@@ -1162,6 +1204,17 @@ function _processTransactions(transactionsImport) {
   let transactionsAdded = 0
   let transactionsDeleted = 0
   
+  // DIAGNOSTICS: Log entry point
+  console.log('═══════════════════════════════════════')
+  console.log('💰 PROCESSING TRANSACTIONS')
+  console.log('  transactionsImport.length:', Array.isArray(transactionsImport) ? transactionsImport.length : 'NOT AN ARRAY')
+  if (Array.isArray(transactionsImport) && transactionsImport.length > 0) {
+    console.log('  First 3 transactions:')
+    transactionsImport.slice(0, 3).forEach((t, idx) => {
+      console.log(`    [${idx}] ${t.type} week=${t.week} amount=${t.amount} desc="${t.description}"`)
+    })
+  }
+  
   // Get the account start date
   const startDate = new Date(account.settings.startDate)
   
@@ -1205,6 +1258,9 @@ function _processTransactions(transactionsImport) {
       sourceTransactionId: transaction.id || null,
       isProjected: false
     }
+    
+    // DIAGNOSTICS: Log all transactions being added
+    console.log(`💰 TRANSACTION [${transactionsAdded + 1}] ${transactionObject.type} week=${week} amount=${transactionObject.amount} desc="${transactionObject.description}"`)
     
     // Add the transaction to the account without duplicate detection.
     // WHY: Each CSV row is a separate financial event. Multiple deposits of the same amount
