@@ -4,6 +4,21 @@ Last verified: 2026-10-25
 
 Track delivery progress against the v2 model and fresh-start cutover.
 
+## Code quality and documentation
+
+- [x] All functions in stateRepository.js have JSDoc blocks (@param, @returns, @description)
+- [x] All functions in stateRepository.js have inline notes explaining purpose and reasoning
+- [ ] Projection engine refactor includes JSDoc on all new functions
+- [ ] All v2 collection builders and validators have JSDoc
+
+**REQUIREMENT**: All new functions added during v2 implementation MUST include:
+1. JSDoc block above function declaration with @param, @returns, and @description/@purpose
+2. Inline comments explaining the "why" (not just "what") of complex logic
+3. References to relevant spec documents when behavior is spec-driven
+4. Cross-references between related functions via @see tags
+
+This ensures the codebase remains maintainable and contributors don't need to reverse-engineer intent from specs.
+
 ## Model and persistence
 
 - [ ] v2 schema approved ([data-model-v2.md](./data-model-v2.md))

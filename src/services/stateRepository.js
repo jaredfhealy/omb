@@ -120,6 +120,29 @@ function loadGoogleIdentityScript() {
   })
 }
 
+/**
+ * Opens or creates the local-first IndexedDB database for OMB.
+ * 
+ * PURPOSE: Initialize IndexedDB connection and ensure all 9 v2 collection
+ * stores exist. This is called by every persist/load operation.
+ * 
+ * SCHEMA:
+ * - Database name: 'omb-local-first'
+ * - Version: 2 (managed manually; increment if schema changes)
+ * - Stores:
+ *   - meta: key-value store (no keyPath) for app metadata
+ *   - accounts, importedTransactions, cashFlows, positions, trades,
+ *     relTradeTransactions, relPositionTransactions, notes: 
+ *     All use keyPath='id' for document-style storage
+ * 
+ * UPGRADE PATH: onupgradeneeded() is called only when database is first
+ * created or version is incremented. It creates any missing stores.
+ * 
+ * @returns {Promise<IDBDatabase>} Open database instance
+ * @throws {Error} If IndexedDB is unavailable or open fails
+ * 
+ * @see docs/spec/data-model-v2.md for store/collection details
+ */
 function openIndexedDb() {
   return new Promise((resolve, reject) => {
     if (typeof indexedDB === 'undefined') {
@@ -149,6 +172,18 @@ function openIndexedDb() {
   })
 }
 
+/**
+ * Retrieves a single record from an IndexedDB store by key.
+ * 
+ * PURPOSE: Low-level IndexedDB read operation. Used for fetching individual
+ * records like meta, or retrieving a specific document by id.
+ * 
+ * @param {IDBDatabase} db - Open IndexedDB database instance
+ * @param {string} storeName - Name of the object store
+ * @param {any} key - The key/id to retrieve
+ * @returns {Promise<Object|null>} The record if found, null if not
+ * @throws {Error} If transaction fails
+ */
 function idbGetFromStore(db, storeName, key) {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(storeName, 'readonly')
@@ -160,6 +195,22 @@ function idbGetFromStore(db, storeName, key) {
   })
 }
 
+/**
+ * Writes or updates a single record in an IndexedDB store.
+ * 
+ * PURPOSE: Low-level IndexedDB write operation. Used for storing individual
+ * records with optional key override (for meta store which has no keyPath).
+ * 
+ * WHY: IndexedDB transaction semantics require promise-wrapping for async
+ * patterns in modern code. This abstracts the verbose IDBRequest API.
+ * 
+ * @param {IDBDatabase} db - Open IndexedDB database instance
+ * @param {string} storeName - Name of the object store
+ * @param {any} key - Optional key (required for stores without keyPath like meta)
+ * @param {Object} value - The record to write (will be JSON serialized)
+ * @returns {Promise<void>} Resolves when write completes
+ * @throws {Error} If serialization or transaction fails
+ */
 function idbPutToStore(db, storeName, key, value) {
   return new Promise((resolve, reject) => {
     try {
@@ -177,6 +228,17 @@ function idbPutToStore(db, storeName, key, value) {
   })
 }
 
+/**
+ * Retrieves all records from an IndexedDB store.
+ * 
+ * PURPOSE: Low-level IndexedDB read operation for bulk retrieval.
+ * Used when loading entire collections (all accounts, all transactions, etc).
+ * 
+ * @param {IDBDatabase} db - Open IndexedDB database instance
+ * @param {string} storeName - Name of the object store
+ * @returns {Promise<Array>} Array of records (empty array if store is empty)
+ * @throws {Error} If transaction fails
+ */
 function idbGetAllFromStore(db, storeName) {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(storeName, 'readonly')
@@ -188,6 +250,20 @@ function idbGetAllFromStore(db, storeName) {
   })
 }
 
+/**
+ * Deletes all records from an IndexedDB store.
+ * 
+ * PURPOSE: Low-level IndexedDB delete operation. Used during save() to
+ * atomically replace all records in a collection (clear + write new).
+ * 
+ * WHY: In v2 model, we don't do incremental updates. Each save() replaces
+ * entire collections to maintain consistency and avoid orphaned records.
+ * 
+ * @param {IDBDatabase} db - Open IndexedDB database instance
+ * @param {string} storeName - Name of the object store
+ * @returns {Promise<void>} Resolves when store is cleared
+ * @throws {Error} If transaction fails
+ */
 function idbClearStore(db, storeName) {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(storeName, 'readwrite')
@@ -256,6 +332,32 @@ function toIsoDate(value) {
   return date.toISOString().slice(0, 10)
 }
 
+/**
+ * Normalizes a raw transaction row into a deterministic fingerprint input string.
+ * 
+ * PURPOSE: Create a stable, comparable representation of a transaction that
+ * can detect duplicates and handle collisions during import. The input is
+ * used to generate a hash fingerprint for deduplication.
+ * 
+ * PROCESS: Normalize each field independently:
+ * - date: convert to YYYY-MM-DD
+ * - action: lowercase, trim whitespace
+ * - symbol: uppercase, normalize spaces
+ * - description/quantity/price/amount: normalize and pad decimals
+ * - fees: default to 0 if missing
+ * - executionOrder: preserve for same-day transaction ordering
+ * 
+ * Then join all with '|' delimiter to create the canonical input.
+ * 
+ * WHY SEPARATE INPUT vs HASH: The input is normalized text that's human-readable
+ * (for debugging), while the hash is the compact fingerprint used for lookups.
+ * 
+ * @param {Object} row - Transaction row from CSV import (date, action, symbol, etc)
+ * @returns {string} Pipe-delimited normalized fingerprint input
+ * 
+ * @see docs/spec/data-model-v2.md for importedTransactions schema
+ * @see reserveSourceFingerprint() to convert input to hash with collision handling
+ */
 export function getNormalizedSourceFingerprintInput(row) {
   const effectiveDate = toIsoDate(row?.date) || ''
   const actionNormalized = normalizeString(row?.action).toLowerCase()
@@ -279,6 +381,15 @@ export function getNormalizedSourceFingerprintInput(row) {
   ].join('|')
 }
 
+/**
+ * Ensures registry object has required structure for fingerprint tracking.
+ * 
+ * PURPOSE: Defensive initialization. Callers may pass null/undefined
+ * registries, and this creates a safe default or restores a corrupted one.
+ * 
+ * @param {Object|null} registry - Potential fingerprint registry
+ * @returns {Object} Registry with hashToInput Map
+ */
 function ensureFingerprintRegistry(registry) {
   if (!registry || typeof registry !== 'object') {
     return { hashToInput: new Map() }
@@ -289,6 +400,34 @@ function ensureFingerprintRegistry(registry) {
   return registry
 }
 
+/**
+ * Reserves a source fingerprint hash and tracks it to detect collisions.
+ * 
+ * PURPOSE: Generate a fingerprint for a transaction and record it to prevent
+ * importing the same transaction twice. Handles hash collisions by appending
+ * a collision suffix (|collision:1, |collision:2, etc).
+ * 
+ * LOGIC:
+ * 1. Normalize transaction to canonical input string
+ * 2. Try hashing with no suffix
+ * 3. Check if this hash is already registered:
+ *    - If no entry: reserve it (first occurrence)
+ *    - If entry matches: already registered, reuse (duplicate)
+ *    - If entry differs: collision, try with suffix
+ * 4. Keep incrementing suffix until we find a free hash (up to 1000 attempts)
+ * 
+ * WHY COLLISIONS: Two different transactions might hash to same value (unlikely
+ * but possible with stable-hash). Suffix ensures uniqueness while preserving
+ * determinism (same input always gets same fingerprint across imports).
+ * 
+ * @param {Object} row - Transaction row to fingerprint
+ * @param {Object|null} registry - Fingerprint registry (Map of hash→input)
+ * @returns {string} 32-character hex fingerprint hash
+ * @throws {Error} If unable to resolve collision after 1000 attempts
+ * 
+ * @see getNormalizedSourceFingerprintInput() for normalization
+ * @see simpleStableHash() for hashing algorithm
+ */
 function reserveSourceFingerprint(row, registry = null) {
   const normalizedInput = getNormalizedSourceFingerprintInput(row)
   const context = ensureFingerprintRegistry(registry)
@@ -310,6 +449,18 @@ function reserveSourceFingerprint(row, registry = null) {
   throw new Error('Unable to resolve source fingerprint collision after 1000 attempts.')
 }
 
+/**
+ * Creates a source fingerprint for a transaction row (public API).
+ * 
+ * PURPOSE: Exported function for import workflows to generate fingerprints
+ * with collision handling.
+ * 
+ * @param {Object} row - Transaction row
+ * @param {Object|null} registry - Fingerprint registry for collision tracking
+ * @returns {string} 32-character hex fingerprint
+ * 
+ * @see reserveSourceFingerprint() for implementation
+ */
 export function createSourceFingerprint(row, registry = null) {
   return reserveSourceFingerprint(row, registry)
 }
@@ -833,6 +984,36 @@ function createReferenceIndex(rows, key = 'id') {
   return index
 }
 
+/**
+ * Validates v2 collection data for spec compliance and integrity.
+ * 
+ * PURPOSE: Enforce strict data-model constraints at write-time and load-time.
+ * This ensures the database never contains invalid data that could cause
+ * runtime errors or incorrect calculations.
+ * 
+ * CONSTRAINTS CHECKED:
+ * 1. importedTransactions: accountId references, sourceFingerprint normalization,
+ *    executionOrder, date format (YYYY-MM-DD), numeric fields (quantity/price/amount)
+ * 2. trades: accountId references, sourceTransactionId presence
+ * 3. relTradeTransactions: accountId/tradeId/sourceTransactionId references
+ * 4. positions: accountId references, key uniqueness, numeric fields
+ * 5. relPositionTransactions: position/transaction references
+ * 6. cashFlows: accountId references, numeric type/category validation
+ * 7. notes: accountId references, targetCollection validation
+ * 8. accounts: id uniqueness, required fields
+ * 
+ * WHY: The v2 model uses strict referential integrity and type constraints
+ * to enable safe projection calculations and CRUD operations. The projection
+ * engine assumes valid data; validation prevents cascading errors.
+ * 
+ * @param {Object} data - V2 data envelope with collections
+ * @returns {Object} { errors: [string], warnings: [string] }
+ *   errors: Data fails validation, cannot be persisted
+ *   warnings: Data loads but may have issues for investigation
+ * 
+ * @see docs/spec/data-model-v2.md for collection schema
+ * @see docs/spec/v2-implementation-status.md for validation roadmap
+ */
 function validateV2Collections(data) {
   const errors = []
   const warnings = []
@@ -1112,75 +1293,135 @@ function createDriveAppPropertiesFromEnvelope(envelope, fileType) {
 }
 
 class IndexedDbStateRepository {
+  /**
+   * Inspects IndexedDB to determine current data state and format.
+   * 
+   * PURPOSE: Classify the database as v2 (new model), non-v2 (legacy), or empty.
+   * This is the entry point for determining startup flow (data load vs reset).
+   * 
+   * LOGIC:
+   * 1. Check if all 9 v2 collection stores exist by name (not by reading contents)
+   * 2. If stores exist, check if meta.dataModel === 'v2'
+   * 3. If yes → return { kind: 'v2' }
+   * 4. If no → return { kind: 'non-v2' } (corrupted or legacy data)
+   * 5. If stores missing → return { kind: 'empty' }
+   * 
+   * IMPORTANT: Do NOT load or validate store contents here. That's the responsibility
+   * of load() and normalizeEnvelope(). This function only checks schema presence
+   * and meta.dataModel to minimize startup overhead.
+   * 
+   * @returns {Promise<Object>} 
+   *   { kind: 'v2', meta: {...} } - Valid v2 data with metadata
+   *   { kind: 'non-v2', meta: {...} | null } - Legacy or corrupted data
+   *   { kind: 'empty' } - No data found
+   * 
+   * @see docs/spec/data-model-v2.md for v2 collection schema
+   * @see docs/spec/fresh-start-cutover.md for startup flow context
+   */
   async inspect() {
     const db = await openIndexedDb()
     const meta = await idbGetFromStore(db, META_STORE_NAME, META_KEY)
-    const storeNames = Array.from(db.objectStoreNames || [])
 
-    // PRIMARY CHECK: If meta exists and has correct dataModel, it's definitely v2
-    if (meta && meta.dataModel === DATA_MODEL_VERSION) {
-      const data = {}
-      for (const storeName of V2_COLLECTION_STORES) {
-        data[storeName] = await idbGetAllFromStore(db, storeName)
-      }
+    // Check if all 9 v2 collection stores exist by name
+    const storeNames = Array.from(db.objectStoreNames || [])
+    const hasAllV2Stores = V2_COLLECTION_STORES.every(storeName => storeNames.includes(storeName))
+
+    // If v2 stores exist and meta.dataModel is 'v2', it's valid v2 data
+    if (hasAllV2Stores && meta && meta.dataModel === DATA_MODEL_VERSION) {
       return {
         kind: 'v2',
-        envelope: normalizeEnvelope({ meta, data })
+        meta
       }
     }
 
-    // SECONDARY CHECK: Check if v2 collection stores have data
-    // If so, meta is missing/corrupted, treat as non-v2 for recovery
-    const v2StoreStatus = {}
-    for (const storeName of V2_COLLECTION_STORES) {
-      const rows = await idbGetAllFromStore(db, storeName)
-      v2StoreStatus[storeName] = rows.length
-    }
-
-    const hasV2Data = Object.values(v2StoreStatus).some(count => count > 0)
-    if (hasV2Data) {
+    // If v2 stores exist but meta.dataModel is not 'v2', it's corrupted/legacy
+    if (hasAllV2Stores) {
       return {
         kind: 'non-v2',
-        legacySnapshot: {
-          meta: meta || null,
-          stores: {}
-        }
+        meta: meta || null
       }
     }
 
-    // TERTIARY CHECK: Look for any other data in non-v2 stores
-    const stores = {}
+    // No v2 stores found → check if it's completely empty or has legacy stores
+    // This handles the case where old IndexedDB databases (pre-v2) might still exist
     let hasLegacyData = false
     for (const storeName of storeNames) {
-      if (V2_COLLECTION_STORES.includes(storeName)) continue // Already checked above
-      const rows = await idbGetAllFromStore(db, storeName)
-      if (rows.length > 0) {
-        stores[storeName] = rows
+      if (!V2_COLLECTION_STORES.includes(storeName)) {
         hasLegacyData = true
+        break
       }
     }
 
     if (meta || hasLegacyData) {
       return {
         kind: 'non-v2',
-        legacySnapshot: {
-          meta: meta || null,
-          stores
-        }
+        meta: meta || null
       }
     }
 
-    return { kind: 'empty', legacySnapshot: null }
+    return { kind: 'empty' }
   }
 
+  /**
+   * Loads v2 data from IndexedDB if it exists and is valid.
+   * 
+   * PURPOSE: Read all v2 collection stores and return as normalized envelope
+   * that can be consumed by the app.
+   * 
+   * PROCESS:
+   * 1. Call inspect() to check if v2 data exists
+   * 2. If not v2, return null (caller handles reset flow)
+   * 3. If v2, read all 9 collection stores from IndexedDB
+   * 4. Reconstruct envelope with meta + all collections
+   * 5. Return to caller for validation and app-state conversion
+   * 
+   * @returns {Promise<Object|null>}
+   *   { meta: {...}, data: { accounts: [...], importedTransactions: [...], ... } }
+   *   or null if data is not v2
+   * 
+   * @see docs/spec/data-model-v2.md for collection schema
+   */
   async load() {
     const inspected = await this.inspect()
-    if (inspected.kind === 'v2') {
-      return inspected.envelope
+    if (inspected.kind !== 'v2') {
+      return null
     }
-    return null
+
+    const db = await openIndexedDb()
+    const data = {}
+    for (const storeName of V2_COLLECTION_STORES) {
+      data[storeName] = await idbGetAllFromStore(db, storeName)
+    }
+
+    return {
+      meta: inspected.meta,
+      data
+    }
   }
 
+  /**
+   * Saves v2 data envelope to IndexedDB.
+   * 
+   * PURPOSE: Persist app state as normalized v2 collections in IndexedDB.
+   * This is called after any mutation (imports, CRUD operations, settings changes).
+   * 
+   * PROCESS:
+   * 1. Call normalizeEnvelope() to validate and flatten app state to v2 schema
+   *    (Flattening is needed because app uses transformed shape, not raw v2 shape)
+   * 2. Write meta record (with dataModel='v2' marker) to meta store
+   * 3. Clear all v2 collection stores
+   * 4. Write each collection's records to their respective stores
+   * 
+   * IMPORTANT: normalizeEnvelope() is used here (and ONLY here in IndexedDB path)
+   * to convert app-shape data back to v2 collections. This is different from
+   * Drive persistence which uses normalizeEnvelope to flatten for JSON storage.
+   * 
+   * @param {Object} envelope - Data envelope with { meta: {...}, data: {...} }
+   * @throws {Error} If normalizeEnvelope validation fails
+   * 
+   * @see docs/spec/data-model-v2.md for collection schema
+   * @see normalizeEnvelope() for validation logic
+   */
   async save(envelope) {
     const normalizedEnvelope = normalizeEnvelope(envelope)
     if (!normalizedEnvelope) {
