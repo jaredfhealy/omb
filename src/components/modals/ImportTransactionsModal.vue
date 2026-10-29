@@ -1261,6 +1261,18 @@ function _processPositions(positionsImport, sellsImport = []) {
     })
 
   const shortSellLots = []
+  
+  // DIAGNOSTICS: Log all short sells and positions being imported
+  const baxShorts = shortSells.filter(s => s.symbol === 'BAX')
+  if (baxShorts.length > 0) {
+    console.log('═══════════════════════════════════════')
+    console.log('🔍 POSITION IMPORT DIAGNOSTICS')
+    console.log('  BAX Short sells found:', baxShorts.length)
+    baxShorts.forEach((s, idx) => {
+      console.log(`    [${idx}] week=${s.week}, qty=${s.quantity}, amount=${s.amount}`)
+    })
+  }
+  
   shortSells.forEach((sell) => {
     const shortPosition = {
       positionKey: '',
@@ -1304,6 +1316,16 @@ function _processPositions(positionsImport, sellsImport = []) {
       allocated: []
     }
     shortSellLots.push(shortSellRecord)
+    
+    // DIAGNOSTICS: Log if this is a BAX short
+    if (sell.symbol === 'BAX') {
+      console.log('🔍 BAX SHORT CREATED')
+      console.log('  week:', sell.week)
+      console.log('  quantity:', Number(sell.quantity || 0))
+      console.log('  amount:', sell.amount)
+      console.log('  Total BAX shorts now:', shortSellLots.filter(s => s.symbol === 'BAX').length)
+    }
+    
     upsertRelPositionTransaction(account, {
       positionKey: shortPosition.positionKey,
       sourceTransactionId: sell.id || null,
@@ -1325,6 +1347,17 @@ function _processPositions(positionsImport, sellsImport = []) {
       return (a.executionOrder || 0) - (b.executionOrder || 0)
     })
     .forEach(data => {
+    // DIAGNOSTICS: Log the start of each buy being processed
+    if (data.symbol === 'BAX') {
+      console.log('═══════════════════════════════════════')
+      console.log('🔍 PROCESSING BAX BUY')
+      console.log('  date:', data.date)
+      console.log('  quantity:', Number(data.quantity || 0))
+      console.log('  amount:', data.amount)
+      console.log('  executionOrder:', data.executionOrder)
+      console.log('  week:', data.week)
+    }
+    
     let sharesRemaining = Number(data.quantity || 0)
     if (sharesRemaining <= 0) return
 
@@ -1345,12 +1378,25 @@ function _processPositions(positionsImport, sellsImport = []) {
         return (a.executionOrder || 0) - (b.executionOrder || 0)
       })
 
+    // DIAGNOSTICS: Log matching shorts for BAX
+    if (data.symbol === 'BAX') {
+      console.log('  Found matching short sells:', openShortSells.length)
+      openShortSells.forEach((s, idx) => {
+        console.log(`    [${idx}] week=${s.week}, remaining=${s.remainingShares} shares`)
+      })
+    }
+
     for (const shortSell of openShortSells) {
       if (sharesRemaining <= 0) break
       const availableShortShares = Number(shortSell.remainingShares || 0)
       if (availableShortShares <= 0) continue
       const coverQty = Math.min(availableShortShares, sharesRemaining)
       const coverCost = Math.round((buyAmount * (coverQty / Number(data.quantity || 1))) * 1000) / 1000
+
+      // DIAGNOSTICS: Log each short allocation for BAX
+      if (data.symbol === 'BAX') {
+        console.log(`  Allocating ${coverQty} shares to cover short (${availableShortShares} available)`)
+      }
 
       shortSell.remainingShares -= coverQty
       shortSell.allocated.push({
@@ -1386,7 +1432,21 @@ function _processPositions(positionsImport, sellsImport = []) {
       sharesRemaining -= coverQty
     }
 
-    if (sharesRemaining <= 0) return
+    // DIAGNOSTICS: Log if this is BAX for debugging
+    if (data.symbol === 'BAX') {
+      console.log('🔍 BAX BUY - SHORT ALLOCATION COMPLETE')
+      console.log('  Initial quantity:', Number(data.quantity || 0))
+      console.log('  Matching short sells found:', openShortSells.length)
+      console.log('  Shares remaining after allocation:', sharesRemaining)
+      console.log('  Will create position:', sharesRemaining > 0)
+    }
+
+    if (sharesRemaining <= 0) {
+      if (data.symbol === 'BAX') {
+        console.log('⚠️  BAX BUY - ALL SHARES ALLOCATED TO SHORTS, NO POSITION CREATED')
+      }
+      return
+    }
 
     const remainingCostBasis = Math.round((buyAmount * (sharesRemaining / Number(data.quantity || 1))) * 1000) / 1000
     // Build the position object
@@ -1414,12 +1474,45 @@ function _processPositions(positionsImport, sellsImport = []) {
     store.ensurePositionMetaKey(position)
     store.applyPositionMetaToPosition(account, position)
 
+    // DIAGNOSTICS: Log position creation for BAX
+    if (data.symbol === 'BAX') {
+      console.log('🔍 BAX POSITION CREATED')
+      console.log('  positionKey:', position.positionKey)
+      console.log('  sourceTransactionId:', position.sourceTransactionId)
+      console.log('  shares:', position.shares)
+      console.log('  costBasis:', position.costBasis)
+      console.log('  assignedWeek:', position.assignedWeek)
+    }
+
     // Check if this positionKey already exists
     const exists = account.positions.some(p => p.positionKey === position.positionKey) || hasEquivalentPosition(position)
-    if (exists) return
+    
+    // DIAGNOSTICS: Log duplicate detection result
+    if (data.symbol === 'BAX') {
+      console.log('🔍 BAX - DUPLICATE CHECK')
+      console.log('  Exact positionKey match:', account.positions.some(p => p.positionKey === position.positionKey))
+      console.log('  Equivalent position detected:', hasEquivalentPosition(position))
+      console.log('  Position already exists:', exists)
+      if (exists) {
+        console.log('  Existing BAX positions:', account.positions.filter(p => p.symbol === 'BAX'))
+      }
+    }
+    
+    if (exists) {
+      if (data.symbol === 'BAX') {
+        console.log('⚠️  BAX POSITION SKIPPED - DUPLICATE DETECTED')
+      }
+      return
+    }
 
     // Add the position to the active account's positions
     account.positions.push(position)
+    
+    if (data.symbol === 'BAX') {
+      console.log('✅ BAX POSITION ADDED TO ACCOUNT')
+      console.log('  Total BAX positions now:', account.positions.filter(p => p.symbol === 'BAX').length)
+    }
+    
     upsertRelPositionTransaction(account, {
       positionKey: position.positionKey,
       sourceTransactionId: data.id || null,
