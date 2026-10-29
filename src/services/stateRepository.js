@@ -1117,6 +1117,7 @@ class IndexedDbStateRepository {
     const meta = await idbGetFromStore(db, META_STORE_NAME, META_KEY)
     const storeNames = Array.from(db.objectStoreNames || [])
 
+    // PRIMARY CHECK: If meta exists and has correct dataModel, it's definitely v2
     if (meta && meta.dataModel === DATA_MODEL_VERSION) {
       const data = {}
       for (const storeName of V2_COLLECTION_STORES) {
@@ -1128,17 +1129,38 @@ class IndexedDbStateRepository {
       }
     }
 
-    const stores = {}
-    let hasRows = false
-    for (const storeName of storeNames) {
+    // SECONDARY CHECK: Check if v2 collection stores have data
+    // If so, meta is missing/corrupted, treat as non-v2 for recovery
+    const v2StoreStatus = {}
+    for (const storeName of V2_COLLECTION_STORES) {
       const rows = await idbGetAllFromStore(db, storeName)
-      if (rows.length > 0) {
-        stores[storeName] = rows
-        hasRows = true
+      v2StoreStatus[storeName] = rows.length
+    }
+
+    const hasV2Data = Object.values(v2StoreStatus).some(count => count > 0)
+    if (hasV2Data) {
+      return {
+        kind: 'non-v2',
+        legacySnapshot: {
+          meta: meta || null,
+          stores: {}
+        }
       }
     }
 
-    if (meta || hasRows) {
+    // TERTIARY CHECK: Look for any other data in non-v2 stores
+    const stores = {}
+    let hasLegacyData = false
+    for (const storeName of storeNames) {
+      if (V2_COLLECTION_STORES.includes(storeName)) continue // Already checked above
+      const rows = await idbGetAllFromStore(db, storeName)
+      if (rows.length > 0) {
+        stores[storeName] = rows
+        hasLegacyData = true
+      }
+    }
+
+    if (meta || hasLegacyData) {
       return {
         kind: 'non-v2',
         legacySnapshot: {
