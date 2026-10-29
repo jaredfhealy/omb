@@ -2,6 +2,14 @@
 import { defineStore } from 'pinia'
 import { nextTick } from 'vue'
 import { getSyncCenterEventName, isDriveConnected, isDrivePersistenceConfigured, loadAppState, saveAppState } from '@/services/stateRepository'
+import {
+  buildActualGrowthMap,
+  buildPositionCollateralMap,
+  buildCashFlowsMap,
+  sumWithdrawals,
+  getWeekDateRange,
+  getWeekStatus
+} from '@/services/projectionEngineV2'
 
 const SELECTED_ACCOUNT_ID_KEY = 'omb.selectedAccountId.v1'
 const NON_V2_RESET_ACK_KEY = 'omb.nonV2ResetHandled.v1'
@@ -1066,6 +1074,254 @@ export const useAppStore = defineStore('app', {
       const diffTime = today - startDate
       const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
       return Math.ceil(diffDays / 7)
+    },
+
+    /**
+     * Calculate projections using v2 data model and algorithm.
+     * 
+     * PURPOSE:
+     * Compute weekly balance and growth metrics for an account by iterating through weeks,
+     * aggregating actual (imported) vs. projected growth, tracking cash balances and position
+     * collateral requirements, and calculating metrics (ROR, trailing averages, etc.).
+     * 
+     * PROCESS:
+     * 1. Validate account and settings exist
+     * 2. Build helper maps: actualGrowth, positionCollateral, cashFlows
+     * 3. Iterate weeks 1 to totalWeeks:
+     *    a. Aggregate week-specific data (deposits, withdrawals, position changes)
+     *    b. Calculate position collateral (critical for margin fix)
+     *    c. Calculate growth (actual or projected based on week status)
+     *    d. Calculate end balances and ROR
+     *    e. Track trailing averages (only from weeks with actual data)
+     * 4. Post-process: compute all-time averages and attach to all rows
+     * 
+     * OUTPUT: Each projection row contains:
+     * - Week number and date range
+     * - Cash balance tracking (start, end, deposits, withdrawals)
+     * - Growth (actual or projected)
+     * - Position collateral (start, changes, end)
+     * - Available balance (cash minus collateral)
+     * - ROR calculations (actual, projected, trailing)
+     * - Trailing averages (4-week, 8-week, all-time)
+     * 
+     * CRITICAL FIX FOR MARGIN:
+     * This algorithm explicitly tracks position collateral as a commitment of capital,
+     * preventing the overstatement of available cash that existed in v1.
+     * 
+     * SPEC REF: docs/spec/projection-engine-v2-detailed.md
+     * 
+     * @see buildActualGrowthMap - Query importedTransactions by week
+     * @see buildPositionCollateralMap - Query positions by lifecycle
+     * @see buildCashFlowsMap - Query cashFlows by date range
+     */
+    calculateProjectionsV2() {
+      this.projections = []
+      
+      // Validate account and settings
+      if (!this.activeAccount?.settings) {
+        return
+      }
+
+      const settings = this.activeAccount.settings
+      const totalWeeks = settings.years * 52
+
+      // Step 0: Build helper maps
+      let brokerageFormat = null
+      try {
+        brokerageFormat = this.getBrokerageMap(this.activeAccount?.formatKey || 'schwab')
+      } catch (error) {
+        console.error('Error loading brokerage format:', error)
+        return
+      }
+
+      const actualGrowthByWeek = buildActualGrowthMap(this.activeAccount, brokerageFormat)
+      const { movementByWeek: positionMovement } = buildPositionCollateralMap(this.activeAccount)
+      const cashFlowsByWeek = buildCashFlowsMap(this.activeAccount, totalWeeks)
+
+      // Tracking arrays for trailing averages
+      const actualGrowths = []
+      const actualRORs = []
+
+      // Step 1: Iterate through each week
+      let startCashBalance = settings.startingBalance
+
+      for (let week = 1; week <= totalWeeks; week++) {
+        // ===== Step 2: Gather week-specific data =====
+        
+        // Get cash flows for this week
+        const weekCashFlows = cashFlowsByWeek.get(week) || { deposits: 0, withdrawals: {} }
+        const deposit = weekCashFlows.deposits
+        const withdrawalsByCategory = weekCashFlows.withdrawals
+        const withdrawal = sumWithdrawals(withdrawalsByCategory)
+
+        // Get position changes for this week
+        const positionMovementThisWeek = positionMovement.get(week) || { opened: 0, closed: 0 }
+        const positionCollateralAdded = positionMovementThisWeek.opened
+        const positionCollateralRemoved = positionMovementThisWeek.closed
+
+        // ===== Step 3: Calculate position collateral =====
+        // Build running total of open position collateral (critical for margin fix)
+        let startPositionCollateral = 0
+        this.activeAccount.positions.forEach(position => {
+          const assignedWeek = Number(position?.assignedWeek)
+          const soldWeek = position?.soldWeek ? Number(position.soldWeek) : null
+          const collateral = Number(position?.costBasis || 0)
+
+          // Position is open if assigned at or before this week, and not yet sold
+          if (assignedWeek <= week && (!soldWeek || soldWeek > week)) {
+            startPositionCollateral += collateral
+          }
+        })
+        startPositionCollateral = Math.round(startPositionCollateral * 100) / 100
+
+        const endPositionCollateral = Math.round((startPositionCollateral + positionCollateralAdded - positionCollateralRemoved) * 100) / 100
+
+        // ===== Step 4: Calculate available capital and growth =====
+        // Available capital = cash not locked in positions (critical insight from v2 spec)
+        const availableCapital = Math.max(0, startCashBalance - startPositionCollateral)
+        
+        // Projected growth based on available capital
+        const projectedGrowth = Math.max(0, availableCapital * (settings.weeklyReturn / 100))
+
+        // Actual growth from imported transactions
+        const weekActualGrowth = actualGrowthByWeek.has(week) ? actualGrowthByWeek.get(week) : null
+
+        // ===== Step 5: Determine which growth to use =====
+        // Get week dates to determine if past/current/future
+        const { start: weekStart, end: weekEnd } = getWeekDateRange(settings.startDate, week)
+        const weekStatus = getWeekStatus(weekEnd)
+        
+        let growth = projectedGrowth
+        let hasActualGrowth = false
+        if (weekStatus !== 'future' && weekActualGrowth !== null) {
+          growth = weekActualGrowth
+          hasActualGrowth = true
+          actualGrowths.push(weekActualGrowth)
+        } else if (weekStatus === 'future' && weekActualGrowth !== null) {
+          // For future weeks, still track actual if it exists (shouldn't normally happen)
+          actualGrowths.push(weekActualGrowth)
+          hasActualGrowth = true
+        }
+
+        // ===== Step 6: Calculate end-of-week cash balance =====
+        const endBalance = Math.round((startCashBalance + deposit - withdrawal + growth) * 100) / 100
+        
+        // Available balance = cash minus position collateral
+        const availableBalance = Math.round((endBalance - endPositionCollateral) * 100) / 100
+
+        // ===== Step 7: Calculate ROR =====
+        // Base amount for ROR = total capital at risk (cash + position collateral)
+        const baseAmountForROR = startCashBalance + startPositionCollateral
+        
+        let actualROR = null
+        let projectedROR = 0
+        let ror = 0
+
+        if (baseAmountForROR !== 0) {
+          if (weekActualGrowth !== null) {
+            actualROR = (weekActualGrowth / baseAmountForROR) * 100
+            actualRORs.push(actualROR)
+          }
+          projectedROR = (projectedGrowth / baseAmountForROR) * 100
+          ror = hasActualGrowth && actualROR !== null ? actualROR : projectedROR
+        }
+
+        // ===== Step 8: Calculate trailing averages =====
+        const last4WeeksGrowth = actualGrowths.slice(-4)
+        const last8WeeksGrowth = actualGrowths.slice(-8)
+        
+        const trailing4WeekGrowthTotal = last4WeeksGrowth.length > 0
+          ? last4WeeksGrowth.reduce((sum, g) => sum + g, 0)
+          : null
+        const trailing4WeekGrowthAvg = last4WeeksGrowth.length > 0
+          ? trailing4WeekGrowthTotal / last4WeeksGrowth.length
+          : null
+        const trailing8WeekGrowthAvg = last8WeeksGrowth.length > 0
+          ? last8WeeksGrowth.reduce((sum, g) => sum + g, 0) / last8WeeksGrowth.length
+          : null
+        const trailingTotalGrowthAvg = actualGrowths.length > 0
+          ? actualGrowths.reduce((sum, g) => sum + g, 0) / actualGrowths.length
+          : null
+
+        const last4WeeksROR = actualRORs.slice(-4)
+        const last8WeeksROR = actualRORs.slice(-8)
+        
+        const trailing4WeekRORAvg = last4WeeksROR.length > 0
+          ? last4WeeksROR.reduce((sum, r) => sum + r, 0) / last4WeeksROR.length
+          : null
+        const trailing8WeekRORAvg = last8WeeksROR.length > 0
+          ? last8WeeksROR.reduce((sum, r) => sum + r, 0) / last8WeeksROR.length
+          : null
+        const trailingTotalRORAvg = actualRORs.length > 0
+          ? actualRORs.reduce((sum, r) => sum + r, 0) / actualRORs.length
+          : null
+
+        // ===== Step 9: Append projection row =====
+        this.projections.push({
+          week,
+          weekStart,
+          weekEnd,
+          
+          // Cash balance tracking
+          startCashBalance,
+          deposit,
+          withdrawal,
+          withdrawalsByCategory,
+          
+          // Growth
+          actualGrowth: hasActualGrowth ? weekActualGrowth : null,
+          projectedGrowth,
+          growth,
+          
+          // Position collateral tracking (CRITICAL FOR MARGIN FIX)
+          startPositionCollateral,
+          positionCollateralAdded,
+          positionCollateralRemoved,
+          endPositionCollateral,
+          
+          // End-of-week balances
+          endBalance,
+          availableBalance,
+          
+          // ROR calculations
+          actualROR,
+          projectedROR,
+          ror,
+          baseAmountForROR,
+          
+          // Trailing averages
+          trailing4WeekGrowthTotal: trailing4WeekGrowthTotal ? Math.round(trailing4WeekGrowthTotal * 100) / 100 : null,
+          trailing4WeekGrowthAvg: trailing4WeekGrowthAvg ? Math.round(trailing4WeekGrowthAvg * 100) / 100 : null,
+          trailing8WeekGrowthAvg: trailing8WeekGrowthAvg ? Math.round(trailing8WeekGrowthAvg * 100) / 100 : null,
+          trailingTotalGrowthAvg: trailingTotalGrowthAvg ? Math.round(trailingTotalGrowthAvg * 100) / 100 : null,
+          
+          trailing4WeekRORAvg: trailing4WeekRORAvg ? Math.round(trailing4WeekRORAvg * 100) / 100 : null,
+          trailing8WeekRORAvg: trailing8WeekRORAvg ? Math.round(trailing8WeekRORAvg * 100) / 100 : null,
+          trailingTotalRORAvg: trailingTotalRORAvg ? Math.round(trailingTotalRORAvg * 100) / 100 : null,
+          
+          // All-time averages (computed in step 10)
+          averageGrowth: null,
+          averageROR: null
+        })
+
+        // ===== Step 10: Next week's starting balance =====
+        startCashBalance = endBalance
+      }
+
+      // ===== Step 11: Post-process all-time averages =====
+      const allTimeAverageGrowth = actualGrowths.length > 0
+        ? Math.round((actualGrowths.reduce((sum, g) => sum + g, 0) / actualGrowths.length) * 100) / 100
+        : null
+      const allTimeAverageROR = actualRORs.length > 0
+        ? Math.round((actualRORs.reduce((sum, r) => sum + r, 0) / actualRORs.length) * 100) / 100
+        : null
+
+      this.projections.forEach(p => {
+        p.averageGrowth = allTimeAverageGrowth
+        p.averageROR = allTimeAverageROR
+      })
+
+      this.loading = false
     },
   }
 })
