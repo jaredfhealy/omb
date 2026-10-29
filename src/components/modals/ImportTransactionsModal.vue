@@ -81,11 +81,37 @@ function getWorkingAccount() {
   return importTargetAccount.value || store.activeAccount
 }
 
+/**
+ * Assigns deterministic execution order to data rows for FIFO position allocation.
+ * 
+ * PURPOSE: Ensure multiple transactions on the same date are processed in the correct order
+ * for position allocation (critical: shorts allocated before covers, sells after opens).
+ * 
+ * ALGORITHM:
+ * 1. Detect if CSV is descending-by-date (oldest trades at bottom) vs ascending (newest at bottom)
+ * 2. Sort rows by date
+ * 3. For same-date rows: preserve CSV order (sourceLine order) if descending source, else reverse
+ * 4. Assign executionOrder as 1-based index
+ * 
+ * INPUTS:
+ * - dataRows: array of parsed CSV rows with date and sourceLine
+ * 
+ * OUTPUTS:
+ * - array of rows with executionOrder field (1-based, determines FIFO order)
+ * 
+ * WHY: executionOrder is critical for:
+ * - Position allocation (must process shorts before covering buys on same day)
+ * - Projection calculations (week-by-week ordering must match trading sequence)
+ * - Uniqueness (fingerprint + sourceLine + executionOrder create stable IDs)
+ * 
+ * @see docs/spec/data-model-v2.md for importedTransactions.executionOrder semantics
+ */
 function getExecutionOrderedRows(dataRows) {
   if (!Array.isArray(dataRows) || dataRows.length === 0) return []
 
   const firstDate = new Date(dataRows[0].date).getTime()
   const lastDate = new Date(dataRows[dataRows.length - 1].date).getTime()
+  // Detect if CSV is descending-by-date (typical Schwab export: newest first, oldest last)
   const sourceIsDescendingByDate = Number.isFinite(firstDate) && Number.isFinite(lastDate) && firstDate > lastDate
 
   const ordered = dataRows
@@ -93,6 +119,7 @@ function getExecutionOrderedRows(dataRows) {
     .sort((a, b) => {
       if (a.date < b.date) return -1
       if (a.date > b.date) return 1
+      // Same date: preserve CSV order (if descending) or reverse it (if ascending)
       if (sourceIsDescendingByDate) {
         return Number(b.sourceLine || 0) - Number(a.sourceLine || 0)
       }
@@ -100,26 +127,56 @@ function getExecutionOrderedRows(dataRows) {
     })
     .map((row, idx) => ({
       ...row,
-      executionOrder: idx + 1
+      executionOrder: idx + 1  // 1-based index for stable fingerprint generation
     }))
 
   return ordered
 }
 
+/**
+ * Normalizes whitespace in string values (trim + collapse to single spaces).
+ * 
+ * PURPOSE: Clean messy CSV data that may have trailing spaces or multiple spaces within text.
+ * 
+ * @param value - any input value
+ * @returns normalized string (empty if falsy input)
+ */
 function normalizeSpace(value) {
   return String(value || '').trim().replace(/\s+/g, ' ')
 }
 
+/**
+ * Converts JavaScript Date to ISO date string (YYYY-MM-DD).
+ * 
+ * PURPOSE: Standardize date representation for storage in v2 collections.
+ * v2 collections store dates as 'YYYY-MM-DD' strings (not timestamps, not Date objects).
+ * 
+ * @param value - any date-like value (string, Date object, milliseconds)
+ * @returns 'YYYY-MM-DD' format or empty string if invalid
+ */
 function toIsoDate(value) {
   if (!value) return ''
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return ''
-  return date.toISOString().slice(0, 10)
+  return date.toISOString().slice(0, 10)  // Extract YYYY-MM-DD part
 }
 
+/**
+ * Creates a stable 32-character hex hash from input string.
+ * 
+ * PURPOSE: Generate deterministic IDs for importedTransactions that survive re-import cycles.
+ * Uses simple FNV-1a algorithm (chosen for predictability, not cryptographic security).
+ * 
+ * OUTPUT FORMAT: 32-char hex string (8 chars repeated 4x for readability).
+ * 
+ * WHY: When user re-imports CSV with same transactions, we need to detect duplicates.
+ * Hash must be stable (same input → same output) and collision-resistant enough for CSV data.
+ * 
+ * @see createImportedTransactionId() which combines fingerprint + sourceLine + executionOrder
+ */
 function simpleStableHash(input) {
   const text = String(input || '')
-  let hash = 2166136261
+  let hash = 2166136261  // FNV offset basis
   for (let i = 0; i < text.length; i++) {
     hash ^= text.charCodeAt(i)
     hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24)
@@ -128,10 +185,39 @@ function simpleStableHash(input) {
   return `${baseHex}${baseHex}${baseHex}${baseHex}`.slice(0, 32)
 }
 
+/**
+ * Creates normalized sourceFingerprint for a transaction row.
+ * 
+ * PURPOSE: Wrapper around the stateRepository version, used locally during import.
+ * A sourceFingerprint is a deterministic hash of key transaction fields, used to:
+ * - Detect duplicate CSV rows (if same fingerprint + executionOrder → same transaction)
+ * - Track transactions across re-import cycles
+ * - Match against previously imported records
+ * 
+ * @param row - transaction data row
+ * @param registry - fingerprint registry (optional) for collision detection
+ * @returns normalized 32-char hex fingerprint
+ * 
+ * @see stateRepository.js createSourceFingerprint() for spec
+ */
 function createSourceFingerprint(row, registry = null) {
   return createNormalizedSourceFingerprint(row, registry)
 }
 
+/**
+ * Builds a registry of existing fingerprints for duplicate detection.
+ * 
+ * PURPOSE: During import, detect if a CSV row is already in account.importedTransactions.
+ * We compare the computed fingerprint against all existing fingerprints.
+ * 
+ * @param account - the account being imported to
+ * @param pendingRows - array of new rows being imported (optional)
+ * @returns { hashToInput: Map<fingerprint, inputData> }
+ * 
+ * WHY: When re-importing CSV, we want to:
+ * 1. Skip rows already imported (same fingerprint)
+ * 2. Detect if the row was modified (same fingerprint but different amount/date)
+ */
 function buildFingerprintRegistry(account, pendingRows = []) {
   const hashToInput = new Map()
   const importedRows = Array.isArray(account?.importedTransactions) ? account.importedTransactions : []
@@ -143,6 +229,25 @@ function buildFingerprintRegistry(account, pendingRows = []) {
   return { hashToInput }
 }
 
+/**
+ * Creates a deterministic ID for an importedTransaction.
+ * 
+ * PURPOSE: Generate a unique, stable ID that survives re-import cycles.
+ * 
+ * ALGORITHM:
+ * 1. Get the sourceFingerprint (normalized hash of transaction data)
+ * 2. Combine with sourceLine (line number in original CSV) and executionOrder
+ * 3. Hash the combination to get a 32-char ID
+ * 
+ * WHY: sourceFingerprint alone isn't unique (two identical transactions → same fingerprint).
+ * Adding sourceLine + executionOrder makes it unique per CSV row.
+ * 
+ * STABILITY: If user re-imports same CSV, executionOrder might change (depends on sorting).
+ * This is intentional: if the CSV row order changed, treat as new transaction.
+ * 
+ * @param row - transaction row with sourceFingerprint, sourceLine, executionOrder
+ * @returns 32-char hex ID
+ */
 function createImportedTransactionId(row) {
   const fingerprint = String(row?.sourceFingerprint || '').trim() || createSourceFingerprint(row)
   return simpleStableHash(`${fingerprint}|${Number(row?.sourceLine || 0)}|${Number(row?.executionOrder || 0)}`)
@@ -583,6 +688,79 @@ function _parseAmount(amountStr, defaultValue = 0) {
   return Math.round(parsedValue * 100) / 100
 }
 
+/**
+ * Parses raw Schwab CSV export into structured data rows with normalized column mappings.
+ * 
+ * PURPOSE: Transform raw CSV text into JavaScript objects with consistent field names.
+ * Handles brokerage format detection, date parsing (including options "as of" format),
+ * and amount normalization.
+ * 
+ * PROCESS:
+ * 1. Parse CSV using PapaParse library (skipEmptyLines=true)
+ * 2. Extract header row (line 0), detect brokerage format using column names
+ * 3. Get columnMap from store.getBrokerageMap() (maps brokerage column names to standard fields)
+ * 4. Validate required columns exist (date, action, symbol, amount)
+ * 5. For each data row (starting line 1):
+ *    - Parse date (handle "as of" format for options assignments)
+ *    - Parse amount using _parseAmount() (handles $ signs, commas, negative)
+ *    - Skip "journal" entries with $0 amount (internal bookkeeping)
+ *    - Create dataObj with normalized fields
+ *    - Store sourceLine for traceability
+ * 6. Collect all parsing errors for user review
+ * 
+ * OUTPUTS:
+ * ```javascript
+ * {
+ *   dataRows: [
+ *     {
+ *       sourceLine: 1,         // Line number in CSV (for debugging)
+ *       date: 'YYYY-MM-DD',
+ *       description: string,
+ *       amount: number,        // Positive/negative as-is from CSV
+ *       action: string,        // normalized: 'buy', 'sell', 'deposit', etc
+ *       symbol: string,        // uppercase: 'AAPL', 'SPY', 'BAX'
+ *       quantity: number,      // shares or contracts
+ *       price: number,         // per share or per contract
+ *       fees: number           // transaction fees (0 if missing)
+ *     },
+ *     ...
+ *   ],
+ *   errors: [
+ *     { message: 'Invalid date at line 5', line: 5 },
+ *     ...
+ *   ],
+ *   meta: {
+ *     headers: ['Date', 'Action', ...],  // Original CSV header
+ *     brokerageFormat: 'schwab'          // Detected format
+ *   }
+ * }
+ * ```
+ * 
+ * KEY FEATURES:
+ * - Preserves sourceLine for row-by-row debugging ("which CSV line is this?")
+ * - Handles Schwab "as of" date format for options assignments
+ * - Normalizes action values (lowercase for consistency)
+ * - Filters out $0 journal entries (internal transfers)
+ * - Accumulates all errors for batch review
+ * 
+ * BROKERAGE FORMAT DETECTION:
+ * Uses column headers to determine if this is a Schwab export, E*TRADE, etc.
+ * Each format has a columnMap that translates brokerage column names to standard fields.
+ * @see store.getBrokerageMap() for supported brokerages
+ * 
+ * WHY THIS MATTERS:
+ * - Clean data input is critical: garbage in → garbage out in position allocation
+ * - sourceLine preservation enables "which row caused this issue?" debugging
+ * - Date parsing with "as of" handling is essential for options expiration tracking
+ * - Error collection allows user to review and fix CSV before proceeding
+ * 
+ * @param csvText - Raw CSV file contents
+ * @returns { dataRows, errors, meta }
+ * 
+ * @see _processData() for next stage (classification)
+ * @see docs/spec/fresh-start-cutover.md for CSV import format requirements
+ * @throws {Error} if CSV is empty or required columns are missing
+ */
 // CSV parser function
 function parseCSV(csvText) {
   // Parse CSV with Papa Parse
@@ -683,6 +861,90 @@ function parseCSV(csvText) {
   }
 }
 
+/**
+ * Classifies CSV rows into transaction/position/sell buckets and creates importedTransactions.
+ * 
+ * PURPOSE: Central coordination of import data flow. This stage:
+ * 1. Calculates week numbers (which weekly projection do these rows affect?)
+ * 2. Creates sourceFingerprints and transaction IDs (stable across re-imports)
+ * 3. Routes rows to one of three processing pipelines based on action type
+ * 4. Replaces account.importedTransactions for affected weeks (atomic per-week)
+ * 5. Optionally discards week 1 (common for "warm-up" trades)
+ * 
+ * INPUTS:
+ * - dataRows: from parseCSV(), with date, action, symbol, amount, quantity, executionOrder
+ * - brokerMap: { transactionTypes, positionTypes, sellTypes, ... } (action classification)
+ * 
+ * PROCESS:
+ * 1. For each data row:
+ *    a. Calculate week = floor((date - accountStartDate) / 7 days) + 1 (1-based)
+ *    b. Create sourceFingerprint from row (normalized, deterministic)
+ *    c. Create importedTransactionId from fingerprint + sourceLine + executionOrder
+ *    d. Classify action against brokerMap to route to bucket:
+ *       - transactionTypes (e.g., 'deposit', 'withdrawal') → transactionsImport[]
+ *       - positionTypes (e.g., 'buy') → positionsImport[]
+ *       - sellTypes (e.g., 'sell', 'short') → sellsImport[]
+ *    e. Add to importedTransactions[]
+ * 2. Handle "discard first week" option:
+ *    - If enabled and smallestWeek exists: remove all week 1 rows
+ *    - This filters out "warm-up" trades before real trading starts
+ * 3. Atomic per-week replacement:
+ *    - Collect all affected weeks (changedWeeks)
+ *    - Delete existing importedTransactions for those weeks
+ *    - Insert new importedTransactions for those weeks
+ *    - Sort by week + executionOrder (FIFO order critical for downstream)
+ * 
+ * OUTPUTS:
+ * ```javascript
+ * {
+ *   transactionsImport: [
+ *     { id, sourceFingerprint, date, action, amount, executionOrder, week }
+ *   ],
+ *   positionsImport: [
+ *     { id, sourceFingerprint, date, action, symbol, amount, quantity, executionOrder, week }
+ *   ],
+ *   sellsImport: [
+ *     { id, sourceFingerprint, date, action, symbol, amount, quantity, executionOrder, week }
+ *   ],
+ *   processDataResults: {
+ *     rowsProcessed: number,
+ *     weeksProcessed: number,
+ *     weeksUpdated: number,
+ *     weeksChanged: [1, 2, 5, 7, ...]  // Week numbers affected
+ *   }
+ * }
+ * ```
+ * 
+ * CRITICAL: Execution Order
+ * The executionOrder field determines FIFO allocation:
+ * - executionOrder=1 is the first trade on that date
+ * - executionOrder=N is the Nth trade on that date
+ * - Position allocation must process in executionOrder sequence
+ *   (e.g., short sells must be processed before covering buys on same day)
+ * 
+ * WEEK CALCULATION:
+ * week = floor((transactionDate - accountStartDate) / 7 * 24 * 60 * 60 * 1000) + 1
+ * Example:
+ * - If startDate = 2025-10-01 (Wednesday)
+ * - And tradeDate = 2025-10-08 (Wednesday, 7 days later)
+ * - Then week = 1 + 1 = 2
+ * 
+ * WHY THIS MATTERS:
+ * - Week numbers tie transactions to weekly projections
+ * - sourceFingerprint enables re-import deduplication
+ * - executionOrder drives position allocation (CRITICAL for shorts/covers on same day)
+ * - Atomic per-week replacement prevents partial/corrupt states
+ * - discardFirstWeek option is needed when CSV includes warm-up trades before real trading
+ * 
+ * @param dataRows - from parseCSV()
+ * @param brokerMap - from store.getBrokerageMap()
+ * @returns { transactionsImport, positionsImport, sellsImport, processDataResults }
+ * 
+ * @see getExecutionOrderedRows() - executed before this, assigns executionOrder
+ * @see _processTransactions() - next stage (processes transactionsImport)
+ * @see _processPositions() - processes positionsImport + sellsImport
+ * @see docs/spec/fresh-start-cutover.md for week calculation details
+ */
 // Process data rows into imported transaction records and classification buckets
 function _processData(dataRows, brokerMap) {
   const account = getWorkingAccount()
@@ -816,6 +1078,82 @@ function _processData(dataRows, brokerMap) {
   }
 }
 
+/**
+ * Creates cashFlow records from transactionsImport (deposits/withdrawals).
+ * 
+ * PURPOSE: Transform imported transaction rows into v2 cashFlows collection.
+ * Cash flows represent regular deposits/withdrawals that affect available capital week-by-week.
+ * 
+ * PROCESS:
+ * 1. If deleteAllData=true:
+ *    - Calculate current week based on today vs account start date
+ *    - Delete all existing cashFlows for weeks ≤ currentWeek (already processed history)
+ *    - Keep future cashFlows (recurring deposits, scheduled withdrawals)
+ *    - Count deletions for UI feedback
+ * 2. For each transaction in transactionsImport:
+ *    - Determine type: 'deposit' if amount ≥ 0, 'withdrawal' if amount < 0
+ *    - Create cashFlow object:
+ *      ```javascript
+ *      {
+ *        category: '',              // Blank (may be populated by user)
+ *        amount: Math.abs(amount),
+ *        type: 'deposit' | 'withdrawal',
+ *        description: transaction.description,
+ *        startWeek: week,           // Week this flow starts (1-based)
+ *        endWeek: week,             // Week this flow ends (null = recurring)
+ *        sourceTransactionId: id,   // Links back to importedTransaction
+ *        isProjected: false         // Set during import; becomes true for future projections
+ *      }
+ *      ```
+ *    - Check for duplicates using current logic (BUGGY: see note below)
+ *    - Only add if no matching transaction exists
+ * 3. Return summary
+ * 
+ * OUTPUTS:
+ * ```javascript
+ * {
+ *   transactionsProcessed: number,  // Rows from transactionsImport
+ *   transactionsAdded: number,      // New cashFlow records created
+ *   transactionsDeleted: number     // Old cashFlow records removed (if deleteAllData=true)
+ * }
+ * ```
+ * 
+ * ⚠️ BUG ALERT: Duplicate Detection is Broken
+ * Current logic (line ~930):
+ * ```javascript
+ * const existingTransaction = account.transactions.find(t => 
+ *   t.type === transactionObject.type &&
+ *   t.startWeek === week &&
+ *   t.endWeek === week &&
+ *   t.amount === transactionObject.amount  // ← PROBLEM: treats same amount = duplicate
+ * )
+ * ```
+ * 
+ * This means:
+ * - If two deposits of $5,000 occur in the same week → only first is added
+ * - This is WRONG: multiple separate deposits should each exist
+ * - Symptom: "Only 1 deposit showing instead of multiple"
+ * 
+ * FIXES:
+ * Option 1: Remove duplicate detection entirely (add all deposits)
+ * Option 2: Check for exact duplicates (amount + description + date + time)
+ * Option 3: Sum deposits by week (weekly totals, not per-transaction)
+ * 
+ * Currently, option 1 (add all) is safest. Per-transaction tracking allows detailed audit trails.
+ * 
+ * WHY THIS MATTERS:
+ * - Each cash flow is a separate financial event, tracked for audit
+ * - Projections calculate from: previousBalance + sum(weekCashFlows)
+ * - Missing deposits = incorrect projections (too low), affecting trading decisions
+ * - Duplicate detection should be paranoid (reject only obvious duplicates, not by amount)
+ * 
+ * @param transactionsImport - from _processData()
+ * @returns { transactionsProcessed, transactionsAdded, transactionsDeleted }
+ * 
+ * @see _processData() - caller that provides transactionsImport
+ * @see docs/spec/data-model-v2.md for cashFlows schema
+ * @see docs/spec/projection-engine-v2-detailed.md for how cashFlows feed weekly calculations
+ */
 function _processTransactions(transactionsImport) {
   const account = getWorkingAccount()
   if (!account) {
@@ -868,7 +1206,7 @@ function _processTransactions(transactionsImport) {
       isProjected: false
     }
     
-    // Check if a matching transaction already exists
+    // Check if a matching transaction already exists (BUGGY - see function JSDoc)
     const existingTransaction = account.transactions.find(t => 
       t.type === transactionObject.type && 
       t.startWeek === week && 
