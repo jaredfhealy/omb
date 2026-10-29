@@ -689,78 +689,134 @@ function _parseAmount(amountStr, defaultValue = 0) {
 }
 
 /**
- * Parses raw Schwab CSV export into structured data rows with normalized column mappings.
- * 
- * PURPOSE: Transform raw CSV text into JavaScript objects with consistent field names.
- * Handles brokerage format detection, date parsing (including options "as of" format),
- * and amount normalization.
+ * DEBUG FUNCTION: Extract and display all BAX transactions from parsed CSV data.
+ * Useful for diagnosing why BAX positions are incomplete or missing.
  * 
  * PROCESS:
- * 1. Parse CSV using PapaParse library (skipEmptyLines=true)
- * 2. Extract header row (line 0), detect brokerage format using column names
- * 3. Get columnMap from store.getBrokerageMap() (maps brokerage column names to standard fields)
- * 4. Validate required columns exist (date, action, symbol, amount)
- * 5. For each data row (starting line 1):
- *    - Parse date (handle "as of" format for options assignments)
- *    - Parse amount using _parseAmount() (handles $ signs, commas, negative)
- *    - Skip "journal" entries with $0 amount (internal bookkeeping)
- *    - Create dataObj with normalized fields
- *    - Store sourceLine for traceability
- * 6. Collect all parsing errors for user review
+ * 1. Takes parsed dataRows (from parseCSV output)
+ * 2. Filters for all rows where symbol includes "BAX"
+ * 3. Groups by action type (Buy, Sell to Open, Buy to Close, Assigned, etc.)
+ * 4. Outputs chronologically with all details
+ * 5. Counts shares in vs. out for reconciliation
  * 
- * OUTPUTS:
- * ```javascript
- * {
- *   dataRows: [
- *     {
- *       sourceLine: 1,         // Line number in CSV (for debugging)
- *       date: 'YYYY-MM-DD',
- *       description: string,
- *       amount: number,        // Positive/negative as-is from CSV
- *       action: string,        // normalized: 'buy', 'sell', 'deposit', etc
- *       symbol: string,        // uppercase: 'AAPL', 'SPY', 'BAX'
- *       quantity: number,      // shares or contracts
- *       price: number,         // per share or per contract
- *       fees: number           // transaction fees (0 if missing)
- *     },
- *     ...
- *   ],
- *   errors: [
- *     { message: 'Invalid date at line 5', line: 5 },
- *     ...
- *   ],
- *   meta: {
- *     headers: ['Date', 'Action', ...],  // Original CSV header
- *     brokerageFormat: 'schwab'          // Detected format
- *   }
- * }
- * ```
+ * OUTPUTS: Console table with all BAX transactions in order
  * 
- * KEY FEATURES:
- * - Preserves sourceLine for row-by-row debugging ("which CSV line is this?")
- * - Handles Schwab "as of" date format for options assignments
- * - Normalizes action values (lowercase for consistency)
- * - Filters out $0 journal entries (internal transfers)
- * - Accumulates all errors for batch review
- * 
- * BROKERAGE FORMAT DETECTION:
- * Uses column headers to determine if this is a Schwab export, E*TRADE, etc.
- * Each format has a columnMap that translates brokerage column names to standard fields.
- * @see store.getBrokerageMap() for supported brokerages
- * 
- * WHY THIS MATTERS:
- * - Clean data input is critical: garbage in → garbage out in position allocation
- * - sourceLine preservation enables "which row caused this issue?" debugging
- * - Date parsing with "as of" handling is essential for options expiration tracking
- * - Error collection allows user to review and fix CSV before proceeding
- * 
- * @param csvText - Raw CSV file contents
- * @returns { dataRows, errors, meta }
- * 
- * @see _processData() for next stage (classification)
- * @see docs/spec/fresh-start-cutover.md for CSV import format requirements
- * @throws {Error} if CSV is empty or required columns are missing
+ * @param dataRows - Array of parsed transaction objects from parseCSV()
+ * @returns { baxTransactions, summary }
  */
+function debugExtractBAXTransactions(dataRows) {
+  if (!Array.isArray(dataRows) || dataRows.length === 0) {
+    console.warn('No dataRows provided to debugExtractBAXTransactions')
+    return { baxTransactions: [], summary: null }
+  }
+
+  // Filter for all BAX rows (symbol contains "BAX")
+  const baxRows = dataRows.filter(row => {
+    const symbol = String(row?.symbol || '').toUpperCase()
+    return symbol.includes('BAX')
+  })
+
+  if (baxRows.length === 0) {
+    console.log('❌ No BAX transactions found in CSV')
+    return { baxTransactions: [], summary: { found: 0 } }
+  }
+
+  // Sort by date (oldest first) for chronological view
+  const sorted = baxRows.sort((a, b) => {
+    const dateA = new Date(a.date || '').getTime()
+    const dateB = new Date(b.date || '').getTime()
+    return dateB - dateA // Reverse sort (newest first like Schwab export)
+  })
+
+  // Categorize by action
+  const byAction = {}
+  let totalBuyShares = 0
+  let totalSellShares = 0
+  let totalAssignedShares = 0
+  let totalBuyAmount = 0
+  let totalSellAmount = 0
+
+  sorted.forEach(row => {
+    const action = String(row.action || '').toLowerCase()
+    if (!byAction[action]) byAction[action] = []
+    byAction[action].push(row)
+
+    const quantity = Number(row.quantity || 0)
+    const amount = Number(row.amount || 0)
+
+    // Track share movements
+    if (action === 'buy' || action.includes('buy')) {
+      totalBuyShares += quantity
+      totalBuyAmount += Math.abs(amount)
+    } else if (action === 'sell' || action.includes('sell')) {
+      totalSellShares += quantity
+      totalSellAmount += Math.abs(amount)
+    } else if (action === 'assigned') {
+      totalAssignedShares += quantity
+    }
+  })
+
+  // Log summary
+  console.log('═════════════════════════════════════════════════════════')
+  console.log('🔍 BAX TRANSACTION ANALYSIS')
+  console.log('═════════════════════════════════════════════════════════')
+  console.log(`Total BAX transactions found: ${baxRows.length}`)
+  console.log(`Date range: ${sorted[sorted.length - 1]?.date} to ${sorted[0]?.date}`)
+  console.log('')
+
+  // Log by action type
+  console.log('📊 TRANSACTIONS BY ACTION TYPE:')
+  Object.entries(byAction).forEach(([action, rows]) => {
+    console.log(`  ${action.toUpperCase()}: ${rows.length} rows`)
+  })
+  console.log('')
+
+  // Log share movement summary
+  console.log('📈 SHARE MOVEMENT SUMMARY:')
+  console.log(`  Total Buy shares: ${totalBuyShares}`)
+  console.log(`  Total Sell shares: ${totalSellShares}`)
+  console.log(`  Total Assigned shares: ${totalAssignedShares}`)
+  console.log(`  Outstanding shares: ${totalBuyShares + totalAssignedShares - totalSellShares}`)
+  console.log('')
+
+  // Log amount movement
+  console.log('💰 AMOUNT MOVEMENT:')
+  console.log(`  Total Buy amount: $${totalBuyAmount.toFixed(2)}`)
+  console.log(`  Total Sell amount: $${totalSellAmount.toFixed(2)}`)
+  console.log('')
+
+  // Log all transactions in detail
+  console.log('📋 ALL BAX TRANSACTIONS (Chronologically):')
+  console.table(sorted.map((row, idx) => ({
+    '#': idx + 1,
+    Date: row.date,
+    Action: row.action,
+    Symbol: row.symbol,
+    Quantity: row.quantity,
+    Price: row.price,
+    Amount: row.amount,
+    Description: (row.description || '').substring(0, 40)
+  })))
+
+  return {
+    baxTransactions: sorted,
+    summary: {
+      found: baxRows.length,
+      byAction,
+      shareMovement: {
+        buy: totalBuyShares,
+        sell: totalSellShares,
+        assigned: totalAssignedShares,
+        outstanding: totalBuyShares + totalAssignedShares - totalSellShares
+      },
+      amountMovement: {
+        buy: totalBuyAmount,
+        sell: totalSellAmount
+      }
+    }
+  }
+}
+
 // CSV parser function
 function parseCSV(csvText) {
   // Parse CSV with Papa Parse
@@ -1744,9 +1800,9 @@ function _processSellData(sellsImport) {
   }
 }
 
-
-// Expose the show method to the app store
+// Expose the show method and debug function to the app store
 store.showImportTransactionsModal = show
+store.debugExtractBAXTransactions = debugExtractBAXTransactions
 </script>
 
 <template>
