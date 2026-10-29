@@ -1,4 +1,4 @@
-<script setup>
+ <script setup>
 import { ref } from 'vue'
 import { useAppStore } from '@/stores/app'
 import Papa from 'papaparse'
@@ -1206,19 +1206,13 @@ function _processTransactions(transactionsImport) {
       isProjected: false
     }
     
-    // Check if a matching transaction already exists (BUGGY - see function JSDoc)
-    const existingTransaction = account.transactions.find(t => 
-      t.type === transactionObject.type && 
-      t.startWeek === week && 
-      (t.endWeek === week || t.endWeek == "") && 
-      t.amount === transactionObject.amount
-    )
-    
-    // Only add if no matching transaction exists
-    if (!existingTransaction) {
-      account.transactions.push(transactionObject)
-      transactionsAdded++
-    }
+    // Add the transaction to the account without duplicate detection.
+    // WHY: Each CSV row is a separate financial event. Multiple deposits of the same amount
+    // in the same week are distinct transactions and should both be recorded.
+    // Duplicate detection at this level prevents legitimate multi-deposit weeks.
+    // Week-level atomicity (replace all transactions for week) prevents cascading duplicates.
+    account.transactions.push(transactionObject)
+    transactionsAdded++
   })
   
   return {
