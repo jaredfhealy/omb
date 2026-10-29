@@ -1,6 +1,6 @@
 # v2 Implementation Status
 
-Last verified: 2026-10-25
+Last verified: 2026-10-29
 
 Track delivery progress against the v2 model and fresh-start cutover.
 
