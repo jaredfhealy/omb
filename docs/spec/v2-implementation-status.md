@@ -10,6 +10,7 @@ Track delivery progress against the v2 model and fresh-start cutover.
 - [x] IndexedDB/object-store layout finalized
 - [x] `meta.dataModel = 'v2'` persisted
 - [x] startup non-v2 handling implemented (blocking reset flow with optional local backup export)
+- [x] v2 data detection logic fixed (handles corrupted meta records gracefully)
 
 ## Import and source ledger
 
@@ -23,6 +24,7 @@ Track delivery progress against the v2 model and fresh-start cutover.
 - [x] `cashFlows.isProjected` + `sourceTransactionId` rules enforced
 - [ ] projection engine consumes v2 cash-flow + position sources
 - [x] projection engine no longer depends on nested raw rows in `actuals[].data[]`
+- [ ] projection calculation refactor complete per [projection-engine-v2-detailed.md](./projection-engine-v2-detailed.md) spec
 
 ## Positions
 
