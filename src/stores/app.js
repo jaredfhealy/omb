@@ -288,7 +288,7 @@ export const useAppStore = defineStore('app', {
       this.selectedAccountId = Number(resolved)
       persistSelectedAccountIdPreference(this.selectedAccountId)
       if (recalculate) {
-        this.calculateProjections()
+        this.calculateProjectionsV2()
       }
     },
 
@@ -401,7 +401,7 @@ export const useAppStore = defineStore('app', {
           await this.saveChanges()
           setNonV2ResetAcknowledged()
           this.persistenceError = null
-          this.calculateProjections()
+          this.calculateProjectionsV2()
           return
         }
 
@@ -421,11 +421,11 @@ export const useAppStore = defineStore('app', {
           await this.saveChanges()
         }
         this.persistenceError = null
-        this.calculateProjections()
+        this.calculateProjectionsV2()
       } catch (error) {
         console.error('Failed to load data:', error)
         this.persistenceError = `Failed to load local state: ${error?.message || error}`
-        this.calculateProjections()
+        this.calculateProjectionsV2()
       }
     },
     
@@ -444,7 +444,7 @@ export const useAppStore = defineStore('app', {
 
     async saveChangesAndRecalculate() {
       await this.saveChanges()
-      this.calculateProjections()
+      this.calculateProjectionsV2()
     },
 
     // Core Data Actions
@@ -1257,23 +1257,58 @@ export const useAppStore = defineStore('app', {
           : null
 
         // ===== Step 9: Append projection row =====
+        // Calculate shares for compatibility with old components
+        let sharesBought = 0
+        let sharesSold = 0
+        let sharesBoughtPreviousWeek = 0
+        let sharesSoldPreviousWeek = 0
+        let startSharesBalance = 0
+        
+        this.activeAccount.positions.forEach(position => {
+          if (position.assignedWeek === week) {
+            sharesBought += Math.abs(position.costBasis || 0)
+          }
+          if (position.assignedWeek === week - 1) {
+            sharesBoughtPreviousWeek += Math.abs(position.costBasis || 0)
+          }
+          if (position.soldWeek === week) {
+            sharesSold += Math.abs(position.sellAmount || 0)
+          }
+          if (position.soldWeek === week - 1) {
+            sharesSoldPreviousWeek += Math.abs(position.sellAmount || 0)
+          }
+          if (position.assignedWeek < week && (!position.soldWeek || position.soldWeek >= week)) {
+            startSharesBalance += Math.abs(position.costBasis || 0)
+          }
+        })
+
         this.projections.push({
           week,
           weekStart,
           weekEnd,
           
-          // Cash balance tracking
-          startCashBalance,
+          // BACKWARD COMPAT: Old field names expected by components
+          startBalance: startCashBalance,
+          startSharesBalance,
+          sharesBought,
+          sharesSold,
+          sharesBoughtPreviousWeek,
+          sharesSoldPreviousWeek,
           deposit,
-          withdrawal,
+          withdrawal: withdrawalsByCategory && Object.values(withdrawalsByCategory).length > 0 
+            ? Object.values(withdrawalsByCategory).reduce((sum, cat) => sum + cat, 0)
+            : 0,
           withdrawalsByCategory,
+          
+          // NEW: Cash balance tracking (v2 specific)
+          startCashBalance,
           
           // Growth
           actualGrowth: hasActualGrowth ? weekActualGrowth : null,
           projectedGrowth,
           growth,
           
-          // Position collateral tracking (CRITICAL FOR MARGIN FIX)
+          // NEW: Position collateral tracking (CRITICAL FOR MARGIN FIX)
           startPositionCollateral,
           positionCollateralAdded,
           positionCollateralRemoved,
@@ -1290,14 +1325,14 @@ export const useAppStore = defineStore('app', {
           baseAmountForROR,
           
           // Trailing averages
-          trailing4WeekGrowthTotal: trailing4WeekGrowthTotal ? Math.round(trailing4WeekGrowthTotal * 100) / 100 : null,
-          trailing4WeekGrowthAvg: trailing4WeekGrowthAvg ? Math.round(trailing4WeekGrowthAvg * 100) / 100 : null,
-          trailing8WeekGrowthAvg: trailing8WeekGrowthAvg ? Math.round(trailing8WeekGrowthAvg * 100) / 100 : null,
-          trailingTotalGrowthAvg: trailingTotalGrowthAvg ? Math.round(trailingTotalGrowthAvg * 100) / 100 : null,
+          trailing4WeekGrowthTotal: trailing4WeekGrowthTotal ? (trailing4WeekGrowthTotal).toFixed(2) : null,
+          trailing4WeekGrowthAvg: trailing4WeekGrowthAvg ? (trailing4WeekGrowthAvg).toFixed(2) : null,
+          trailing8WeekGrowthAvg: trailing8WeekGrowthAvg ? (trailing8WeekGrowthAvg).toFixed(2) : null,
+          trailingTotalGrowthAvg: trailingTotalGrowthAvg ? (trailingTotalGrowthAvg).toFixed(2) : null,
           
-          trailing4WeekRORAvg: trailing4WeekRORAvg ? Math.round(trailing4WeekRORAvg * 100) / 100 : null,
-          trailing8WeekRORAvg: trailing8WeekRORAvg ? Math.round(trailing8WeekRORAvg * 100) / 100 : null,
-          trailingTotalRORAvg: trailingTotalRORAvg ? Math.round(trailingTotalRORAvg * 100) / 100 : null,
+          trailing4WeekRORAvg: trailing4WeekRORAvg ? (trailing4WeekRORAvg).toFixed(2) : null,
+          trailing8WeekRORAvg: trailing8WeekRORAvg ? (trailing8WeekRORAvg).toFixed(2) : null,
+          trailingTotalRORAvg: trailingTotalRORAvg ? (trailingTotalRORAvg).toFixed(2) : null,
           
           // All-time averages (computed in step 10)
           averageGrowth: null,
