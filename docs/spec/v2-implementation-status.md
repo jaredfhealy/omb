@@ -37,9 +37,17 @@ This ensures the codebase remains maintainable and contributors don't need to re
 
 - [ ] cash-flow CRUD migrated to `cashFlows`
 - [x] `cashFlows.isProjected` + `sourceTransactionId` rules enforced
-- [ ] projection engine consumes v2 cash-flow + position sources
+- [x] projection engine consumes v2 cash-flow + position sources
 - [x] projection engine no longer depends on nested raw rows in `actuals[].data[]`
-- [ ] projection calculation refactor complete per [projection-engine-v2-detailed.md](./projection-engine-v2-detailed.md) spec
+- [x] projection calculation refactor complete per [projection-engine-v2-detailed.md](./projection-engine-v2-detailed.md) spec
+  - [x] Implemented calculateProjectionsV2() with per-week iteration algorithm
+  - [x] Integrated helper functions: buildActualGrowthMap, buildPositionCollateralMap, buildCashFlowsMap
+  - [x] Added margin-aware collateral tracking (critical fix for v1 bug)
+  - [x] Explicit position lifecycle tracking (opened/closed by week)
+  - [x] Backward-compatible output shape (supports existing components)
+  - [x] Trailing averages (4-week, 8-week, all-time) computed from actual data only
+  - [x] Switched all calls from calculateProjections (v1) to calculateProjectionsV2 (v2)
+  - [x] Verified working: yearly summary, weekly details, reporting charts
 
 ## Positions
 
