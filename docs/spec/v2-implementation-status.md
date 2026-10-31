@@ -1,6 +1,6 @@
 # v2 Implementation Status
 
-Last verified: 2026-10-29
+Last verified: 2026-10-31
 
 Track delivery progress against the v2 model and fresh-start cutover.
 
@@ -79,3 +79,6 @@ This ensures the codebase remains maintainable and contributors don't need to re
 - Non-v2 local payloads now require a blocking reset confirmation during startup.
 - Users can export a one-time local JSON backup snapshot before reset.
 - Startup reset seeds a clean v2 baseline account and persists `meta.dataModel = 'v2'`.
+- Weekly snapshot modal now supports in-modal week navigation (previous/next) and route state persistence (`wsWeek`, `wsTab`).
+- Weekly projection view state now supports route persistence for range/selection/scroll (`wwf`, `wws`, `wwscr`).
+- Tab route behavior preserves non-tab query parameters during cross-tab navigation; tab switches only mutate `tab`.

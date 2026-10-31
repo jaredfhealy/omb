@@ -1,8 +1,10 @@
 # Operation More Bacon Specs
 
-Last verified: 2026-10-24
+Last verified: 2026-10-31
 
 This folder is the canonical product and engineering spec set for the local-only app.
+
+Runtime behavior follows the v2 fresh-start model. Historical planning docs remain for context and are explicitly marked where superseded.
 
 ## Spec map
 

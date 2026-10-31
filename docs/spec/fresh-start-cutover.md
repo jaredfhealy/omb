@@ -1,6 +1,6 @@
 # Fresh-Start v2 Cutover
 
-Last verified: 2026-10-24
+Last verified: 2026-10-31
 
 This document defines v2 cutover behavior for a fresh-start release (no data migration path).
 

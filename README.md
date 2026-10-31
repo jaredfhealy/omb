@@ -132,3 +132,4 @@ Important rules:
 - Keep all actual data files in [local-data/](./local-data/) untracked (gitignored).
 - Prefer this folder for destructive/import test cycles so source files remain easy to reuse.
 - Do not commit broker exports, backups, or other sensitive account data.
+- Keep temporary debug scripts/screenshots/test artifacts out of repository root; place them under [local-data/](./local-data/) (for example `local-data/dev-tools/` or `local-data/screenshots/`) as untracked files.

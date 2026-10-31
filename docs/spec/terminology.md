@@ -1,6 +1,6 @@
 # Terminology
 
-Last verified: 2026-10-24
+Last verified: 2026-10-31
 
 This document is the canonical glossary for user-facing and domain terminology used across Operation More Bacon specs and UI copy.
 
@@ -35,7 +35,7 @@ A stock lot record representing assigned shares or short-lot exposure tracked in
 
 ### Sell record
 
-A persisted sale summary entry associated with weekly/account calculations.
+A persisted sale summary entry associated with weekly/account calculations (legacy/v1 term retained for historical context).
 
 ## Cash flow terms
 
@@ -50,6 +50,10 @@ A cash flow with a week range and repeated application across projection weeks.
 ### One-time cash flow
 
 A cash flow that applies to a specific week/event without recurrence.
+
+### Cash checkpoint
+
+A broker-confirmed cash balance record (`cashCheckpoints`) used to reconcile projected balances with known account cash on a specific `asOfDate`.
 
 ## Trade Desk terms
 

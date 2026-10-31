@@ -1,6 +1,6 @@
 # Data Model (v2 Target)
 
-Last verified: 2026-10-24
+Last verified: 2026-10-31
 
 This document defines the target collection-oriented model for the fresh-start v2 implementation.
 

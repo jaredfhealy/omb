@@ -1,6 +1,6 @@
 # UI Behavior and Interaction Rules
 
-Last verified: 2026-10-24
+Last verified: 2026-10-31
 
 ## Layout and scrolling
 
@@ -13,11 +13,15 @@ Last verified: 2026-10-24
 - Use consistent Bootstrap `nav-tabs` + tab-panel pattern for multi-mode surfaces.
 - Keep panel seams visually connected (tab strip and tab body should align).
 - Refresh persistence uses route query state:
-  - `tab` for active tab (`yearly`, `weekly`, `recurring`, `positions`), where `recurring` is the Cash Flows tab key
+  - `tab` for active tab (`weekly`, `recurring`, `positions`, `checkpoints`), where `recurring` is the Cash Flows tab key
   - `pf` for positions status filter (`open`, `recent`, `closed`, `all`)
   - `symbols` as comma-separated symbol chips for positions filtering
-- Query state is tab-scoped: when navigating away from Positions, positions-only query params (`pf`, `symbols`) are removed.
-- Invalid/unknown query-state values should sanitize to defaults (for example, tab defaults to `yearly`, positions filter defaults to `open`).
+  - `wwf` for weekly week-range filter (`current-minus-4`, `current-minus-8`, `current-minus-12`, `all`)
+  - `wws` as comma-separated weekly selected row weeks
+  - `wwscr` for weekly table scroll restoration
+  - `wsWeek` and `wsTab` for weekly snapshot modal context
+- Query state should be owner-scoped: tab changes only update `tab` and preserve non-tab params; feature modules should only mutate their own params.
+- Invalid/unknown query-state values should sanitize to defaults (for example, tab defaults to `weekly`, positions filter defaults to `open`).
 
 ## Position workflows
 
@@ -35,6 +39,10 @@ Last verified: 2026-10-24
 
 - Weekly modal presents summary/positions and source transactions via tabbed layout.
 - Raw transaction counts and note affordances should be visible from the weekly table.
+- Weekly snapshot modal supports previous/next week navigation without closing.
+- Weekly snapshot modal persists route context via `wsWeek` + `wsTab`.
+- Weekly transaction snapshot totals align with summarizer conventions (Totals amount + ROR footer).
+- Weekly transaction snapshot filters to performance-eligible action types (`weeklyTotalTypes`).
 
 ## Data management workflows
 

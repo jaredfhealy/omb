@@ -1,11 +1,12 @@
 # Projections Engine
 
-Last verified: 2026-10-14
+Last verified: 2026-10-31
 
 ## Source of truth
 
 - Display rows are computed from account state, not persisted as primary records.
 - Projection recomputation is triggered after data mutations/import/save flows.
+- Runtime projection calculation uses the v2 engine and derives inputs from v2 collections (`cashFlows`, `cashCheckpoints`, `positions`, and imported actual-growth sources).
 
 ## Weekly row model (conceptual)
 

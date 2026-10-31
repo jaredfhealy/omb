@@ -32,6 +32,23 @@ Read these before implementing changes:
 - Prefer the smallest command that validates the modified surface.
 - For documentation-only changes, no build/test run is required unless docs tooling depends on it.
 
+## Commit gate and pre-commit checklist
+
+Never create a commit until the user explicitly confirms they want a commit for the current staged changes.
+
+Before requesting commit confirmation, complete this checklist:
+
+1. Run scoped validation for the changed surfaces and confirm pass/fail clearly.
+2. Update directly related docs/spec files in the same change when behavior or architecture changed.
+3. Re-check [docs/spec/v2-implementation-status.md](./docs/spec/v2-implementation-status.md) and mark completed items when they are verifiably done.
+4. Review repository root for temporary scratch artifacts (scripts, screenshots, ad-hoc test files) and move/remove them.
+5. Summarize:
+   - what changed
+   - what validation ran
+   - any open risks/questions
+
+After the checklist is complete, ask the user for explicit commit approval and proposed commit message.
+
 ## Local test-data workflow
 
 Use [local-data/](./local-data/) for manual test artifacts:
@@ -45,6 +62,7 @@ Rules:
 - [local-data/.gitignore](./local-data/.gitignore) must remain tracked.
 - Files placed inside [local-data/](./local-data/) must remain untracked.
 - Never commit sensitive account exports or backup payloads.
+- Keep temporary debug/scratch artifacts out of repository root. Place local-only helpers in [local-data/](./local-data/) (for example `local-data/dev-tools/` or `local-data/screenshots/`) and keep them untracked.
 
 ## Import/destructive testing safety
 

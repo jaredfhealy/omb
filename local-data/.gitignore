@@ -1,0 +1,6 @@
+# Keep local import/backup data out of git.
+# Suggested local-only subfolders:
+# - dev-tools/
+# - screenshots/
+*
+!.gitignore

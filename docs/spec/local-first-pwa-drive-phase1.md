@@ -61,6 +61,10 @@ For the v2 collection model, Drive sync should use a single-file snapshot envelo
 
 Define the first implementation phase for moving Operation More Bacon from API-first local persistence to a local-first browser model with optional Google Drive persistence.
 
+Current runtime note:
+- The migration/bootstrap steps in this Phase 1 planning document are historical.
+- Fresh-start cutover behavior is defined by [fresh-start-cutover.md](./fresh-start-cutover.md) and v2 model behavior is defined by [data-model-v2.md](./data-model-v2.md).
+
 Phase 1 prioritizes:
 - zero-server-required runtime for end users
 - fast startup from local state
