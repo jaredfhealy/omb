@@ -1,9 +1,9 @@
 <script setup>
 import TabNavigation from '@/components/TabNavigation.vue'
-import YearlySummary from '@/components/YearlySummary.vue'
 import WeeklyDetails from '@/components/WeeklyDetails.vue'
 import TransactionManager from '@/components/TransactionManager.vue'
 import PositionsManager from '@/components/PositionsManager.vue'
+import CheckpointManager from '@/components/CheckpointManager.vue'
 import { onMounted, onUpdated, onBeforeUnmount, watch } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { useRoute, useRouter } from 'vue-router'
@@ -17,10 +17,11 @@ import {
 const store = useAppStore()
 const route = useRoute()
 const router = useRouter()
-const validTabs = new Set(['yearly', 'weekly', 'recurring', 'positions'])
+// Yearly tab is intentionally disabled for now; re-add 'yearly' here and in TabNavigation to restore it.
+const validTabs = new Set(['weekly', 'recurring', 'positions', 'checkpoints'])
 
 function normalizeTab(value) {
-  return validTabs.has(value) ? value : 'yearly'
+  return validTabs.has(value) ? value : 'weekly'
 }
 
 function syncTabFromRoute() {
@@ -39,12 +40,8 @@ watch(() => store.activeTab, (nextTab) => {
   const currentTab = normalizeTab(route.query.tab)
 
   const nextQuery = { ...route.query }
-  if (normalizedTab !== 'positions') {
-    delete nextQuery.pf
-    delete nextQuery.symbols
-  }
 
-  if (normalizedTab === 'yearly') {
+  if (normalizedTab === 'weekly') {
     delete nextQuery.tab
   } else {
     nextQuery.tab = normalizedTab
@@ -52,9 +49,7 @@ watch(() => store.activeTab, (nextTab) => {
 
   const nextQueryTab = normalizeTab(nextQuery.tab)
   const hasSameTab = nextQueryTab === currentTab
-  const hasSamePf = (nextQuery.pf || undefined) === (route.query.pf || undefined)
-  const hasSameSymbols = (nextQuery.symbols || undefined) === (route.query.symbols || undefined)
-  if (hasSameTab && hasSamePf && hasSameSymbols) return
+  if (hasSameTab) return
 
   router.replace({ query: nextQuery })
 })
@@ -89,10 +84,10 @@ onBeforeUnmount(() => {
   
   <!-- Content Area (takes all remaining height) -->
   <div class="content-area flex-grow-1">
-    <YearlySummary v-if="store.activeTab === 'yearly'" />
     <WeeklyDetails v-if="store.activeTab === 'weekly'" />
     <TransactionManager v-if="store.activeTab === 'recurring'" />
     <PositionsManager v-if="store.activeTab === 'positions'" />
+    <CheckpointManager v-if="store.activeTab === 'checkpoints'" />
   </div>
 
   <!-- Modals -->

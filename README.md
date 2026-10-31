@@ -7,6 +7,7 @@ Canonical project specs and architectural decisions are stored in-repo:
 
 - Spec index: [docs/spec/README.md](./docs/spec/README.md)
 - ADR index: [docs/adr/README.md](./docs/adr/README.md)
+- Agent/contributor workflow guide: [AGENTS.md](./AGENTS.md)
 
 ## Local-only architecture
 
@@ -116,3 +117,18 @@ To import existing data from prior backups:
 2. Click **Restore**
 3. Select your full backup JSON
 4. Confirm restore and verify tabs/charts
+
+## Local development test data (agent-safe workflow)
+
+Use [local-data/](./local-data/) as the local-only staging area for manual test files:
+
+- transaction CSV exports
+- positions CSV exports
+- backup JSON files for restore fallback
+
+Important rules:
+
+- Keep [local-data/.gitignore](./local-data/.gitignore) tracked in git.
+- Keep all actual data files in [local-data/](./local-data/) untracked (gitignored).
+- Prefer this folder for destructive/import test cycles so source files remain easy to reuse.
+- Do not commit broker exports, backups, or other sensitive account data.

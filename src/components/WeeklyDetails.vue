@@ -1,15 +1,26 @@
 <script setup>
 import { useAppStore } from '@/stores/app'
 import { computed, ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import DataTable from '@/components/custom/DataTable.vue'
 
 const store = useAppStore()
+const route = useRoute()
+const router = useRouter()
 const selectedRows = ref({})
 const selectionSummary = ref(null)
-const scrollableWindow = ref(null)
 const currentWeekRef = ref(null)
 const summaryExpanded = ref(false)
 const weekRangeFilter = ref('current-minus-4')
+const dataTableRef = ref(null)
+
+const WEEKLY_ROUTE_PARAM_FILTER = 'wwf'
+const WEEKLY_ROUTE_PARAM_SELECTED = 'wws'
+const WEEKLY_ROUTE_PARAM_SCROLL = 'wwscr'
+const DEFAULT_WEEK_RANGE_FILTER = 'current-minus-4'
+let applyingWeeklyRouteState = false
+let hasUserAdjustedWeeklySelection = false
+let suppressWeeklyRouteSideEffects = false
 
 const weekRangeOptions = [
   { value: 'current-minus-4', label: 'Current - 4' },
@@ -17,6 +28,116 @@ const weekRangeOptions = [
   { value: 'current-minus-12', label: 'Current - 12' },
   { value: 'all', label: 'All Weeks' }
 ]
+
+const validWeekRangeFilters = new Set(weekRangeOptions.map(option => option.value))
+
+function normalizeWeekRangeFilter(value) {
+  const next = String(value || '').trim()
+  return validWeekRangeFilters.has(next) ? next : DEFAULT_WEEK_RANGE_FILTER
+}
+
+function parseSelectedWeeksParam(value) {
+  const raw = Array.isArray(value) ? value[0] : value
+  if (typeof raw !== 'string' || !raw.trim()) return {}
+
+  const selected = {}
+  raw
+    .split(',')
+    .map(token => Number(token))
+    .filter(week => Number.isFinite(week) && week > 0)
+    .forEach((week) => {
+      selected[String(Math.trunc(week))] = true
+    })
+  return selected
+}
+
+function serializeSelectedWeeks(selected) {
+  const weeks = Object.keys(selected || {})
+    .filter((week) => selected[week])
+    .map(week => Number(week))
+    .filter(week => Number.isFinite(week) && week > 0)
+    .sort((a, b) => a - b)
+  return weeks.length ? weeks.join(',') : ''
+}
+
+function parseScrollParam(value) {
+  const raw = Array.isArray(value) ? value[0] : value
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed) || parsed < 0) return null
+  return Math.trunc(parsed)
+}
+
+function getWeeklyScrollContainer() {
+  return dataTableRef.value?.scrollableWindow || null
+}
+
+function refreshSelectionSummary() {
+  selectionSummary.value = calculateSummary()
+  if (!selectionSummary.value) {
+    summaryExpanded.value = false
+  }
+}
+
+function applyWeeklyStateFromRoute() {
+  suppressWeeklyRouteSideEffects = true
+  applyingWeeklyRouteState = true
+  const query = route.query || {}
+  weekRangeFilter.value = normalizeWeekRangeFilter(query[WEEKLY_ROUTE_PARAM_FILTER])
+  selectedRows.value = parseSelectedWeeksParam(query[WEEKLY_ROUTE_PARAM_SELECTED])
+  hasUserAdjustedWeeklySelection = false
+  refreshSelectionSummary()
+  applyingWeeklyRouteState = false
+  nextTick(() => {
+    suppressWeeklyRouteSideEffects = false
+  })
+}
+
+async function restoreWeeklyScrollFromRoute() {
+  const scrollTop = parseScrollParam(route.query?.[WEEKLY_ROUTE_PARAM_SCROLL])
+  const scrollContainer = getWeeklyScrollContainer()
+  if (!scrollContainer || scrollTop === null) return false
+  await nextTick()
+  scrollContainer.scrollTop = scrollTop
+  return true
+}
+
+function saveWeeklyStateToRoute({ includeScroll = false } = {}) {
+  if (applyingWeeklyRouteState || suppressWeeklyRouteSideEffects) return
+  const nextQuery = { ...route.query }
+
+  const normalizedFilter = normalizeWeekRangeFilter(weekRangeFilter.value)
+  if (normalizedFilter === DEFAULT_WEEK_RANGE_FILTER) {
+    delete nextQuery[WEEKLY_ROUTE_PARAM_FILTER]
+  } else {
+    nextQuery[WEEKLY_ROUTE_PARAM_FILTER] = normalizedFilter
+  }
+
+  const selectedSerialized = serializeSelectedWeeks(selectedRows.value)
+  if (selectedSerialized) {
+    nextQuery[WEEKLY_ROUTE_PARAM_SELECTED] = selectedSerialized
+  } else if (!hasUserAdjustedWeeklySelection && route.query?.[WEEKLY_ROUTE_PARAM_SELECTED] !== undefined) {
+    nextQuery[WEEKLY_ROUTE_PARAM_SELECTED] = route.query[WEEKLY_ROUTE_PARAM_SELECTED]
+  } else {
+    delete nextQuery[WEEKLY_ROUTE_PARAM_SELECTED]
+  }
+
+  if (includeScroll) {
+    const scrollContainer = getWeeklyScrollContainer()
+    const scrollTop = scrollContainer ? Math.max(0, Math.trunc(scrollContainer.scrollTop || 0)) : 0
+    if (scrollTop > 0) {
+      nextQuery[WEEKLY_ROUTE_PARAM_SCROLL] = String(scrollTop)
+    } else {
+      delete nextQuery[WEEKLY_ROUTE_PARAM_SCROLL]
+    }
+  }
+
+  const sameFilter = (nextQuery[WEEKLY_ROUTE_PARAM_FILTER] || undefined) === (route.query?.[WEEKLY_ROUTE_PARAM_FILTER] || undefined)
+  const sameSelected = (nextQuery[WEEKLY_ROUTE_PARAM_SELECTED] || undefined) === (route.query?.[WEEKLY_ROUTE_PARAM_SELECTED] || undefined)
+  const sameScroll = (nextQuery[WEEKLY_ROUTE_PARAM_SCROLL] || undefined) === (route.query?.[WEEKLY_ROUTE_PARAM_SCROLL] || undefined)
+  if (sameFilter && sameSelected && sameScroll) return
+
+  router.replace({ query: nextQuery })
+}
 
 // Add local function (without exposing to store)
 function getAssignmentsForWeek(week) {
@@ -202,6 +323,7 @@ const calculateSummary = () => {
   columns.forEach(column => {
     const values = selectedWeeks.map(week => {
       const projection = store.projections[week - 1]
+      if (!projection) return NaN
       return column === 'actualROR' 
         ? (projection.actualROR || 0) 
         : (column === 'transaction' 
@@ -228,7 +350,7 @@ const scrollToWeek = async (week) => {
   await nextTick()
   
   const element = document.querySelector(`.row-selected[data-week="${week}"]`)
-  if (element && scrollableWindow.value) {
+  if (element && dataTableRef.value?.scrollableWindow) {
     element.scrollIntoView({
       behavior: 'smooth',
       block: 'center'
@@ -238,11 +360,13 @@ const scrollToWeek = async (week) => {
 
 // Function called when checkboxes change - enhanced to scroll
 const updateSummary = () => {
+  hasUserAdjustedWeeklySelection = true
   const wasEmpty = selectionSummary.value === null
   const newSelectionCount = Object.values(selectedRows.value).filter(Boolean).length
   
   // Update summary
-  selectionSummary.value = calculateSummary()
+  refreshSelectionSummary()
+  saveWeeklyStateToRoute()
   
   // Case 1: First selection - scroll to the selected row
   if (selectionSummary.value && wasEmpty && newSelectionCount === 1) {
@@ -259,6 +383,7 @@ const updateSummary = () => {
   else if (!wasEmpty && newSelectionCount === 0) {
     // Previously had selections but now all unchecked
     selectionSummary.value = null
+    saveWeeklyStateToRoute()
     
     // Wait for rows to expand before scrolling
     setTimeout(() => {
@@ -289,24 +414,68 @@ const scrollToCurrentWeek = async () => {
 // Add event listener for escape key
 onMounted(() => {
   document.addEventListener('keydown', handleEscape)
-  
-  // Scroll to current week after component is mounted
-  scrollToCurrentWeek()
+  applyWeeklyStateFromRoute()
+  nextTick(async () => {
+    const restored = await restoreWeeklyScrollFromRoute()
+    if (!restored && !route.query?.[WEEKLY_ROUTE_PARAM_FILTER] && !route.query?.[WEEKLY_ROUTE_PARAM_SELECTED]) {
+      scrollToCurrentWeek()
+    }
+  })
 })
 
 // Watch for changes to the active tab
-watch(() => store.activeTab, (newTab) => {
+watch(() => store.activeTab, async (newTab, oldTab) => {
+  if (oldTab === 'weekly' && newTab !== 'weekly') {
+    saveWeeklyStateToRoute({ includeScroll: true })
+    return
+  }
   if (newTab === 'weekly') {
-    // Scroll to current week when tab becomes active
-    scrollToCurrentWeek()
+    applyWeeklyStateFromRoute()
+    const restored = await restoreWeeklyScrollFromRoute()
+    if (!restored && !route.query?.[WEEKLY_ROUTE_PARAM_FILTER] && !route.query?.[WEEKLY_ROUTE_PARAM_SELECTED]) {
+      scrollToCurrentWeek()
+    }
   }
 })
 
 watch(weekRangeFilter, () => {
+  if (applyingWeeklyRouteState || suppressWeeklyRouteSideEffects) return
+  saveWeeklyStateToRoute()
   closeSummary()
 })
 
+watch(
+  selectedRows,
+  () => {
+    if (applyingWeeklyRouteState || suppressWeeklyRouteSideEffects) return
+    saveWeeklyStateToRoute()
+  },
+  { deep: true }
+)
+
+watch(
+  () => store.projections.length,
+  () => {
+    if (!Object.values(selectedRows.value).some(Boolean)) return
+    refreshSelectionSummary()
+  }
+)
+
+watch(
+  () => route.query,
+  () => {
+    if (store.activeTab !== 'weekly') return
+    applyWeeklyStateFromRoute()
+    nextTick(() => {
+      void restoreWeeklyScrollFromRoute()
+    })
+  }
+)
+
 onUnmounted(() => {
+  if (store.activeTab === 'weekly') {
+    saveWeeklyStateToRoute({ includeScroll: true })
+  }
   document.removeEventListener('keydown', handleEscape)
 })
 
@@ -343,21 +512,20 @@ function getNetTransactionTooltip(deposit, withdrawal) {
 
 // Add function to close the summary (for the close button)
 const closeSummary = () => {
+  hasUserAdjustedWeeklySelection = true
   // Clear all checkboxes
   Object.keys(selectedRows.value).forEach(key => {
     selectedRows.value[key] = false
   })
-  selectionSummary.value = null
-  summaryExpanded.value = false
+  refreshSelectionSummary()
+  saveWeeklyStateToRoute()
   
   // Scroll back to current week
   scrollToCurrentWeek()
 }
 
 // Add computed property to check if any rows are selected
-const hasSelection = computed(() => {
-  return Object.values(selectedRows.value).some(selected => selected === true)
-})
+const hasSelection = computed(() => Object.values(selectedRows.value).some(selected => selected === true))
 
 function getWeekRawTransactionCount(week) {
   const importedRows = Array.isArray(store.activeAccount?.importedTransactions)
@@ -392,8 +560,6 @@ const handleRowRef = (el, item) => {
   }
 }
 
-// Add ref for the DataTable component
-const dataTableRef = ref(null)
 </script>
 
 <template>

@@ -36,6 +36,10 @@ This ensures the codebase remains maintainable and contributors don't need to re
 ## Cash flows and projections
 
 - [ ] cash-flow CRUD migrated to `cashFlows`
+- [x] broker cash checkpoint persistence implemented (`cashCheckpoints`, manual + positions-import sources)
+- [x] cash checkpoint CRUD UI implemented (tabular manager with add/edit/delete)
+- [x] cash checkpoints normalized to date-only precision (`asOfDate` only; no `asOfTime`)
+- [x] manual checkpoint entry removed from import modal (managed exclusively in Checkpoints tab)
 - [x] `cashFlows.isProjected` + `sourceTransactionId` rules enforced
 - [x] projection engine consumes v2 cash-flow + position sources
 - [x] projection engine no longer depends on nested raw rows in `actuals[].data[]`

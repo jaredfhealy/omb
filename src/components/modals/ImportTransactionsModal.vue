@@ -23,6 +23,7 @@ const deleteAllData = ref(false) // Default to false for this option
 const refreshPendingAfterClose = ref(false)
 const selectedImportAccountId = ref(null)
 const importTargetAccount = ref(null)
+const POSITION_SHARE_EPSILON = 1e-6
 
 // Modal control methods
 const show = () => {
@@ -79,6 +80,93 @@ function getSelectedImportAccount() {
 
 function getWorkingAccount() {
   return importTargetAccount.value || store.activeAccount
+}
+
+/**
+ * Returns true when the positions asset type should drive open-lot price updates.
+ *
+ * PURPOSE: Schwab positions exports may classify stock-like holdings as
+ * "Equity", "ETFs & Closed End Funds", or similar labels. We normalize these
+ * categories to avoid missing valid price updates.
+ *
+ * @param {string} assetType - Raw "Asset Type" column value from positions CSV
+ * @returns {boolean} True for equity-like tradable assets
+ */
+function isEquityLikeAssetType(assetType) {
+  const normalized = normalizeSpace(assetType).toLowerCase()
+  if (!normalized) return false
+  return (
+    normalized.includes('equity') ||
+    normalized.includes('etf') ||
+    normalized.includes('fund') ||
+    normalized.includes('stock')
+  )
+}
+
+/**
+ * Inserts or updates a cash checkpoint on an account.
+ *
+ * PURPOSE: Persist broker-confirmed cash balances from positions imports and
+ * manual entries. Checkpoints survive delete-all transaction imports.
+ *
+ * @param {Object} account - Target account object in app state
+ * @param {Object} checkpointInput - Raw checkpoint payload
+ * @returns {Object} Persisted checkpoint row
+ */
+function upsertCashCheckpoint(account, checkpointInput) {
+  if (!account) {
+    throw new Error('No account found while saving cash checkpoint')
+  }
+
+  if (!Array.isArray(account.cashCheckpoints)) {
+    account.cashCheckpoints = []
+  }
+
+  const asOfDate = toIsoDate(checkpointInput?.asOfDate)
+  if (!asOfDate) {
+    throw new Error('Cash checkpoint date is required')
+  }
+
+  const cashBalance = Number(checkpointInput?.cashBalance)
+  if (!Number.isFinite(cashBalance)) {
+    throw new Error('Cash checkpoint balance must be a valid number')
+  }
+
+  const source = String(checkpointInput?.source || 'manual')
+  const sourceFingerprint = checkpointInput?.sourceFingerprint ? String(checkpointInput.sourceFingerprint) : null
+  const notes = checkpointInput?.notes ? String(checkpointInput.notes) : null
+  const nowIso = new Date().toISOString()
+  const dedupeKey = `${asOfDate}|${source}`
+  const existingIndex = account.cashCheckpoints.findIndex((row) =>
+    `${toIsoDate(row?.asOfDate)}|${String(row?.source || '')}` === dedupeKey
+  )
+
+  const nextCheckpoint = {
+    id: checkpointInput?.id || `ccp_${simpleStableHash(`${account.id}|${dedupeKey}`)}`,
+    asOfDate,
+    cashBalance: Math.round(cashBalance * 100) / 100,
+    source,
+    sourceFingerprint,
+    notes,
+    createdAt: existingIndex >= 0
+      ? (account.cashCheckpoints[existingIndex]?.createdAt || nowIso)
+      : nowIso,
+    updatedAt: nowIso
+  }
+
+  if (existingIndex >= 0) {
+    account.cashCheckpoints.splice(existingIndex, 1, nextCheckpoint)
+  } else {
+    account.cashCheckpoints.push(nextCheckpoint)
+  }
+
+  account.cashCheckpoints.sort((a, b) => {
+    const aKey = `${a?.asOfDate || ''} ${String(a?.source || '').toLowerCase()}`
+    const bKey = `${b?.asOfDate || ''} ${String(b?.source || '').toLowerCase()}`
+    return aKey.localeCompare(bKey)
+  })
+
+  return nextCheckpoint
 }
 
 /**
@@ -405,6 +493,9 @@ async function importTransactionsFromCSV(file, targetAccount) {
     const preservedNotes = Array.isArray(targetAccount.notes)
       ? JSON.parse(JSON.stringify(targetAccount.notes))
       : []
+    const preservedCashCheckpoints = Array.isArray(targetAccount.cashCheckpoints)
+      ? JSON.parse(JSON.stringify(targetAccount.cashCheckpoints))
+      : []
 
     // If delete all data is selected, clear all data arrays before import
     if (deleteAllData.value) {
@@ -415,6 +506,7 @@ async function importTransactionsFromCSV(file, targetAccount) {
       targetAccount.trades = preservedTrades
       targetAccount.relTradeTransactions = preservedRelTradeTransactions
       targetAccount.notes = preservedNotes
+      targetAccount.cashCheckpoints = preservedCashCheckpoints
     }
     
     // Get broker map for type categorization
@@ -556,7 +648,7 @@ async function importCurrentPositionsFromCSV(file, targetAccount) {
 
   const text = await file.text()
   const rows = Papa.parse(text, { header: false, skipEmptyLines: true }).data || []
-  const { positionsRows, summaryRows } = parsePositionsRows(rows)
+  const { positionsRows, summaryRows, metadata } = parsePositionsRows(rows)
   if (!positionsRows.length) {
     throw new Error('No position rows found. Confirm this is a Schwab Positions export CSV.')
   }
@@ -564,7 +656,8 @@ async function importCurrentPositionsFromCSV(file, targetAccount) {
   const accountPositions = targetAccount.positions || []
   const equityPriceBySymbol = new Map()
   const snapshot = {
-    asOf: new Date().toISOString(),
+    asOf: metadata?.asOfIso || new Date().toISOString(),
+    asOfDate: metadata?.asOfDate || null,
     source: 'schwab-positions-csv',
     totals: {
       positionsTotal: null,
@@ -580,12 +673,12 @@ async function importCurrentPositionsFromCSV(file, targetAccount) {
     const quantity = Number(String(row.quantity || '').replace(/,/g, ''))
     const price = _parseAmount(row.price, 0)
 
-    if (assetType === 'equity' && row.symbol && quantity > 0 && price > 0) {
+    if (isEquityLikeAssetType(assetType) && row.symbol && quantity > 0 && price > 0) {
       equityPriceBySymbol.set(row.symbol, price)
       snapshot.totals.equitiesMarketValue += marketValue
     } else if (assetType.includes('option')) {
       snapshot.totals.optionsMarketValue += marketValue
-    } else if (assetType.includes('cash')) {
+    } else if (assetType.includes('cash') || String(row.symbol || '').toLowerCase() === 'cash & cash investments') {
       snapshot.totals.cashAndCashInvestments = marketValue
     }
   })
@@ -611,6 +704,16 @@ async function importCurrentPositionsFromCSV(file, targetAccount) {
   symbolsUpdated = matchedSymbols.size
 
   targetAccount.brokerageSnapshot = snapshot
+  let cashCheckpoint = null
+  if (Number.isFinite(Number(snapshot.totals.cashAndCashInvestments))) {
+    cashCheckpoint = upsertCashCheckpoint(targetAccount, {
+      asOfDate: snapshot.asOfDate || toIsoDate(snapshot.asOf),
+      cashBalance: Number(snapshot.totals.cashAndCashInvestments),
+      source: 'positions-import',
+      sourceFingerprint: simpleStableHash(`${file.name}|${snapshot.asOf}|${snapshot.totals.cashAndCashInvestments}`),
+      notes: `Imported from positions CSV: ${file.name}`
+    })
+  }
 
   return {
     rowsProcessed: positionsRows.length,
@@ -618,20 +721,49 @@ async function importCurrentPositionsFromCSV(file, targetAccount) {
     symbolsUpdated,
     lotsUpdated,
     unmatchedSymbols: [...equityPriceBySymbol.keys()].filter(symbol => !matchedSymbols.has(symbol)),
-    snapshot
+    snapshot,
+    cashCheckpoint
   }
 }
 
+/**
+ * Parses a Schwab positions CSV into normalized row objects and summary metadata.
+ *
+ * PURPOSE: Schwab positions exports can include leading title text and other
+ * non-table rows. This parser finds the positions table, reads data rows, and
+ * captures summary fields used for broker snapshots/checkpoints.
+ *
+ * @param {Array<Array<any>>} rows - Raw CSV rows from Papa.parse(header=false)
+ * @returns {{positionsRows: Array<Object>, summaryRows: Array<Object>, metadata: Object}}
+ */
 function parsePositionsRows(rows) {
-  const headerIndex = rows.findIndex((row) => String(row?.[0] || '').trim() === 'Symbol')
+  const titleLine = normalizeSpace(rows?.[0]?.[0] || '')
+  const asOfMatch = /as of\s+(?:\d{1,2}:\d{2}\s*[AP]M\s+ET,\s*)?(\d{4})\/(\d{2})\/(\d{2})/i.exec(titleLine)
+  const asOfDate = asOfMatch ? `${asOfMatch[1]}-${asOfMatch[2]}-${asOfMatch[3]}` : null
+  const asOfIso = asOfDate ? `${asOfDate}T00:00:00` : null
+
+  const headerIndex = rows.findIndex((row) => {
+    const firstCell = normalizeSpace(row?.[0] || '')
+    const joined = row.map(cell => normalizeSpace(cell)).join('|')
+    return firstCell === 'Symbol' && joined.includes('Mkt Val (Market Value)') && joined.includes('Asset Type')
+  })
   if (headerIndex === -1) {
     throw new Error('Could not find Schwab positions CSV header row')
   }
 
   const headers = rows[headerIndex].map((h) => String(h || '').trim())
   const rowsAfterHeader = rows.slice(headerIndex + 1)
+  const tableRows = []
+  for (const cells of rowsAfterHeader) {
+    const firstCell = normalizeSpace(cells?.[0] || '')
+    if (!firstCell) continue
+    tableRows.push(cells)
+    if (firstCell.toLowerCase() === 'positions total') {
+      break
+    }
+  }
 
-  const normalizedRows = rowsAfterHeader
+  const normalizedRows = tableRows
     .map((cells) => headers.reduce((obj, header, idx) => {
       obj[header] = String(cells[idx] || '').trim()
       return obj
@@ -645,7 +777,8 @@ function parsePositionsRows(rows) {
       quantity: row['Qty (Quantity)'],
       price: row.Price,
       marketValue: row['Mkt Val (Market Value)'],
-      assetType: row['Asset Type']
+      assetType: row['Asset Type'],
+      costBasis: row['Cost Basis']
     }))
 
   const summaryRows = normalizedRows
@@ -657,7 +790,11 @@ function parsePositionsRows(rows) {
 
   return {
     positionsRows,
-    summaryRows
+    summaryRows,
+    metadata: {
+      asOfDate,
+      asOfIso
+    }
   }
 }
 
@@ -759,7 +896,7 @@ function parseCSV(csvText) {
       amount: amountValue,
       action: actionValue,
       symbol: values[columnMap.symbol] || '',
-      quantity: values[columnMap.quantity] ? parseInt(values[columnMap.quantity].replace(/,/g, ''), 10) : 0,
+      quantity: values[columnMap.quantity] ? _parseAmount(values[columnMap.quantity], 0) : 0,
       price: values[columnMap.price] ? _parseAmount(values[columnMap.price]) : 0,
       fees: values[columnMap.fees] ? _parseAmount(values[columnMap.fees]) : 0
     }
@@ -1296,7 +1433,8 @@ function _processPositions(positionsImport, sellsImport = []) {
         if (shortPosition.soldShares > 0) {
           shortPosition.currentPrice = Math.round((shortPosition.sellAmount / shortPosition.soldShares) * 1000) / 1000
         }
-        if (shortPosition.soldShares >= Number(shortPosition.shares || 0)) {
+        if (shortPosition.soldShares >= (Number(shortPosition.shares || 0) - POSITION_SHARE_EPSILON)) {
+          shortPosition.soldShares = Number(shortPosition.shares || 0)
           shortPosition.soldWeek = data.week
         }
       }
@@ -1462,7 +1600,8 @@ function _processSellData(sellsImport) {
         pos.currentPrice = Math.round((pos.sellAmount / pos.soldShares) * 1000) / 1000
       }
       // If all shares sold, set soldWeek
-      if (pos.soldShares === pos.shares) {
+      if (pos.soldShares >= (Number(pos.shares || 0) - POSITION_SHARE_EPSILON)) {
+        pos.soldShares = Number(pos.shares || 0)
         pos.soldWeek = sell.week
       }
       upsertRelPositionTransaction(account, {
@@ -1709,6 +1848,9 @@ store.showImportTransactionsModal = show
                 <p>{{ positionsImportResults.symbolsUpdated }} symbols updated across {{ positionsImportResults.lotsUpdated }} lots</p>
                 <p v-if="positionsImportResults.snapshot?.totals?.positionsTotal !== null">
                   Brokerage Positions Total: {{ store.currency(positionsImportResults.snapshot.totals.positionsTotal) }}
+                </p>
+                <p v-if="positionsImportResults.cashCheckpoint">
+                  Cash checkpoint saved: {{ positionsImportResults.cashCheckpoint.asOfDate }} · {{ store.currency(positionsImportResults.cashCheckpoint.cashBalance) }}
                 </p>
                 <p v-if="positionsImportResults.unmatchedSymbols?.length" class="text-warning mb-0">
                   Unmatched symbols: {{ positionsImportResults.unmatchedSymbols.join(', ') }}

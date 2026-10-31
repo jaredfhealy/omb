@@ -2,6 +2,9 @@
 import { ref, onMounted, computed, watch } from 'vue'
 import html2canvas from 'html2canvas'
 import { useAppStore } from '@/stores/app'
+import { groupOptionLifecycle, groupWeekTransactions, sortRowsByDateExecution } from '@/services/weeklyTransactionGrouping'
+import { createTransactionTableColumns, toTransactionDisplayRow } from '@/services/transactionTableDisplay'
+import TransactionRowsTable from '@/components/custom/TransactionRowsTable.vue'
 
 const store = useAppStore()
 
@@ -67,9 +70,26 @@ onMounted(() => {
 // Computed property for totals that respects the symbol filter
 const filteredTotalPremium = computed(() => {
   return summaryData.value.reduce((total, item) => {
-    return total + parseFloat(item.premium || 0)
+    return total + Number(item.amount || 0)
   }, 0)
 })
+
+const totalRor = computed(() => {
+  const totals = summaryData.value.reduce((acc, item) => {
+    const premium = Number(item?.amount || 0)
+    const capitalRequirement = Number(item?.capitalRequirement)
+    if (!Number.isFinite(capitalRequirement) || capitalRequirement <= 0) return acc
+
+    acc.totalPremium += premium
+    acc.totalCapitalRequirement += capitalRequirement
+    return acc
+  }, { totalPremium: 0, totalCapitalRequirement: 0 })
+
+  if (!totals.totalCapitalRequirement) return '-'
+  return `${((totals.totalPremium / totals.totalCapitalRequirement) * 100).toFixed(2)}%`
+})
+
+const summaryColumns = createTransactionTableColumns((value) => store.currency(value))
 
 watch(
   () => availableWeeks.value,
@@ -142,11 +162,17 @@ const calculateSummary = () => {
     let contractType = '-'
     let strike = '-'
     let qty = txn.quantity
+    let capitalRequirement = null
     const optMatch = String(txn?.symbol || '').match(/^([\w.-]+) (\d{2}\/\d{2}\/\d{4}) ([\d.]+) ([CP])$/)
     if (optMatch) {
       ticker = optMatch[1]
       strike = optMatch[3]
       contractType = optMatch[4] === 'C' ? 'Call' : 'Put'
+      const strikeValue = Number(strike)
+      const qtyValue = Math.abs(Number(qty || 0))
+      if (Number.isFinite(strikeValue) && strikeValue > 0 && Number.isFinite(qtyValue) && qtyValue > 0) {
+        capitalRequirement = strikeValue * qtyValue * 100
+      }
     } else if (txn.symbol && txn.symbol.match(/^[A-Z.\-]+$/)) {
       ticker = txn.symbol
       // Use action in Title Case instead of 'Stock'
@@ -161,14 +187,13 @@ const calculateSummary = () => {
         return null
       }
     }
-    // Only collect expired contracts for the section if only one week is selected
     if (txn.action && txn.action.toLowerCase() === 'expired' && !symbolFilter.value && selectedWeek.value === endWeek.value) {
       expiredContracts.value.push(txn.symbol + " [" + txn.quantity + "]")
-      return null
     }
     let type = txn.action
     return {
       date: txn.date,
+      week: Number(txn?.week || 0),
       account: accountName,
       ticker,
       contractType,
@@ -176,179 +201,34 @@ const calculateSummary = () => {
       quantity: qty,
       description: txn.description,
       premium: txn.amount,
+      amount: txn.amount,
       ror: '-',
       type,
       symbol: txn.symbol,
-      action: txn.action,
-      executionOrder: Number(txn?.executionOrder || 0)
+      action,
+      executionOrder: Number(txn?.executionOrder || 0),
+      capitalRequirement
     }
   }).filter(Boolean))
-  allRows.sort((a, b) => {
-    if (a.date < b.date) return -1
-    if (a.date > b.date) return 1
-    return Number(a.executionOrder || 0) - Number(b.executionOrder || 0)
-  })
+  allRows = sortRowsByDateExecution(allRows, { descending: false })
   if (showRawData.value) {
-    summaryData.value = allRows
+    summaryData.value = sortRowsByDateExecution(allRows, { descending: true }).map(toTransactionDisplayRow)
     return
   }
 
-  const getExpirationFromSymbol = (symbol, fallbackDate) => {
-    if (!symbol) return fallbackDate
-    const dateMatch = symbol.match(/\d{2}\/\d{2}\/\d{4}/)
-    return dateMatch ? dateMatch[0] : fallbackDate
-  }
-
-  const actionEquals = (row, action) => (row?.type || '').toLowerCase() === action.toLowerCase()
-
-  const getNumericStrike = (row) => {
-    if (!row || row.strike === '-' || Number.isNaN(Number(row.strike))) return null
-    return Number(row.strike)
-  }
-
-  const isCloseSpreadPair = (curr, next) => {
-    const currExpiry = getExpirationFromSymbol(curr.symbol, curr.date)
-    const nextExpiry = getExpirationFromSymbol(next.symbol, next.date)
-    const currStrike = getNumericStrike(curr)
-    const nextStrike = getNumericStrike(next)
-
-    return (
-      ((actionEquals(curr, 'Sell to Close') && actionEquals(next, 'Buy to Close')) ||
-        (actionEquals(curr, 'Buy to Close') && actionEquals(next, 'Sell to Close'))) &&
-      curr.account === next.account &&
-      curr.date === next.date &&
-      curr.ticker === next.ticker &&
-      Math.abs(Number(curr.quantity)) === Math.abs(Number(next.quantity)) &&
-      curr.contractType === next.contractType &&
-      currExpiry === nextExpiry &&
-      currStrike !== null &&
-      nextStrike !== null &&
-      currStrike !== nextStrike
-    )
-  }
-
-  // Group rolls (Open/Close can be in any order)
-  let groupedRows = []
-  let usedIndexes = new Set()
-  for (let i = 0; i < allRows.length; i++) {
-    if (usedIndexes.has(i)) continue
-    const curr = allRows[i]
-    let foundPair = false
-    for (let j = i + 1; j < allRows.length; j++) {
-      if (usedIndexes.has(j)) continue
-      const next = allRows[j]
-
-      if (isCloseSpreadPair(curr, next)) {
-        const currStrike = getNumericStrike(curr)
-        const nextStrike = getNumericStrike(next)
-        const lowerStrike = Math.min(currStrike, nextStrike)
-        const upperStrike = Math.max(currStrike, nextStrike)
-        const spreadWidth = upperStrike - lowerStrike
-        const netPremium = parseFloat(curr.premium) + parseFloat(next.premium)
-        const expiry = getExpirationFromSymbol(curr.symbol, curr.date)
-        const primaryRow = actionEquals(curr, 'Sell to Close') ? curr : next
-        const contractCount = Math.abs(Number(curr.quantity) || 0)
-
-        let ror = '-'
-        if (spreadWidth > 0 && contractCount > 0) {
-          const capitalAtRisk = contractCount * spreadWidth * 100
-          if (capitalAtRisk > 0) {
-            ror = ((netPremium / capitalAtRisk) * 100).toFixed(2)
-          }
-        }
-
-        groupedRows.push({
-          ...primaryRow,
-          description: `Closed ${primaryRow.contractType.toLowerCase()} spread expiring ${expiry}`,
-          strike: `${lowerStrike.toFixed(2)} / ${upperStrike.toFixed(2)}`,
-          premium: netPremium.toFixed(2),
-          ror: ror !== '-' ? ror : '-'
-        })
-        usedIndexes.add(i)
-        usedIndexes.add(j)
-        foundPair = true
-        break
-      }
-
-      const currIsClose = curr.type === 'Buy to Close' || curr.type === 'Sell to Close'
-      const nextIsClose = next.type === 'Buy to Close' || next.type === 'Sell to Close'
-      const currIsOpen = curr.type === 'Sell to Open' || curr.type === 'Buy to Open'
-      const nextIsOpen = next.type === 'Sell to Open' || next.type === 'Buy to Open'
-
-      // Must be one Open, one Close, same ticker, quantity, contractType
-      const isRollPair =
-        ((currIsOpen && nextIsClose) || (currIsClose && nextIsOpen)) &&
-        curr.ticker === next.ticker &&
-        curr.quantity === next.quantity &&
-        curr.contractType === next.contractType
-      if (isRollPair) {
-        const closeLeg = currIsClose ? curr : next
-        const openLeg = currIsOpen ? curr : next
-        // Parse dates from symbol
-        const closeLegDateMatch = closeLeg.symbol.match(/\d{2}\/\d{2}\/\d{4}/)
-        const openLegDateMatch = openLeg.symbol.match(/\d{2}\/\d{2}\/\d{4}/)
-        const fromDate = closeLegDateMatch ? closeLegDateMatch[0] : closeLeg.date
-        const toDate = openLegDateMatch ? openLegDateMatch[0] : openLeg.date
-        // Set strike column for roll
-        let rollStrike = openLeg.strike
-        if (curr.strike !== next.strike && curr.strike !== '-' && next.strike !== '-') {
-          rollStrike = `${curr.strike} to ${next.strike}`
-        }
-        // Calculate ROR for roll
-        let ror = '-'
-        let strikeForROR = (openLeg.strike !== '-' && !isNaN(openLeg.strike)) ? parseFloat(openLeg.strike) : (closeLeg.strike !== '-' && !isNaN(closeLeg.strike) ? parseFloat(closeLeg.strike) : null)
-        if (strikeForROR && curr.quantity) {
-          const cost = Math.abs(curr.quantity * strikeForROR * 100)
-          if (cost > 0) {
-            const premium = parseFloat(curr.premium) + parseFloat(next.premium)
-            ror = ((premium / cost) * 100).toFixed(2)
-          }
-        }
-        groupedRows.push({
-          ...openLeg,
-          description: `Rolled from ${fromDate} to ${toDate}`,
-          premium: (parseFloat(curr.premium) + parseFloat(next.premium)).toFixed(2),
-          rollFrom: fromDate,
-          rollTo: toDate,
-          strike: rollStrike,
-          ror: ror !== '-' ? ror : '-'
-        })
-        usedIndexes.add(i)
-        usedIndexes.add(j)
-        foundPair = true
-        break
-      }
-    }
-    if (!foundPair) {
-      // If this is a buy to close, set description
-      if (curr.type === 'Buy to Close') {
-        const dateMatch = curr.symbol.match(/\d{2}\/\d{2}\/\d{4}/)
-        curr.description = dateMatch ? `Closed position expiring ${dateMatch[0]}` : `Bought to close on ${curr.date}`
-      }
-      // If this is a sell to open, set description
-      if (curr.type === 'Sell to Open') {
-        const dateMatch = curr.symbol.match(/\d{2}\/\d{2}\/\d{4}/)
-        curr.description = dateMatch ? `New position expiring ${dateMatch[0]}` : `Sold to open on ${curr.date}`
-      }
-      // Calculate ROR for single leg
-      let ror = '-'
-      if (curr.strike !== '-' && !isNaN(curr.strike) && curr.quantity) {
-        const cost = Math.abs(curr.quantity * parseFloat(curr.strike) * 100)
-        if (cost > 0) {
-          ror = ((parseFloat(curr.premium) / cost) * 100).toFixed(2)
-        }
-      }
-      groupedRows.push({ ...curr, ror: ror !== '-' ? ror : '-' })
-    }
-  }
-  // Sort by account, then date ascending
-  groupedRows.sort((a, b) => {
-    if (a.account < b.account) return -1;
-    if (a.account > b.account) return 1;
-    // If accounts are equal, sort by date
-    return new Date(a.date) - new Date(b.date);
-  });
-  summaryData.value = groupedRows
+  const rowsForGrouping = groupWeekTransactions(allRows, {
+    groupIncome: true,
+    groupSameWeekExpirations: true,
+    sortDescending: false,
+    contextKey: (row) => `${row.account || ''}|${row.week || ''}`
+  }).map((row) => ({
+    ...row,
+    type: row.type || row.action || '',
+    premium: row.premium ?? row.amount ?? 0,
+    amount: row.amount ?? row.premium ?? 0
+  }))
+  summaryData.value = groupOptionLifecycle(rowsForGrouping, { sortDescending: true })
+    .map(toTransactionDisplayRow)
 }
 
 async function copyAsImage() {
@@ -486,45 +366,19 @@ async function copyAsImage() {
           </div>
           <div class="card-body" ref="summaryRef">
             <!-- Options summary table -->
-            <table class="table">
-              <thead>
-                <tr>
-                  <th>Date</th>
-                  <th>Account</th>
-                  <th>Symbol</th>
-                  <th>Type</th>
-                  <th>Qty</th>
-                  <th>Strike</th>
-                  <th>Description</th>
-                  <th>Premium</th>
-                  <th>
-                    <span style="cursor: help;" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="ROR is calculated after Comm & Fees">
-                      ROR <i class="bi bi-info-circle ms-1"></i>
-                    </span>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="(item, index) in summaryData" :key="index">
-                  <td>{{ item.date }}</td>
-                  <td>{{ item.account }}</td>
-                  <td>{{ item.ticker }}</td>
-                  <td>{{ showRawData ? item.type : item.contractType }}</td>
-                  <td>{{ item.quantity }}</td>
-                  <td>{{ item.strike === '-' ? '-' : '$' + item.strike }}</td>
-                  <td>{{ item.description }}</td>
-                  <td>{{ store.currency(item.premium) }}</td>
-                  <td>{{ item.ror === '-' ? '-' : item.ror + '%' }}</td>
-                </tr>
-              </tbody>
-              <tfoot>
+            <TransactionRowsTable
+              :columns="summaryColumns"
+              :rows="summaryData"
+              table-class="table table-sm table-striped align-middle"
+            >
+              <template #footer>
                 <tr class="table-light">
-                  <td colspan="7" align="right"><b>Total Premium:</b></td>
-                  <td><b>{{ store.currency(filteredTotalPremium) }}</b></td>
-                  <td></td>
+                  <td colspan="6" class="text-end"><b>Totals</b></td>
+                  <td class="text-end"><b>{{ store.currency(filteredTotalPremium) }}</b></td>
+                  <td class="text-end"><b>{{ totalRor }}</b></td>
                 </tr>
-              </tfoot>
-            </table>
+              </template>
+            </TransactionRowsTable>
 
             <!-- Expired contracts section (multi-week or filtered) -->
             <div class="mt-0" v-if="!symbolFilter && expiredContracts.length > 0 && (selectedWeek === endWeek)">

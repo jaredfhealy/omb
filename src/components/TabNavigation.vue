@@ -6,12 +6,8 @@ const store = useAppStore()
 <template>
   <ul class="nav nav-tabs px-2 compact-tabs">
     <li class="nav-item">
-      <a class="nav-link" :class="{ active: store.activeTab === 'yearly' }" @click="store.activeTab = 'yearly'"
-        href="#"><i class="bi bi-calendar-range"></i> <span>Yearly</span></a>
-    </li>
-    <li class="nav-item">
       <a class="nav-link" :class="{ active: store.activeTab === 'weekly' }" @click="store.activeTab = 'weekly'"
-        href="#"><i class="bi bi-graph-up"></i> <span>Weekly</span></a>
+        href="#"><i class="bi bi-graph-up"></i> <span>Weekly Performance</span></a>
     </li>
     <li class="nav-item">
       <a class="nav-link" :class="{ active: store.activeTab === 'recurring' }" @click="store.activeTab = 'recurring'"
@@ -20,6 +16,10 @@ const store = useAppStore()
     <li class="nav-item">
       <a class="nav-link" :class="{ active: store.activeTab === 'positions' }" @click="store.activeTab = 'positions'"
         href="#"><i class="bi bi-stack"></i> <span>Positions</span></a>
+    </li>
+    <li class="nav-item">
+      <a class="nav-link" :class="{ active: store.activeTab === 'checkpoints' }" @click="store.activeTab = 'checkpoints'"
+        href="#"><i class="bi bi-bookmark-check"></i> <span>Checkpoints</span></a>
     </li>
   </ul>
 </template>

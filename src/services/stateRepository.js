@@ -1,13 +1,14 @@
 const PERSISTENCE_MODE_LOCAL_FIRST = 'local-first'
 
 const INDEXED_DB_NAME = 'omb-local-first'
-const INDEXED_DB_VERSION = 2
+const INDEXED_DB_VERSION = 3
 const META_STORE_NAME = 'meta'
 const META_KEY = 'omb.meta.v2'
 const V2_COLLECTION_STORES = [
   'accounts',
   'importedTransactions',
   'cashFlows',
+  'cashCheckpoints',
   'positions',
   'trades',
   'relTradeTransactions',
@@ -123,7 +124,7 @@ function loadGoogleIdentityScript() {
 /**
  * Opens or creates the local-first IndexedDB database for OMB.
  * 
- * PURPOSE: Initialize IndexedDB connection and ensure all 9 v2 collection
+ * PURPOSE: Initialize IndexedDB connection and ensure all v2 collection
  * stores exist. This is called by every persist/load operation.
  * 
  * SCHEMA:
@@ -131,7 +132,7 @@ function loadGoogleIdentityScript() {
  * - Version: 2 (managed manually; increment if schema changes)
  * - Stores:
  *   - meta: key-value store (no keyPath) for app metadata
- *   - accounts, importedTransactions, cashFlows, positions, trades,
+ *   - accounts, importedTransactions, cashFlows, cashCheckpoints, positions, trades,
  *     relTradeTransactions, relPositionTransactions, notes: 
  *     All use keyPath='id' for document-style storage
  * 
@@ -523,6 +524,22 @@ function deriveAppAccountId(v2AccountId, fallbackIndex = 0) {
   return fallbackIndex + 1
 }
 
+/**
+ * Creates a stable dedupe key for cash checkpoints within an account.
+ *
+ * PURPOSE: Cash checkpoints are logically unique by account/date/source.
+ * This key is used to collapse accidental duplicates while preserving the
+ * newest payload values.
+ *
+ * @param {Object} checkpoint - App-shape or v2-shape cash checkpoint record
+ * @returns {string} Dedupe key
+ */
+function createCashCheckpointDedupeKey(checkpoint) {
+  const asOfDate = toIsoDate(checkpoint?.asOfDate || checkpoint?.date || '')
+  const source = normalizeString(checkpoint?.source || 'manual').toLowerCase()
+  return `${asOfDate}|${source}`
+}
+
 function buildV2CollectionsFromAppStateData(data) {
   const safeData = (data && typeof data === 'object') ? data : {}
   const accountsInput = Array.isArray(safeData.accounts) ? safeData.accounts : []
@@ -532,6 +549,7 @@ function buildV2CollectionsFromAppStateData(data) {
     accounts: [],
     importedTransactions: [],
     cashFlows: [],
+    cashCheckpoints: [],
     positions: [],
     trades: [],
     relTradeTransactions: [],
@@ -690,6 +708,29 @@ function buildV2CollectionsFromAppStateData(data) {
       })
     })
 
+    const cashCheckpoints = Array.isArray(account?.cashCheckpoints) ? account.cashCheckpoints : []
+    const checkpointByKey = new Map()
+    cashCheckpoints.forEach((checkpoint) => {
+      const dedupeKey = createCashCheckpointDedupeKey(checkpoint)
+      if (!dedupeKey.startsWith('|')) {
+        checkpointByKey.set(dedupeKey, checkpoint)
+      }
+    })
+    Array.from(checkpointByKey.values()).forEach((checkpoint, checkpointIndex) => {
+      const asOfDate = toIsoDate(checkpoint?.asOfDate || checkpoint?.date || now)
+      collections.cashCheckpoints.push({
+        id: String(checkpoint?.id || createRecordId('ccp', accountId, asOfDate, checkpoint?.source || 'manual', checkpointIndex)),
+        accountId,
+        asOfDate,
+        cashBalance: Number(checkpoint?.cashBalance || checkpoint?.amount || 0),
+        source: String(checkpoint?.source || 'manual'),
+        sourceFingerprint: checkpoint?.sourceFingerprint ? String(checkpoint.sourceFingerprint) : null,
+        notes: checkpoint?.notes ? String(checkpoint.notes) : null,
+        createdAt: checkpoint?.createdAt || now,
+        updatedAt: checkpoint?.updatedAt || now
+      })
+    })
+
     const positions = Array.isArray(account?.positions) ? account.positions : []
     const positionIdByKey = new Map()
     positions.forEach((position, positionIndex) => {
@@ -831,6 +872,7 @@ function buildAppStateDataFromV2Collections(collections) {
   const accounts = Array.isArray(safeCollections.accounts) ? safeCollections.accounts : []
   const importedTransactions = Array.isArray(safeCollections.importedTransactions) ? safeCollections.importedTransactions : []
   const cashFlows = Array.isArray(safeCollections.cashFlows) ? safeCollections.cashFlows : []
+  const cashCheckpoints = Array.isArray(safeCollections.cashCheckpoints) ? safeCollections.cashCheckpoints : []
   const positions = Array.isArray(safeCollections.positions) ? safeCollections.positions : []
   const notes = Array.isArray(safeCollections.notes) ? safeCollections.notes : []
   const trades = Array.isArray(safeCollections.trades) ? safeCollections.trades : []
@@ -848,6 +890,7 @@ function buildAppStateDataFromV2Collections(collections) {
       formatKey: account?.formatKey || 'schwab',
       settings: serializeForStorage(account?.settings || {}),
       transactions: [],
+      cashCheckpoints: [],
       importedTransactions: [],
       positions: [],
       notes: [],
@@ -893,6 +936,32 @@ function buildAppStateDataFromV2Collections(collections) {
       isProjected: Boolean(flow?.isProjected),
       notes: flow?.notes || null
     })
+  })
+
+  cashCheckpoints.forEach(checkpoint => {
+    const account = accountMap.get(String(checkpoint.accountId))
+    if (!account) return
+    const normalizedCheckpoint = {
+      id: checkpoint?.id || null,
+      asOfDate: checkpoint?.asOfDate || null,
+      cashBalance: Number(checkpoint?.cashBalance || 0),
+      source: checkpoint?.source || 'manual',
+      sourceFingerprint: checkpoint?.sourceFingerprint || null,
+      notes: checkpoint?.notes || null,
+      createdAt: checkpoint?.createdAt || null,
+      updatedAt: checkpoint?.updatedAt || null
+    }
+    const dedupeKey = createCashCheckpointDedupeKey(normalizedCheckpoint)
+    if (dedupeKey.startsWith('|')) return
+    const existingIndex = account.cashCheckpoints.findIndex((row) => createCashCheckpointDedupeKey(row) === dedupeKey)
+    if (existingIndex >= 0) {
+      account.cashCheckpoints.splice(existingIndex, 1, {
+        ...account.cashCheckpoints[existingIndex],
+        ...normalizedCheckpoint
+      })
+      return
+    }
+    account.cashCheckpoints.push(normalizedCheckpoint)
   })
 
   positions.forEach(position => {
@@ -999,8 +1068,9 @@ function createReferenceIndex(rows, key = 'id') {
  * 4. positions: accountId references, key uniqueness, numeric fields
  * 5. relPositionTransactions: position/transaction references
  * 6. cashFlows: accountId references, numeric type/category validation
- * 7. notes: accountId references, targetCollection validation
- * 8. accounts: id uniqueness, required fields
+ * 7. cashCheckpoints: accountId references, date format, numeric cash balance
+ * 8. notes: accountId references, targetCollection validation
+ * 9. accounts: id uniqueness, required fields
  * 
  * WHY: The v2 model uses strict referential integrity and type constraints
  * to enable safe projection calculations and CRUD operations. The projection
@@ -1022,6 +1092,7 @@ function validateV2Collections(data) {
   const accounts = Array.isArray(safeData.accounts) ? safeData.accounts : []
   const importedTransactions = Array.isArray(safeData.importedTransactions) ? safeData.importedTransactions : []
   const cashFlows = Array.isArray(safeData.cashFlows) ? safeData.cashFlows : []
+  const cashCheckpoints = Array.isArray(safeData.cashCheckpoints) ? safeData.cashCheckpoints : []
   const positions = Array.isArray(safeData.positions) ? safeData.positions : []
   const trades = Array.isArray(safeData.trades) ? safeData.trades : []
   const relTradeTransactions = Array.isArray(safeData.relTradeTransactions) ? safeData.relTradeTransactions : []
@@ -1033,6 +1104,7 @@ function validateV2Collections(data) {
   const positionIndex = createReferenceIndex(positions)
   const tradeIndex = createReferenceIndex(trades)
   const cashFlowIndex = createReferenceIndex(cashFlows)
+  const cashCheckpointIndex = createReferenceIndex(cashCheckpoints)
 
   const fingerprintRegistry = { hashToInput: new Map() }
   importedTransactions.forEach((tx) => {
@@ -1179,10 +1251,32 @@ function validateV2Collections(data) {
     }
   })
 
+  const allowedCheckpointSources = new Set(['manual', 'positions-import'])
+  cashCheckpoints.forEach((checkpoint) => {
+    const checkpointId = checkpoint?.id || '<missing-id>'
+    if (!checkpoint?.accountId || !accountIndex.has(String(checkpoint.accountId))) {
+      errors.push(`Cash checkpoint ${checkpointId} references missing accountId ${checkpoint?.accountId || '<missing>'}.`)
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(checkpoint?.asOfDate || ''))) {
+      errors.push(`Cash checkpoint ${checkpointId} has invalid asOfDate ${checkpoint?.asOfDate || '<missing>'}.`)
+    }
+    if (!Number.isFinite(Number(checkpoint?.cashBalance))) {
+      errors.push(`Cash checkpoint ${checkpointId} has invalid cashBalance ${checkpoint?.cashBalance}.`)
+    }
+    const source = String(checkpoint?.source || '').trim()
+    if (!allowedCheckpointSources.has(source)) {
+      errors.push(`Cash checkpoint ${checkpointId} has invalid source ${checkpoint?.source || '<missing>'}.`)
+    }
+    if (!(checkpoint?.sourceFingerprint === null || checkpoint?.sourceFingerprint === undefined || String(checkpoint.sourceFingerprint).trim())) {
+      errors.push(`Cash checkpoint ${checkpointId} has invalid sourceFingerprint.`)
+    }
+  })
+
   const targetCollectionMap = {
     weeks: null,
     importedTransactions: importedIndex,
     cashFlows: cashFlowIndex,
+    cashCheckpoints: cashCheckpointIndex,
     positions: positionIndex,
     trades: tradeIndex
   }
@@ -1300,7 +1394,7 @@ class IndexedDbStateRepository {
    * This is the entry point for determining startup flow (data load vs reset).
    * 
    * LOGIC:
-   * 1. Check if all 9 v2 collection stores exist by name (not by reading contents)
+   * 1. Check if all v2 collection stores exist by name (not by reading contents)
    * 2. If stores exist, check if meta.dataModel === 'v2'
    * 3. If yes → return { kind: 'v2' }
    * 4. If no → return { kind: 'non-v2' } (corrupted or legacy data)
@@ -1322,7 +1416,7 @@ class IndexedDbStateRepository {
     const db = await openIndexedDb()
     const meta = await idbGetFromStore(db, META_STORE_NAME, META_KEY)
 
-    // Check if all 9 v2 collection stores exist by name
+    // Check if all v2 collection stores exist by name
     const storeNames = Array.from(db.objectStoreNames || [])
     const hasAllV2Stores = V2_COLLECTION_STORES.every(storeName => storeNames.includes(storeName))
 
@@ -1371,7 +1465,7 @@ class IndexedDbStateRepository {
    * PROCESS:
    * 1. Call inspect() to check if v2 data exists
    * 2. If not v2, return null (caller handles reset flow)
-   * 3. If v2, read all 9 collection stores from IndexedDB
+   * 3. If v2, read all collection stores from IndexedDB
    * 4. Reconstruct envelope with meta + all collections
    * 5. Return to caller for validation and app-state conversion
    * 

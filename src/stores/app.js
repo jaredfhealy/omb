@@ -13,6 +13,7 @@ import {
 
 const SELECTED_ACCOUNT_ID_KEY = 'omb.selectedAccountId.v1'
 const NON_V2_RESET_ACK_KEY = 'omb.nonV2ResetHandled.v1'
+const POSITION_SHARE_EPSILON = 1e-6
 
 function loadSelectedAccountIdPreference() {
   try {
@@ -76,6 +77,10 @@ function ensureAccountCollections(dbState) {
       account.notes = []
       migrated = true
     }
+    if (!account.cashCheckpoints) {
+      account.cashCheckpoints = []
+      migrated = true
+    }
     if (!account.trades) {
       account.trades = []
       migrated = true
@@ -97,6 +102,62 @@ function ensureAccountCollections(dbState) {
   return migrated
 }
 
+function normalizePositionShareStates(dbState) {
+  if (!dbState || !Array.isArray(dbState.accounts)) return false
+  let migrated = false
+
+  dbState.accounts.forEach((account) => {
+    if (!Array.isArray(account?.positions) || account.positions.length === 0) return
+
+    const closeWeeksByPositionKey = new Map()
+    ;(Array.isArray(account.relPositionTransactions) ? account.relPositionTransactions : []).forEach((rel) => {
+      const eventKind = String(rel?.eventKind || '').toLowerCase()
+      if (eventKind !== 'close') return
+      const positionKey = String(rel?.positionKey || '')
+      if (!positionKey) return
+      const eventWeek = Number(rel?.eventWeek)
+      if (!Number.isFinite(eventWeek) || eventWeek <= 0) return
+      const current = closeWeeksByPositionKey.get(positionKey)
+      if (!Number.isFinite(current) || eventWeek > current) {
+        closeWeeksByPositionKey.set(positionKey, eventWeek)
+      }
+    })
+
+    account.positions.forEach((position) => {
+      const shares = Number(position?.shares || 0)
+      let soldShares = Number(position?.soldShares || 0)
+      if (!Number.isFinite(soldShares) || soldShares < 0) soldShares = 0
+
+      if (Number.isFinite(shares) && shares >= 0) {
+        if (Math.abs(shares - soldShares) <= POSITION_SHARE_EPSILON || soldShares > shares) {
+          soldShares = shares
+        }
+      }
+
+      if (soldShares !== Number(position?.soldShares || 0)) {
+        position.soldShares = soldShares
+        migrated = true
+      }
+
+      const hasSoldWeek = Number.isFinite(Number(position?.soldWeek)) && Number(position.soldWeek) > 0
+      const isFullyClosed = Number.isFinite(shares) && shares > 0 && Math.abs(shares - soldShares) <= POSITION_SHARE_EPSILON
+      if (!hasSoldWeek && isFullyClosed) {
+        const positionKey = String(position?.positionKey || '')
+        const closeWeekFromRelations = positionKey ? closeWeeksByPositionKey.get(positionKey) : null
+        const assignedWeek = Number(position?.assignedWeek)
+        const fallbackWeek = Number.isFinite(assignedWeek) && assignedWeek > 0 ? assignedWeek : null
+        const soldWeek = Number.isFinite(closeWeekFromRelations) ? closeWeekFromRelations : fallbackWeek
+        if (Number.isFinite(soldWeek) && soldWeek > 0) {
+          position.soldWeek = soldWeek
+          migrated = true
+        }
+      }
+    })
+  })
+
+  return migrated
+}
+
 function createDefaultAccount() {
   return {
     id: 1,
@@ -107,6 +168,7 @@ function createDefaultAccount() {
     importedTransactions: [],
     positions: [],
     notes: [],
+    cashCheckpoints: [],
     trades: [],
     relTradeTransactions: [],
     relPositionTransactions: [],
@@ -184,7 +246,7 @@ export const useAppStore = defineStore('app', {
     syncCenterListenerBound: false,
 
     // UI State
-    activeTab: 'yearly',
+    activeTab: 'weekly',
     transactionFilter: 'all',
     selectedWeek: null,
     windowWidth: window.innerWidth,
@@ -406,7 +468,9 @@ export const useAppStore = defineStore('app', {
         }
 
         if (data && Array.isArray(data.accounts)) {
-          const migrated = ensureAccountCollections(data)
+          const migratedCollections = ensureAccountCollections(data)
+          const migratedPositionShareStates = normalizePositionShareStates(data)
+          const migrated = migratedCollections || migratedPositionShareStates
           this.db = createPersistableStateSnapshot(data)
           this.ensureSelectedAccount()
           this.applyPositionMetadataForActiveAccount()
@@ -1008,7 +1072,7 @@ export const useAppStore = defineStore('app', {
           },
           weeklyTotalTypes: ['sell to open', 'sell to close', 'buy to open', 'buy to close', 'qualified dividend', 'bank interest', 'dividend', 'cash dividend', 'credit interest', 'foreign tax paid', 'expired', 'margin interest', 'substitute inc pmt'],
           transactionTypes: ['moneylink transfer', 'moneylink deposit', 'journal', 'funds received', 'qualified dividend', 'credit interest', 'dividend', 'cash dividend', 'bank interest', 'foreign tax paid', 'margin interest', 'substitute inc pmt'],
-          positionTypes: ['buy'],
+          positionTypes: ['buy', 'reinvest shares'],
           sellTypes: ['sell', 'sell short'],
         }
       }

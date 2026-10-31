@@ -1,5 +1,11 @@
 # Operation More Bacon — Copilot Instructions
 
+## Canonical repository guidance
+
+For consistent behavior across tools/agents, treat [AGENTS.md](../AGENTS.md) as the primary workflow guide.
+
+This file is Copilot-specific and should only add Copilot-focused context on top of [AGENTS.md](../AGENTS.md), not replace it.
+
 ## Project Purpose
 A Vue 3 + local API personal finance app focused on **weekly options trading income projection**. Users track cash balances, recurring deposits/withdrawals, assigned stock positions (cash-secured puts, etc.), and compare actual weekly trading results against a projected growth curve. Supports multiple brokerage accounts and CSV import from Schwab.
 
@@ -27,6 +33,15 @@ A Vue 3 + local API personal finance app focused on **weekly options trading inc
 - `npm run build` / `npm run preview` — production build
 
 Local persisted data is stored in `./server/data/app.db`.
+
+### Development test-data staging (important)
+
+When running import/rebuild/destructive verification flows, use project-local staging:
+
+- Put CSV exports and backup JSON files in `./local-data/`.
+- `./local-data/.gitignore` is tracked; files inside `./local-data/` are intentionally untracked.
+- Reuse files from `./local-data/` for repeatable test runs and restore fallbacks.
+- Never commit broker/account exports or backup payloads.
 
 ---
 

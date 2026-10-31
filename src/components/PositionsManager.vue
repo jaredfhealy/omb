@@ -214,11 +214,12 @@ function isPositionRecent(position) {
 
 const positionsByStatusFilter = computed(() => {
   const positions = Array.isArray(store.activeAccount?.positions) ? store.activeAccount.positions : []
+  const isOpen = (position) => getOpenShares(position) > 0
   if (filter.value === 'open') {
-    return positions.filter(position => !position.soldWeek)
+    return positions.filter(position => isOpen(position))
   }
   if (filter.value === 'closed') {
-    return positions.filter(position => position.soldWeek)
+    return positions.filter(position => !isOpen(position))
   }
   if (filter.value === 'recent') {
     return positions.filter(position => isPositionRecent(position))
@@ -605,16 +606,24 @@ function getLatestSellWeek(position) {
 function getSharesLabel(position) {
   const openShares = getOpenShares(position)
   const soldShares = getSoldShares(position)
+  const formatShares = (value) => Number(value || 0).toLocaleString(undefined, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 6
+  })
   if (soldShares <= 0) {
-    return `${position.shares} shares`
+    return `${formatShares(position.shares)} shares`
   }
-  return `${openShares} shares`
+  return `${formatShares(openShares)} shares`
 }
 
 function getSoldSharesSuffix(position) {
   const soldShares = getSoldShares(position)
   if (soldShares <= 0) return null
-  return `(${soldShares} sold)`
+  const formatted = Number(soldShares || 0).toLocaleString(undefined, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 6
+  })
+  return `(${formatted} sold)`
 }
 
 // State for merged group modal

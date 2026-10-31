@@ -45,6 +45,7 @@ Day-1 required collections:
 - `accounts`
 - `importedTransactions`
 - `cashFlows`
+- `cashCheckpoints`
 - `positions`
 - `trades`
 - `relTradeTransactions`
@@ -153,6 +154,24 @@ Projection-impacting entries (one-time or recurring).
   endWeek: Number | null,
   isRecurring: Boolean,
   isProjected: Boolean, // true for user-modeled future entries
+  notes: String | null,
+  createdAt: ISOString,
+  updatedAt: ISOString
+}
+```
+
+### cashCheckpoints
+
+Broker-confirmed cash balance checkpoints used for reconciliation.
+
+```js
+{
+  id: String,
+  accountId: String,
+  asOfDate: 'YYYY-MM-DD',
+  cashBalance: Number,
+  source: 'positions-import' | 'manual',
+  sourceFingerprint: String | null,
   notes: String | null,
   createdAt: ISOString,
   updatedAt: ISOString
@@ -278,8 +297,10 @@ Relationship collection linking positions to imported transactions (opening/clos
 7. trade and linked transaction symbols must match when transaction symbol is non-empty.
 8. if `cashFlows.isProjected === false`, `cashFlows.sourceTransactionId` is required.
 9. if `cashFlows.isProjected === true`, `cashFlows.sourceTransactionId` must be null.
-10. `notes.targetCollection` and `notes.targetId` are required.
-11. `notes.targetId` must reference a valid record in `notes.targetCollection` for the same account (except `targetCollection = 'weeks'`, where `targetId` is the week number string).
+10. `cashCheckpoints.cashBalance` must be numeric.
+11. `cashCheckpoints.asOfDate` must use `YYYY-MM-DD`.
+12. `notes.targetCollection` and `notes.targetId` are required.
+13. `notes.targetId` must reference a valid record in `notes.targetCollection` for the same account (except `targetCollection = 'weeks'`, where `targetId` is the week number string).
 
 ### Startup validation (required)
 

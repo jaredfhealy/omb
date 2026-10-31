@@ -4,21 +4,36 @@ function isShortPosition(position) {
   return position?.positionType === 'short' || Number(position?.costBasis || 0) < 0
 }
 
+const POSITION_SHARE_EPSILON = 1e-6
+
+function normalizeShareCount(value) {
+  const parsed = Number(value || 0)
+  if (!Number.isFinite(parsed)) return 0
+  const rounded = Math.round(parsed * 1_000_000) / 1_000_000
+  return Math.abs(rounded) <= POSITION_SHARE_EPSILON ? 0 : rounded
+}
+
 export function getSoldShares(position) {
   if (!position) return 0
-  if (typeof position.soldShares === 'number' && position.soldShares > 0) {
-    return Math.min(position.soldShares, position.shares || 0)
+  const totalShares = normalizeShareCount(position.shares || 0)
+  const soldSharesRaw = normalizeShareCount(position.soldShares || 0)
+  if (soldSharesRaw > 0) {
+    if (Math.abs(totalShares - soldSharesRaw) <= POSITION_SHARE_EPSILON || soldSharesRaw > totalShares) {
+      return totalShares
+    }
+    return Math.min(soldSharesRaw, totalShares)
   }
   if (position.soldWeek) {
-    return position.shares || 0
+    return totalShares
   }
   return 0
 }
 
 export function getOpenShares(position) {
-  const shares = Number(position?.shares || 0)
+  const shares = normalizeShareCount(position?.shares || 0)
   const soldShares = getSoldShares(position)
-  return Math.max(shares - soldShares, 0)
+  const openShares = shares - soldShares
+  return openShares <= POSITION_SHARE_EPSILON ? 0 : normalizeShareCount(openShares)
 }
 
 export function getCurrentValue(position) {

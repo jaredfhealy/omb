@@ -1,18 +1,177 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useAppStore } from '@/stores/app'
-import { getOpenShares, getSoldShares, getCurrentValue, getNetPL, getTotalROR } from '@/utils/positionUtils'
+import { useRoute, useRouter } from 'vue-router'
+import { groupOptionLifecycle, groupWeekTransactions, sortRowsByDateExecution } from '@/services/weeklyTransactionGrouping'
+import { createTransactionTableColumns, toTransactionDisplayRow } from '@/services/transactionTableDisplay'
+import TransactionRowsTable from '@/components/custom/TransactionRowsTable.vue'
 
 const store = useAppStore()
+const route = useRoute()
+const router = useRouter()
 const selectedWeek = ref(null)
 const activeTab = ref('summary')
+const transactionViewMode = ref('grouped')
 
 const showModal = computed(() => selectedWeek.value !== null)
+const snapshotTabParam = 'wsTab'
+const snapshotWeekParam = 'wsWeek'
+const validSnapshotTabs = new Set(['summary', 'transactions'])
 
-const weekRows = computed(() => {
-  return Array.isArray(store.activeAccount?.importedTransactions)
-    ? store.activeAccount.importedTransactions.filter(row => Number(row?.week) === Number(selectedWeek.value))
-    : []
+function normalizeSnapshotTab(value) {
+  const tab = String(value || '').toLowerCase()
+  return validSnapshotTabs.has(tab) ? tab : 'summary'
+}
+
+function normalizeWeek(value) {
+  const parsed = Number(value)
+  const maxWeek = Number(store.weeks || 0)
+  if (!Number.isFinite(parsed) || parsed <= 0) return null
+  if (!Number.isFinite(maxWeek) || maxWeek <= 0) return Math.trunc(parsed)
+  return Math.min(Math.max(Math.trunc(parsed), 1), maxWeek)
+}
+
+const maxNavigableWeek = computed(() => {
+  const totalWeeks = Number(store.weeks || 0)
+  return Number.isFinite(totalWeeks) && totalWeeks > 0 ? totalWeeks : 1
+})
+
+const canGoPreviousWeek = computed(() => Number(selectedWeek.value) > 1)
+const canGoNextWeek = computed(() => Number(selectedWeek.value) < Number(maxNavigableWeek.value))
+
+function updateSnapshotRouteState() {
+  const nextQuery = { ...route.query }
+  if (showModal.value && selectedWeek.value !== null) {
+    nextQuery[snapshotWeekParam] = String(selectedWeek.value)
+    nextQuery[snapshotTabParam] = activeTab.value
+  } else {
+    delete nextQuery[snapshotWeekParam]
+    delete nextQuery[snapshotTabParam]
+  }
+  router.replace({ query: nextQuery })
+}
+
+function goToWeek(delta) {
+  const normalizedCurrent = normalizeWeek(selectedWeek.value)
+  if (normalizedCurrent === null) return
+  const target = normalizeWeek(normalizedCurrent + delta)
+  if (target === null) return
+  selectedWeek.value = target
+}
+
+watch([selectedWeek, activeTab], () => {
+  if (!showModal.value) return
+  updateSnapshotRouteState()
+})
+
+watch(
+  () => route.query,
+  (query) => {
+    const tabFromRoute = query?.[snapshotTabParam]
+    if (tabFromRoute !== undefined) {
+      activeTab.value = normalizeSnapshotTab(tabFromRoute)
+    }
+
+    const weekFromRoute = query?.[snapshotWeekParam]
+    if (weekFromRoute !== undefined) {
+      const normalized = normalizeWeek(weekFromRoute)
+      if (normalized !== null && normalized !== selectedWeek.value) {
+        selectedWeek.value = normalized
+      }
+    }
+  },
+  { immediate: true }
+)
+
+const weeklyAllowedActions = computed(() => {
+  try {
+    const brokerMap = store.getBrokerageMap(store.activeAccount?.formatKey || 'schwab')
+    const weeklyTypes = Array.isArray(brokerMap?.weeklyTotalTypes) ? brokerMap.weeklyTotalTypes : []
+    return new Set(weeklyTypes.map(action => String(action || '').toLowerCase().trim()))
+  } catch (error) {
+    return new Set()
+  }
+})
+
+const rawWeekRows = computed(() => {
+  if (!Array.isArray(store.activeAccount?.importedTransactions)) return []
+  const weekRows = store.activeAccount.importedTransactions.filter(row => Number(row?.week) === Number(selectedWeek.value))
+  const filteredRows = weekRows.filter((row) => {
+    const action = String(row?.action || '').toLowerCase().trim()
+    return weeklyAllowedActions.value.has(action)
+  })
+  return sortRowsByDateExecution(filteredRows, { descending: true })
+})
+
+function toSummaryLikeRow(row) {
+  const symbol = String(row?.symbol || '')
+  const optionMatch = symbol.match(/^([\w.-]+) (\d{2}\/\d{2}\/\d{4}) ([\d.]+) ([CP])$/)
+  const strike = optionMatch ? optionMatch[3] : '-'
+  const strikeNumber = Number(strike)
+  const contractType = optionMatch ? (optionMatch[4] === 'C' ? 'Call' : 'Put') : '-'
+  const ticker = optionMatch ? optionMatch[1] : symbol
+  const quantity = Number(row?.quantity || 0)
+  const amount = Number(row?.amount || 0)
+  const capitalRequirement = Number.isFinite(strikeNumber) && Number.isFinite(quantity) && Math.abs(quantity) > 0
+    ? Math.abs(quantity) * 100 * strikeNumber
+    : null
+  return {
+    ...row,
+    account: store.activeAccount?.name || '',
+    week: Number(selectedWeek.value || 0),
+    ticker,
+    contractType,
+    strike,
+    type: row?.action || row?.type || '',
+    premium: amount,
+    amount,
+    capitalRequirement
+  }
+}
+
+function fromSummaryLikeRow(row) {
+  return toTransactionDisplayRow({
+    ...row,
+    type: row?.type || row?.action || row?.contractType || ''
+  })
+}
+
+const groupedWeekRows = computed(() => {
+  const grouped = groupWeekTransactions(rawWeekRows.value.map(toSummaryLikeRow), {
+    groupIncome: true,
+    groupSameWeekExpirations: true,
+    sortDescending: true,
+    contextKey: () => String(selectedWeek.value || '')
+  })
+  return groupOptionLifecycle(grouped, { sortDescending: true }).map(fromSummaryLikeRow)
+})
+
+const weekRows = computed(() => (
+  transactionViewMode.value === 'raw'
+    ? rawWeekRows.value.map(toSummaryLikeRow).map(fromSummaryLikeRow)
+    : groupedWeekRows.value
+))
+
+const transactionColumns = createTransactionTableColumns((value) => store.currency(value))
+
+const transactionRowKey = (row, idx) => row.rowKey || `${row.date}-${row.action}-${row.symbol}-${idx}`
+
+const weekTotalPremium = computed(() => {
+  return weekRows.value.reduce((total, item) => total + Number(item?.amount || 0), 0)
+})
+
+const weekTotalRor = computed(() => {
+  const totals = weekRows.value.reduce((acc, item) => {
+    const premium = Number(item?.amount || 0)
+    const capitalRequirement = Number(item?.capitalRequirement)
+    if (!Number.isFinite(capitalRequirement) || capitalRequirement <= 0) return acc
+    acc.totalPremium += premium
+    acc.totalCapitalRequirement += capitalRequirement
+    return acc
+  }, { totalPremium: 0, totalCapitalRequirement: 0 })
+
+  if (!totals.totalCapitalRequirement) return '-'
+  return `${((totals.totalPremium / totals.totalCapitalRequirement) * 100).toFixed(2)}%`
 })
 
 const projectionWeek = computed(() => {
@@ -26,7 +185,7 @@ const weekGrowth = computed(() => {
 })
 
 const weekNetCashFlow = computed(() => {
-  return weekRows.value.reduce((sum, row) => {
+  return rawWeekRows.value.reduce((sum, row) => {
     const amount = Number(row?.amount)
     return Number.isFinite(amount) ? sum + amount : sum
   }, 0)
@@ -78,6 +237,54 @@ const positionsHeldForWeek = computed(() => {
     })
 })
 
+function getPositionSoldWeek(position) {
+  const soldWeek = position?.soldWeek
+  if (soldWeek === null || soldWeek === undefined || soldWeek === '') return null
+  const parsed = Number(soldWeek)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function getPositionSoldSharesAsOfWeek(position, week) {
+  const shares = Number(position?.shares || 0)
+  if (!Number.isFinite(shares) || shares <= 0) return 0
+  const soldWeek = getPositionSoldWeek(position)
+  if (!soldWeek || soldWeek > week) return 0
+
+  const soldShares = Number(position?.soldShares || 0)
+  if (Number.isFinite(soldShares) && soldShares > 0) {
+    return Math.min(Math.max(soldShares, 0), shares)
+  }
+  return shares
+}
+
+function getPositionOpenSharesAsOfWeek(position, week) {
+  const shares = Number(position?.shares || 0)
+  if (!Number.isFinite(shares) || shares <= 0) return 0
+  const openShares = shares - getPositionSoldSharesAsOfWeek(position, week)
+  return openShares > 0 ? openShares : 0
+}
+
+function getPositionStatusAsOfWeek(position, week) {
+  const soldWeek = getPositionSoldWeek(position)
+  if (!soldWeek || soldWeek > week) return 'Open'
+  return `Closed Week ${soldWeek}`
+}
+
+function getPositionCurrentValueAsOfWeek(position, week) {
+  const soldWeek = getPositionSoldWeek(position)
+  const openShares = getPositionOpenSharesAsOfWeek(position, week)
+  const sellAmount = soldWeek && soldWeek <= week ? Number(position?.sellAmount || 0) : 0
+  const currentPrice = Number(position?.currentPrice || 0)
+  const hasPrice = Number.isFinite(currentPrice)
+  const openValue = hasPrice ? currentPrice * openShares : 0
+  return Number(sellAmount || 0) + openValue
+}
+
+function openPositionEditor(position) {
+  if (typeof store.showPositionModal !== 'function') return
+  store.showPositionModal(position, position?.mergeGroup || null)
+}
+
 function getAssignedDate(position) {
   if (position?.date) return position.date
   const week = Number(position?.assignedWeek)
@@ -87,9 +294,10 @@ function getAssignedDate(position) {
 }
 
 const positionsSnapshot = computed(() => {
+  const week = Number(selectedWeek.value || 0)
   const positions = positionsHeldForWeek.value
   const totalCostBasis = positions.reduce((sum, p) => sum + Number(p.costBasis || 0), 0)
-  const totalValue = positions.reduce((sum, p) => sum + Number(getCurrentValue(p) || 0), 0)
+  const totalValue = positions.reduce((sum, p) => sum + Number(getPositionCurrentValueAsOfWeek(p, week) || 0), 0)
   return {
     count: positions.length,
     totalCostBasis,
@@ -98,12 +306,18 @@ const positionsSnapshot = computed(() => {
 })
 
 const show = (week) => {
-  selectedWeek.value = Number(week)
-  activeTab.value = 'summary'
+  const normalized = normalizeWeek(week)
+  selectedWeek.value = normalized === null ? Number(week) : normalized
+  if (route.query?.[snapshotTabParam] === undefined) {
+    activeTab.value = 'summary'
+  }
+  transactionViewMode.value = 'grouped'
+  updateSnapshotRouteState()
 }
 
 const close = () => {
   selectedWeek.value = null
+  updateSnapshotRouteState()
 }
 
 store.showWeeklyRawDataModal = (week) => show(week)
@@ -130,7 +344,27 @@ store.showWeeklyRawDataModal = (week) => show(week)
               </span>
             </div>
           </div>
-          <button type="button" class="btn-close" @click="close"></button>
+          <div class="snapshot-header-controls d-flex align-items-center gap-2">
+            <div class="btn-group btn-group-sm" role="group" aria-label="Week navigation">
+              <button
+                type="button"
+                class="btn btn-outline-secondary"
+                :disabled="!canGoPreviousWeek"
+                @click="goToWeek(-1)"
+              >
+                <i class="bi bi-chevron-left"></i>
+              </button>
+              <button
+                type="button"
+                class="btn btn-outline-secondary"
+                :disabled="!canGoNextWeek"
+                @click="goToWeek(1)"
+              >
+                <i class="bi bi-chevron-right"></i>
+              </button>
+            </div>
+            <button type="button" class="btn-close" @click="close"></button>
+          </div>
         </div>
         <div class="modal-body">
           <ul class="nav nav-tabs mb-3" role="tablist">
@@ -211,73 +445,108 @@ store.showWeeklyRawDataModal = (week) => show(week)
                 <thead>
                   <tr>
                     <th>Symbol</th>
-                    <th>Assigned Date</th>
-                    <th>Sold</th>
+                    <th>Date</th>
+                    <th>Status</th>
                     <th class="text-end">Open Shares</th>
                     <th class="text-end">Sold Shares</th>
                     <th class="text-end">Cost Basis</th>
-                    <th class="text-end">Current Value</th>
-                    <th class="text-end">Net P/L</th>
-                    <th class="text-end">ROR %</th>
+                    <th class="text-end">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   <tr v-for="position in positionsHeldForWeek" :key="position.positionKey">
                     <td>{{ position.symbol || '' }}</td>
                     <td>{{ getAssignedDate(position) }}</td>
-                    <td>{{ position.soldWeek ? `Week ${position.soldWeek}` : 'Open' }}</td>
-                    <td class="text-end">{{ getOpenShares(position) }}</td>
-                    <td class="text-end">{{ getSoldShares(position) }}</td>
+                    <td>{{ getPositionStatusAsOfWeek(position, Number(selectedWeek || 0)) }}</td>
+                    <td class="text-end">{{ getPositionOpenSharesAsOfWeek(position, Number(selectedWeek || 0)) }}</td>
+                    <td class="text-end">{{ getPositionSoldSharesAsOfWeek(position, Number(selectedWeek || 0)) }}</td>
                     <td class="text-end">{{ store.currency(Number(position.costBasis || 0)) }}</td>
-                    <td class="text-end">{{ store.currency(Number(getCurrentValue(position) || 0)) }}</td>
-                    <td class="text-end" :class="getNetPL(position) < 0 ? 'text-danger' : 'text-success'">
-                      {{ store.currency(Number(getNetPL(position) || 0)) }}
-                    </td>
-                    <td class="text-end" :class="getTotalROR(position) < 0 ? 'text-danger' : 'text-success'">
-                      {{ Number(getTotalROR(position) || 0).toFixed(2) }}%
+                    <td class="text-end">
+                      <button
+                        type="button"
+                        class="btn btn-sm btn-outline-primary"
+                        @click="openPositionEditor(position)"
+                      >
+                        Edit
+                      </button>
                     </td>
                   </tr>
                 </tbody>
+                <tfoot>
+                  <tr class="table-light">
+                    <td colspan="5" class="text-end"><b>Totals</b></td>
+                    <td class="text-end"><b>{{ store.currency(positionsSnapshot.totalCostBasis) }}</b></td>
+                    <td></td>
+                  </tr>
+                </tfoot>
               </table>
             </div>
           </div>
 
           <div class="tab-pane fade" :class="{ 'show active': activeTab === 'transactions' }" role="tabpanel">
-            <div v-if="!weekRows.length" class="alert alert-secondary mb-0">
-              No raw transaction rows found for this week.
+            <div class="d-flex align-items-center gap-2 mb-3">
+              <span class="small text-muted">View:</span>
+              <div class="btn-group btn-group-sm" role="group" aria-label="Transaction view mode">
+                <button
+                  type="button"
+                  class="btn"
+                  :class="transactionViewMode === 'grouped' ? 'btn-primary' : 'btn-outline-primary'"
+                  @click="transactionViewMode = 'grouped'"
+                >
+                  Grouped
+                </button>
+                <button
+                  type="button"
+                  class="btn"
+                  :class="transactionViewMode === 'raw' ? 'btn-primary' : 'btn-outline-primary'"
+                  @click="transactionViewMode = 'raw'"
+                >
+                  Raw
+                </button>
+              </div>
             </div>
-            <div v-else class="table-responsive">
-              <table class="table table-sm table-striped align-middle">
-                <thead>
-                  <tr>
-                    <th>Date</th>
-                    <th>Action</th>
-                    <th>Symbol</th>
-                    <th>Description</th>
-                    <th class="text-end">Quantity</th>
-                    <th class="text-end">Price</th>
-                    <th class="text-end">Amount</th>
+              <div v-if="!weekRows.length" class="alert alert-secondary mb-0">
+                No raw transaction rows found for this week.
+              </div>
+              <TransactionRowsTable
+                v-else
+                :columns="transactionColumns"
+                :rows="weekRows"
+                :row-key="transactionRowKey"
+                table-class="table table-sm table-striped align-middle"
+              >
+                <template #footer>
+                  <tr class="table-light">
+                    <td colspan="6" class="text-end"><b>Totals</b></td>
+                    <td class="text-end"><b>{{ store.currency(weekTotalPremium) }}</b></td>
+                    <td class="text-end"><b>{{ weekTotalRor }}</b></td>
                   </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="(row, idx) in weekRows" :key="`${row.date}-${row.action}-${row.symbol}-${idx}`">
-                    <td>{{ row.date || '' }}</td>
-                    <td>{{ row.action || '' }}</td>
-                    <td>{{ row.symbol || '' }}</td>
-                    <td>{{ row.description || '' }}</td>
-                    <td class="text-end">{{ row.quantity ?? '' }}</td>
-                    <td class="text-end">{{ row.price !== undefined && row.price !== null ? store.currency(Number(row.price)) : '' }}</td>
-                    <td class="text-end" :class="Number(row.amount || 0) < 0 ? 'text-danger' : ''">
-                      {{ row.amount !== undefined && row.amount !== null ? store.currency(Number(row.amount)) : '' }}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+                </template>
+              </TransactionRowsTable>
             </div>
-          </div>
           </div>
         </div>
         <div class="modal-footer">
+          <div class="me-auto">
+            <div class="btn-group btn-group-sm" role="group" aria-label="Week navigation footer">
+              <button
+                type="button"
+                class="btn btn-outline-secondary"
+                :disabled="!canGoPreviousWeek"
+                @click="goToWeek(-1)"
+              >
+                Previous Week
+              </button>
+              <button
+                type="button"
+                class="btn btn-outline-secondary"
+                :disabled="!canGoNextWeek"
+                @click="goToWeek(1)"
+              >
+                Next Week
+              </button>
+            </div>
+          </div>
           <button type="button" class="btn btn-secondary" @click="close">Close</button>
         </div>
       </div>
@@ -287,6 +556,10 @@ store.showWeeklyRawDataModal = (week) => show(week)
 </template>
 
 <style scoped>
+.snapshot-header-controls {
+  margin-left: auto;
+}
+
 .calc-line {
   display: flex;
   justify-content: space-between;
