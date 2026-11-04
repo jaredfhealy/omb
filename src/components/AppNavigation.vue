@@ -1,11 +1,16 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { useAppStore } from '@/stores/app'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 const store = useAppStore()
 const route = useRoute()
+const router = useRouter()
 const baseUrl = import.meta.env.BASE_URL || '/'
+const ACCOUNT_QUERY_PARAM = 'acct'
+let syncingAccountQuery = false
+let suppressAccountQueryWrite = false
+let accountSelectionInitiatedByUser = false
 
 // Add state to track authentication
 const isFixedTopRoute = computed(() =>
@@ -20,9 +25,87 @@ const navbarCollapse = ref(null)
 const selectedAccountId = computed({
   get: () => Number(store.selectedAccountId),
   set: (value) => {
+    accountSelectionInitiatedByUser = true
+    suppressAccountQueryWrite = false
     store.setSelectedAccount(Number(value))
   }
 })
+
+function parseAccountQueryParam(value) {
+  const raw = Array.isArray(value) ? value[0] : value
+  const parsed = Number(raw)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function getAccountQueryValue(accountId) {
+  const selected = Number(accountId)
+  if (!Number.isFinite(selected)) return null
+  return String(selected)
+}
+
+function syncSelectedAccountFromRoute() {
+  if (syncingAccountQuery) return
+  const hasRouteAccountParam = route.query?.[ACCOUNT_QUERY_PARAM] !== undefined
+  const routeAccountId = parseAccountQueryParam(route.query?.[ACCOUNT_QUERY_PARAM])
+  if (!hasRouteAccountParam) return
+  if (!Number.isFinite(routeAccountId)) {
+    const fallbackId = Number(store.db.accounts?.[0]?.id)
+    if (Number.isFinite(fallbackId) && Number(store.selectedAccountId) !== fallbackId) {
+      store.setSelectedAccount(fallbackId)
+    }
+    const nextQuery = { ...route.query }
+    delete nextQuery[ACCOUNT_QUERY_PARAM]
+    suppressAccountQueryWrite = true
+    syncingAccountQuery = true
+    router.replace({ query: nextQuery }).finally(() => {
+      syncingAccountQuery = false
+    })
+    return
+  }
+  const accountExists = store.db.accounts.some(account => Number(account?.id) === routeAccountId)
+  if (!accountExists) {
+    const fallbackId = Number(store.db.accounts?.[0]?.id)
+    if (Number.isFinite(fallbackId) && Number(store.selectedAccountId) !== fallbackId) {
+      store.setSelectedAccount(fallbackId)
+    }
+    const nextQuery = { ...route.query }
+    delete nextQuery[ACCOUNT_QUERY_PARAM]
+    suppressAccountQueryWrite = true
+    syncingAccountQuery = true
+    router.replace({ query: nextQuery }).finally(() => {
+      syncingAccountQuery = false
+    })
+    return
+  }
+  if (Number(store.selectedAccountId) === routeAccountId) return
+  store.setSelectedAccount(routeAccountId)
+}
+
+function syncRouteFromSelectedAccount() {
+  if (syncingAccountQuery || suppressAccountQueryWrite) return
+  const selected = Number(store.selectedAccountId)
+  if (!Number.isFinite(selected)) return
+
+  const nextAccountQuery = getAccountQueryValue(selected)
+  const currentAccountQuery = Array.isArray(route.query?.[ACCOUNT_QUERY_PARAM])
+    ? route.query[ACCOUNT_QUERY_PARAM][0]
+    : route.query?.[ACCOUNT_QUERY_PARAM]
+  const normalizedCurrent = currentAccountQuery === undefined ? null : String(currentAccountQuery)
+
+  if (nextAccountQuery === normalizedCurrent) return
+
+  const nextQuery = { ...route.query }
+  if (nextAccountQuery === null) {
+    delete nextQuery[ACCOUNT_QUERY_PARAM]
+  } else {
+    nextQuery[ACCOUNT_QUERY_PARAM] = nextAccountQuery
+  }
+
+  syncingAccountQuery = true
+  router.replace({ query: nextQuery }).finally(() => {
+    syncingAccountQuery = false
+  })
+}
 
 // Function to close mobile menu
 const closeMenu = () => {
@@ -39,6 +122,37 @@ const closeMenu = () => {
 watch(() => route.path, () => {
   closeMenu()
 })
+
+watch(
+  () => [
+    route.query?.[ACCOUNT_QUERY_PARAM],
+    store.db.accounts.map(account => Number(account?.id)).join(','),
+    store.selectedAccountId,
+    store.loading
+  ],
+  () => {
+    // Wait until state hydration finishes so URL acct does not get cleared by
+    // the pre-hydration default selectedAccountId.
+    if (store.loading) return
+    if (accountSelectionInitiatedByUser) {
+      accountSelectionInitiatedByUser = false
+      syncRouteFromSelectedAccount()
+      return
+    }
+    syncSelectedAccountFromRoute()
+    syncRouteFromSelectedAccount()
+  },
+  { immediate: true }
+)
+
+watch(
+  () => route.query?.[ACCOUNT_QUERY_PARAM],
+  (value) => {
+    if (value !== undefined) {
+      suppressAccountQueryWrite = false
+    }
+  }
+)
 
 // Load persisted state for all pages except the standalone summarizer tool
 onMounted(() => {

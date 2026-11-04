@@ -170,8 +170,10 @@ Broker-confirmed cash balance checkpoints used for reconciliation.
   accountId: String,
   asOfDate: 'YYYY-MM-DD',
   cashBalance: Number,
-  source: 'positions-import' | 'manual',
-  sourceFingerprint: String | null,
+  marginUtilized: Number, // optional; broker-reported debt principal currently utilized
+  rawSnapshot: Object | null, // optional raw broker balance snapshot for long-term retention/audit
+  source: 'manual', // canonicalized on persistence
+  sourceFingerprint: null,
   notes: String | null,
   createdAt: ISOString,
   updatedAt: ISOString

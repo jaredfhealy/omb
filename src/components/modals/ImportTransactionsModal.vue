@@ -104,72 +104,6 @@ function isEquityLikeAssetType(assetType) {
 }
 
 /**
- * Inserts or updates a cash checkpoint on an account.
- *
- * PURPOSE: Persist broker-confirmed cash balances from positions imports and
- * manual entries. Checkpoints survive delete-all transaction imports.
- *
- * @param {Object} account - Target account object in app state
- * @param {Object} checkpointInput - Raw checkpoint payload
- * @returns {Object} Persisted checkpoint row
- */
-function upsertCashCheckpoint(account, checkpointInput) {
-  if (!account) {
-    throw new Error('No account found while saving cash checkpoint')
-  }
-
-  if (!Array.isArray(account.cashCheckpoints)) {
-    account.cashCheckpoints = []
-  }
-
-  const asOfDate = toIsoDate(checkpointInput?.asOfDate)
-  if (!asOfDate) {
-    throw new Error('Cash checkpoint date is required')
-  }
-
-  const cashBalance = Number(checkpointInput?.cashBalance)
-  if (!Number.isFinite(cashBalance)) {
-    throw new Error('Cash checkpoint balance must be a valid number')
-  }
-
-  const source = String(checkpointInput?.source || 'manual')
-  const sourceFingerprint = checkpointInput?.sourceFingerprint ? String(checkpointInput.sourceFingerprint) : null
-  const notes = checkpointInput?.notes ? String(checkpointInput.notes) : null
-  const nowIso = new Date().toISOString()
-  const dedupeKey = `${asOfDate}|${source}`
-  const existingIndex = account.cashCheckpoints.findIndex((row) =>
-    `${toIsoDate(row?.asOfDate)}|${String(row?.source || '')}` === dedupeKey
-  )
-
-  const nextCheckpoint = {
-    id: checkpointInput?.id || `ccp_${simpleStableHash(`${account.id}|${dedupeKey}`)}`,
-    asOfDate,
-    cashBalance: Math.round(cashBalance * 100) / 100,
-    source,
-    sourceFingerprint,
-    notes,
-    createdAt: existingIndex >= 0
-      ? (account.cashCheckpoints[existingIndex]?.createdAt || nowIso)
-      : nowIso,
-    updatedAt: nowIso
-  }
-
-  if (existingIndex >= 0) {
-    account.cashCheckpoints.splice(existingIndex, 1, nextCheckpoint)
-  } else {
-    account.cashCheckpoints.push(nextCheckpoint)
-  }
-
-  account.cashCheckpoints.sort((a, b) => {
-    const aKey = `${a?.asOfDate || ''} ${String(a?.source || '').toLowerCase()}`
-    const bKey = `${b?.asOfDate || ''} ${String(b?.source || '').toLowerCase()}`
-    return aKey.localeCompare(bKey)
-  })
-
-  return nextCheckpoint
-}
-
-/**
  * Assigns deterministic execution order to data rows for FIFO position allocation.
  * 
  * PURPOSE: Ensure multiple transactions on the same date are processed in the correct order
@@ -662,6 +596,7 @@ async function importCurrentPositionsFromCSV(file, targetAccount) {
     totals: {
       positionsTotal: null,
       cashAndCashInvestments: null,
+      marginUtilized: null,
       equitiesMarketValue: 0,
       optionsMarketValue: 0
     }
@@ -684,8 +619,18 @@ async function importCurrentPositionsFromCSV(file, targetAccount) {
   })
 
   summaryRows.forEach((row) => {
-    if ((row.symbol || '').toLowerCase() === 'positions total') {
+    const normalizedLabel = String(row.symbol || '').toLowerCase()
+    if (normalizedLabel === 'positions total') {
       snapshot.totals.positionsTotal = _parseAmount(row.marketValue, 0)
+    }
+    if (
+      normalizedLabel.includes('margin') &&
+      (normalizedLabel.includes('utilized') || normalizedLabel.includes('balance') || normalizedLabel.includes('debit') || normalizedLabel.includes('loan'))
+    ) {
+      const parsedMargin = _parseAmount(row.marketValue, NaN)
+      if (Number.isFinite(parsedMargin)) {
+        snapshot.totals.marginUtilized = Math.max(0, Math.abs(parsedMargin))
+      }
     }
   })
 
@@ -704,25 +649,13 @@ async function importCurrentPositionsFromCSV(file, targetAccount) {
   symbolsUpdated = matchedSymbols.size
 
   targetAccount.brokerageSnapshot = snapshot
-  let cashCheckpoint = null
-  if (Number.isFinite(Number(snapshot.totals.cashAndCashInvestments))) {
-    cashCheckpoint = upsertCashCheckpoint(targetAccount, {
-      asOfDate: snapshot.asOfDate || toIsoDate(snapshot.asOf),
-      cashBalance: Number(snapshot.totals.cashAndCashInvestments),
-      source: 'positions-import',
-      sourceFingerprint: simpleStableHash(`${file.name}|${snapshot.asOf}|${snapshot.totals.cashAndCashInvestments}`),
-      notes: `Imported from positions CSV: ${file.name}`
-    })
-  }
-
   return {
     rowsProcessed: positionsRows.length,
     symbolsInFile: equityPriceBySymbol.size,
     symbolsUpdated,
     lotsUpdated,
     unmatchedSymbols: [...equityPriceBySymbol.keys()].filter(symbol => !matchedSymbols.has(symbol)),
-    snapshot,
-    cashCheckpoint
+    snapshot
   }
 }
 
@@ -782,7 +715,16 @@ function parsePositionsRows(rows) {
     }))
 
   const summaryRows = normalizedRows
-    .filter((row) => row.Symbol.toLowerCase() === 'positions total')
+    .filter((row) => {
+      const label = String(row.Symbol || '').toLowerCase()
+      if (label === 'positions total') return true
+      return label.includes('margin') && (
+        label.includes('utilized') ||
+        label.includes('balance') ||
+        label.includes('debit') ||
+        label.includes('loan')
+      )
+    })
     .map((row) => ({
       symbol: row.Symbol,
       marketValue: row['Mkt Val (Market Value)']
@@ -1848,9 +1790,6 @@ store.showImportTransactionsModal = show
                 <p>{{ positionsImportResults.symbolsUpdated }} symbols updated across {{ positionsImportResults.lotsUpdated }} lots</p>
                 <p v-if="positionsImportResults.snapshot?.totals?.positionsTotal !== null">
                   Brokerage Positions Total: {{ store.currency(positionsImportResults.snapshot.totals.positionsTotal) }}
-                </p>
-                <p v-if="positionsImportResults.cashCheckpoint">
-                  Cash checkpoint saved: {{ positionsImportResults.cashCheckpoint.asOfDate }} · {{ store.currency(positionsImportResults.cashCheckpoint.cashBalance) }}
                 </p>
                 <p v-if="positionsImportResults.unmatchedSymbols?.length" class="text-warning mb-0">
                   Unmatched symbols: {{ positionsImportResults.unmatchedSymbols.join(', ') }}

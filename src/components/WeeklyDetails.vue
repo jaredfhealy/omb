@@ -213,10 +213,10 @@ const columns = [
     key: 'startBalance',
     header: {
       text: 'Start: Cash',
-      tooltip: 'Total cash balance and cash investments'
+      tooltip: 'Starting cash available before cash flows (net of margin liability when present)'
     },
     class: 'col-6 col-xl',
-    value: (item) => store.currency(item.startBalance)
+    value: (item) => store.currency(item.startCashBalanceNet ?? item.startBalance)
   },
   {
     key: 'startShares',
@@ -293,11 +293,30 @@ const columns = [
   {
     key: 'endBalance',
     header: {
-      text: 'End: Total',
-      tooltip: 'Final balance after all cash flows and growth'
+      text: 'End: Gross',
+      tooltip: 'Gross ending total before subtracting margin liability'
     },
     class: 'col-6 col-xl',
-    value: (item) => store.currency(item.endBalance)
+    value: (item) => store.currency(item.grossEndBalance ?? item.endBalance)
+  },
+  {
+    key: 'marginLiability',
+    header: {
+      text: 'Margin Liab.',
+      tooltip: 'Margin utilized principal owed back to broker'
+    },
+    class: 'col-6 col-xl',
+    value: (item) => store.currency(item.marginLiability || 0),
+    slot: 'marginLiability'
+  },
+  {
+    key: 'netEndBalance',
+    header: {
+      text: 'End: Net',
+      tooltip: 'Net ending total after subtracting margin liability'
+    },
+    class: 'col-6 col-xl',
+    value: (item) => store.currency(item.netEndBalance ?? item.endBalance)
   },
   {
     key: 'actions',
@@ -702,6 +721,13 @@ const handleRowRef = (el, item) => {
           </span>
           <span class="week-separator">|</span>
           <span class="week-date" v-html="store.weekRange(item.week)"></span>
+          <span
+            v-if="Number(item.marginLiability || 0) > 0"
+            class="badge text-bg-warning margin-badge"
+            title="Margin utilized recorded for this week"
+          >
+            M
+          </span>
         </div>
       </template>
 
@@ -745,6 +771,12 @@ const handleRowRef = (el, item) => {
           {{ store.currency((item.sharesSold || 0) - (item.sharesBought || 0)) }}
         </span>
       </template>
+
+      <template #marginLiability="{ item }">
+        <span :class="Number(item.marginLiability || 0) > 0 ? 'text-danger fw-semibold' : 'text-muted'">
+          {{ store.currency(item.marginLiability || 0) }}
+        </span>
+      </template>
     </DataTable>
   </div>
 </template>
@@ -769,6 +801,11 @@ const handleRowRef = (el, item) => {
 
 .week-date {
   flex: 1;
+}
+
+.margin-badge {
+  font-size: 0.65rem;
+  line-height: 1;
 }
 
 .raw-transactions-btn {

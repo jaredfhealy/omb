@@ -231,6 +231,7 @@ export const useAppStore = defineStore('app', {
     user: null,
     projections: [],
     loading: true,
+    loadDataPromise: null,
     persistenceMeta: null,
     persistenceError: null,
     syncCenter: {
@@ -370,6 +371,11 @@ export const useAppStore = defineStore('app', {
 
     // State persistence interactions
     async loadData() {
+      if (this.loadDataPromise) {
+        return this.loadDataPromise
+      }
+
+      this.loadDataPromise = (async () => {
       try {
         this.syncCenter.driveConfigured = isDrivePersistenceConfigured()
         this.syncCenter.driveConnected = isDriveConnected()
@@ -491,6 +497,12 @@ export const useAppStore = defineStore('app', {
         this.persistenceError = `Failed to load local state: ${error?.message || error}`
         this.calculateProjectionsV2()
       }
+      finally {
+        this.loadDataPromise = null
+      }
+      })()
+
+      return this.loadDataPromise
     },
     
     async saveChanges() {

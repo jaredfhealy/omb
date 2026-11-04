@@ -527,7 +527,7 @@ function deriveAppAccountId(v2AccountId, fallbackIndex = 0) {
 /**
  * Creates a stable dedupe key for cash checkpoints within an account.
  *
- * PURPOSE: Cash checkpoints are logically unique by account/date/source.
+ * PURPOSE: Cash checkpoints are logically unique by account/date.
  * This key is used to collapse accidental duplicates while preserving the
  * newest payload values.
  *
@@ -536,8 +536,7 @@ function deriveAppAccountId(v2AccountId, fallbackIndex = 0) {
  */
 function createCashCheckpointDedupeKey(checkpoint) {
   const asOfDate = toIsoDate(checkpoint?.asOfDate || checkpoint?.date || '')
-  const source = normalizeString(checkpoint?.source || 'manual').toLowerCase()
-  return `${asOfDate}|${source}`
+  return asOfDate
 }
 
 function buildV2CollectionsFromAppStateData(data) {
@@ -719,12 +718,16 @@ function buildV2CollectionsFromAppStateData(data) {
     Array.from(checkpointByKey.values()).forEach((checkpoint, checkpointIndex) => {
       const asOfDate = toIsoDate(checkpoint?.asOfDate || checkpoint?.date || now)
       collections.cashCheckpoints.push({
-        id: String(checkpoint?.id || createRecordId('ccp', accountId, asOfDate, checkpoint?.source || 'manual', checkpointIndex)),
+        id: String(checkpoint?.id || createRecordId('ccp', accountId, asOfDate, checkpointIndex)),
         accountId,
         asOfDate,
         cashBalance: Number(checkpoint?.cashBalance || checkpoint?.amount || 0),
-        source: String(checkpoint?.source || 'manual'),
-        sourceFingerprint: checkpoint?.sourceFingerprint ? String(checkpoint.sourceFingerprint) : null,
+        marginUtilized: Number.isFinite(Number(checkpoint?.marginUtilized)) ? Number(checkpoint.marginUtilized) : 0,
+        rawSnapshot: checkpoint?.rawSnapshot && typeof checkpoint.rawSnapshot === 'object'
+          ? serializeForStorage(checkpoint.rawSnapshot)
+          : null,
+        source: 'manual',
+        sourceFingerprint: null,
         notes: checkpoint?.notes ? String(checkpoint.notes) : null,
         createdAt: checkpoint?.createdAt || now,
         updatedAt: checkpoint?.updatedAt || now
@@ -945,8 +948,12 @@ function buildAppStateDataFromV2Collections(collections) {
       id: checkpoint?.id || null,
       asOfDate: checkpoint?.asOfDate || null,
       cashBalance: Number(checkpoint?.cashBalance || 0),
-      source: checkpoint?.source || 'manual',
-      sourceFingerprint: checkpoint?.sourceFingerprint || null,
+      marginUtilized: Number.isFinite(Number(checkpoint?.marginUtilized)) ? Number(checkpoint.marginUtilized) : 0,
+      rawSnapshot: checkpoint?.rawSnapshot && typeof checkpoint.rawSnapshot === 'object'
+        ? serializeForStorage(checkpoint.rawSnapshot)
+        : null,
+      source: 'manual',
+      sourceFingerprint: null,
       notes: checkpoint?.notes || null,
       createdAt: checkpoint?.createdAt || null,
       updatedAt: checkpoint?.updatedAt || null
@@ -1262,6 +1269,12 @@ function validateV2Collections(data) {
     }
     if (!Number.isFinite(Number(checkpoint?.cashBalance))) {
       errors.push(`Cash checkpoint ${checkpointId} has invalid cashBalance ${checkpoint?.cashBalance}.`)
+    }
+    if (checkpoint?.marginUtilized !== undefined && checkpoint?.marginUtilized !== null && !Number.isFinite(Number(checkpoint?.marginUtilized))) {
+      errors.push(`Cash checkpoint ${checkpointId} has invalid marginUtilized ${checkpoint?.marginUtilized}.`)
+    }
+    if (checkpoint?.rawSnapshot !== undefined && checkpoint?.rawSnapshot !== null && typeof checkpoint.rawSnapshot !== 'object') {
+      errors.push(`Cash checkpoint ${checkpointId} has invalid rawSnapshot payload.`)
     }
     const source = String(checkpoint?.source || '').trim()
     if (!allowedCheckpointSources.has(source)) {

@@ -13,6 +13,7 @@ ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, T
 
 const props = defineProps({}) // empty props
 const showProjectedFuture = ref(false)
+const showGrossOverlay = ref(false)
 
 const currentWeek = computed(() => {
   const computedWeek = Number(store.getCurrentWeek() || 1)
@@ -31,7 +32,8 @@ const balanceData = computed(() => {
   return visibleProjections.value.map(p => ({
     week: `Week ${p.week}`,
     date: new Date(startDate.getTime() + (p.week - 1) * 7 * 24 * 60 * 60 * 1000),
-    balance: p.endBalance,
+    balance: Number(p.netEndBalance ?? p.endBalance),
+    grossBalance: Number(p.grossEndBalance ?? p.endBalance),
     isActual: p.actualGrowth !== null
   }))
 })
@@ -100,7 +102,7 @@ const chartData = computed(() => {
   if (!store.activeAccount?.settings) return null
   const datasets = [
     {
-      label: 'Actual Balance',
+      label: 'Actual Net Balance',
       data: balanceData.value.map(d => d.isActual ? d.balance : null),
       borderColor: 'rgb(75, 192, 192)',
       tension: 0.1,
@@ -111,13 +113,25 @@ const chartData = computed(() => {
 
   if (showProjectedFuture.value) {
     datasets.push({
-      label: 'Projected Balance',
+      label: 'Projected Net Balance',
       data: balanceData.value.map(d => !d.isActual ? d.balance : null),
       borderColor: 'rgb(153, 102, 255)',
       borderDash: [5, 5],
       tension: 0.1,
       pointRadius: 3,
       pointHoverRadius: 5
+    })
+  }
+
+  if (showGrossOverlay.value) {
+    datasets.push({
+      label: 'Gross Balance Overlay',
+      data: balanceData.value.map(d => d.grossBalance),
+      borderColor: 'rgb(255, 159, 64)',
+      borderDash: [6, 4],
+      tension: 0.1,
+      pointRadius: 0,
+      pointHoverRadius: 3
     })
   }
 
@@ -325,6 +339,17 @@ const switchAccount = async (accountId) => {
         >
         <label class="form-check-label" for="showProjectedFuture">
           Show projected future weeks
+        </label>
+      </div>
+      <div class="form-check">
+        <input
+          id="showGrossOverlay"
+          v-model="showGrossOverlay"
+          class="form-check-input"
+          type="checkbox"
+        >
+        <label class="form-check-label" for="showGrossOverlay">
+          Show gross balance overlay
         </label>
       </div>
       <button class="btn btn-secondary" @click="resetZoom">
