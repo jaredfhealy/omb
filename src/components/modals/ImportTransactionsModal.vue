@@ -478,33 +478,70 @@ async function importTransactionsFromCSV(file, targetAccount) {
         return { id: String(nextId), unresolved: false }
       }
 
-      targetAccount.trades = (Array.isArray(targetAccount.trades) ? targetAccount.trades : []).map(trade => {
-        const remap = remapSourceTransactionId(trade?.sourceTransactionId)
-        if (remap.unresolved) unresolvedTradeLinks += 1
-        return {
+      const remappedTrades = []
+      ;(Array.isArray(targetAccount.trades) ? targetAccount.trades : []).forEach((trade) => {
+        const previousSourceId = String(trade?.sourceTransactionId || '').trim()
+        if (!previousSourceId) {
+          unresolvedTradeLinks += 1
+          return
+        }
+        const remap = remapSourceTransactionId(previousSourceId)
+        if (remap.unresolved || !remap.id) {
+          unresolvedTradeLinks += 1
+          return
+        }
+        remappedTrades.push({
           ...trade,
           sourceTransactionId: remap.id
-        }
+        })
       })
+      targetAccount.trades = remappedTrades
 
-      targetAccount.relTradeTransactions = (Array.isArray(targetAccount.relTradeTransactions) ? targetAccount.relTradeTransactions : []).map(rel => {
-        const remap = remapSourceTransactionId(rel?.sourceTransactionId)
-        if (remap.unresolved) unresolvedTradeLinks += 1
-        return {
+      const validTradeIds = new Set(
+        remappedTrades.map(trade => String(trade?.id || '').trim()).filter(Boolean)
+      )
+      const remappedRelTradeTransactions = []
+      ;(Array.isArray(targetAccount.relTradeTransactions) ? targetAccount.relTradeTransactions : []).forEach((rel) => {
+        const previousSourceId = String(rel?.sourceTransactionId || '').trim()
+        const relTradeId = String(rel?.tradeId || '').trim()
+        if (!previousSourceId || !relTradeId || !validTradeIds.has(relTradeId)) {
+          unresolvedTradeLinks += 1
+          return
+        }
+        const remap = remapSourceTransactionId(previousSourceId)
+        if (remap.unresolved || !remap.id) {
+          unresolvedTradeLinks += 1
+          return
+        }
+        remappedRelTradeTransactions.push({
           ...rel,
           sourceTransactionId: remap.id
-        }
+        })
       })
+      targetAccount.relTradeTransactions = remappedRelTradeTransactions
 
-      targetAccount.notes = (Array.isArray(targetAccount.notes) ? targetAccount.notes : []).map(note => {
-        if (note?.targetCollection !== 'importedTransactions') return note
-        const remap = remapSourceTransactionId(note?.targetId)
-        if (remap.unresolved) unresolvedTradeLinks += 1
-        return {
+      const remappedNotes = []
+      ;(Array.isArray(targetAccount.notes) ? targetAccount.notes : []).forEach((note) => {
+        if (note?.targetCollection !== 'importedTransactions') {
+          remappedNotes.push(note)
+          return
+        }
+        const previousTargetId = String(note?.targetId || '').trim()
+        if (!previousTargetId) {
+          unresolvedTradeLinks += 1
+          return
+        }
+        const remap = remapSourceTransactionId(previousTargetId)
+        if (remap.unresolved || !remap.id) {
+          unresolvedTradeLinks += 1
+          return
+        }
+        remappedNotes.push({
           ...note,
           targetId: remap.id
-        }
+        })
       })
+      targetAccount.notes = remappedNotes
 
     }
 
@@ -874,7 +911,7 @@ function parseCSV(csvText) {
  * 1. Calculates week numbers (which weekly projection do these rows affect?)
  * 2. Creates sourceFingerprints and transaction IDs (stable across re-imports)
  * 3. Routes rows to one of three processing pipelines based on action type
- * 4. Replaces account.importedTransactions for affected weeks (atomic per-week)
+ * 4. Adds only missing importedTransactions for routine imports
  * 5. Optionally discards week 1 (common for "warm-up" trades)
  * 
  * INPUTS:
@@ -894,10 +931,9 @@ function parseCSV(csvText) {
  * 2. Handle "discard first week" option:
  *    - If enabled and smallestWeek exists: remove all week 1 rows
  *    - This filters out "warm-up" trades before real trading starts
- * 3. Atomic per-week replacement:
- *    - Collect all affected weeks (changedWeeks)
- *    - Delete existing importedTransactions for those weeks
- *    - Insert new importedTransactions for those weeks
+ * 3. Add-only persistence:
+ *    - Keep existing importedTransactions untouched
+ *    - Append only rows that were not already present
  *    - Sort by week + executionOrder (FIFO order critical for downstream)
  * 
  * OUTPUTS:
@@ -939,7 +975,7 @@ function parseCSV(csvText) {
  * - Week numbers tie transactions to weekly projections
  * - sourceFingerprint enables re-import deduplication
  * - executionOrder drives position allocation (CRITICAL for shorts/covers on same day)
- * - Atomic per-week replacement prevents partial/corrupt states
+ * - Add-only import avoids deleting settled historical rows
  * - discardFirstWeek option is needed when CSV includes warm-up trades before real trading
  * 
  * @param dataRows - from parseCSV()
@@ -974,6 +1010,28 @@ function _processData(dataRows, brokerMap) {
   const orderedRows = getExecutionOrderedRows(dataRows)
   const importedRows = []
   const fingerprintRegistry = buildFingerprintRegistry(account)
+  const existingByFingerprint = new Map()
+  ;(Array.isArray(account.importedTransactions) ? account.importedTransactions : []).forEach((row) => {
+    const fingerprint = String(row?.sourceFingerprint || createSourceFingerprint(row)).trim()
+    if (!fingerprint) return
+    if (!existingByFingerprint.has(fingerprint)) {
+      existingByFingerprint.set(fingerprint, [])
+    }
+    existingByFingerprint.get(fingerprint).push({
+      id: String(row?.id || ''),
+      sourceLine: Number.isFinite(Number(row?.sourceLine)) ? Number(row.sourceLine) : null,
+      executionOrder: Number(row?.executionOrder || 0),
+      used: false
+    })
+  })
+  existingByFingerprint.forEach((rows) => {
+    rows.sort((a, b) => {
+      const lineA = Number(a?.sourceLine || 0)
+      const lineB = Number(b?.sourceLine || 0)
+      if (lineA !== lineB) return lineA - lineB
+      return Number(a?.executionOrder || 0) - Number(b?.executionOrder || 0)
+    })
+  })
 
   // First pass: derive week + ids/fingerprint and classify each row
   orderedRows.forEach(dataRow => {
@@ -992,8 +1050,6 @@ function _processData(dataRows, brokerMap) {
       smallestWeek = week
     }
     
-    changedWeeks.add(week)
-
     const importedRow = {
       sourceLine: Number.isFinite(Number(dataRow.sourceLine)) ? Number(dataRow.sourceLine) : null,
       date: toIsoDate(dataRow.date),
@@ -1008,8 +1064,21 @@ function _processData(dataRows, brokerMap) {
       week
     }
     importedRow.sourceFingerprint = createSourceFingerprint(importedRow, fingerprintRegistry)
-    importedRow.id = createImportedTransactionId(importedRow)
-    importedRows.push(importedRow)
+    const matchingExistingRows = existingByFingerprint.get(importedRow.sourceFingerprint) || []
+    const exactLineMatch = matchingExistingRows.find((row) =>
+      !row.used && Number(row?.sourceLine) === Number(importedRow?.sourceLine)
+    )
+    const fallbackMatch = matchingExistingRows.find(row => !row.used)
+    const matchedExistingRow = exactLineMatch || fallbackMatch || null
+    const isExistingImportedRow = Boolean(matchedExistingRow && matchedExistingRow.id)
+    if (isExistingImportedRow) {
+      importedRow.id = matchedExistingRow.id
+      matchedExistingRow.used = true
+    } else {
+      importedRow.id = createImportedTransactionId(importedRow)
+      importedRows.push(importedRow)
+      changedWeeks.add(week)
+    }
     
     // Identify if this is a transaction, position, or sell based on action
     const action = dataRow.action.toLowerCase()
@@ -1025,19 +1094,21 @@ function _processData(dataRows, brokerMap) {
       week
     }
     
-    // Categorize based on broker map types
-    if (brokerMap.transactionTypes.includes(action)) {
-      // Add to transactions import for later processing
-      transactionsImport.push(normalizedRow)
-    } else if (brokerMap.positionTypes.includes(action)) {
-      // Add to positions import for later processing (only buys)
-      positionsImport.push(normalizedRow)
-    } else if (brokerMap.sellTypes && brokerMap.sellTypes.includes(action)) {
-      // Add to sells import for later processing (only sells)
-      sellsImport.push({
-        ...normalizedRow,
-        action,
-      })
+    // Categorize only rows that are newly added in this import.
+    if (!isExistingImportedRow) {
+      if (brokerMap.transactionTypes.includes(action)) {
+        // Add to transactions import for later processing
+        transactionsImport.push(normalizedRow)
+      } else if (brokerMap.positionTypes.includes(action)) {
+        // Add to positions import for later processing (only buys)
+        positionsImport.push(normalizedRow)
+      } else if (brokerMap.sellTypes && brokerMap.sellTypes.includes(action)) {
+        // Add to sells import for later processing (only sells)
+        sellsImport.push({
+          ...normalizedRow,
+          action,
+        })
+      }
     }
     
     rowsProcessed++
@@ -1057,11 +1128,7 @@ function _processData(dataRows, brokerMap) {
   }
 
   const changedWeekList = Array.from(changedWeeks)
-  if (changedWeekList.length) {
-    account.importedTransactions = account.importedTransactions.filter(row => {
-      const week = Number(row?.week || 0)
-      return !changedWeekList.includes(week)
-    })
+  if (importedRows.length) {
     account.importedTransactions.push(...importedRows)
     account.importedTransactions.sort((a, b) => {
       const weekA = Number(a?.week || 0)
@@ -1165,12 +1232,15 @@ function _processTransactions(transactionsImport) {
   if (!account) {
     throw new Error('No account available while processing transactions')
   }
+  if (!Array.isArray(account.transactions)) {
+    account.transactions = []
+  }
   let transactionsAdded = 0
   let transactionsDeleted = 0
   
   // Get the account start date
   const startDate = new Date(account.settings.startDate)
-  
+
   // Delete existing transactions if requested (for deposits/withdrawals)
   if (deleteAllData.value) {
     if (account.transactions && account.transactions.length) {
@@ -1216,7 +1286,7 @@ function _processTransactions(transactionsImport) {
     // WHY: Each CSV row is a separate financial event. Multiple deposits of the same amount
     // in the same week are distinct transactions and should both be recorded.
     // Duplicate detection at this level prevents legitimate multi-deposit weeks.
-    // Week-level atomicity (replace all transactions for week) prevents cascading duplicates.
+    // Row-level add-only import avoids deleting settled history in routine imports.
     account.transactions.push(transactionObject)
     transactionsAdded++
   })

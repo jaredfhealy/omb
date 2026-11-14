@@ -7,6 +7,7 @@ import EditPositionModal from './EditPositionModal.vue'
 import ConfirmModal from './ConfirmModal.vue'
 import ImportTransactionsModal from './ImportTransactionsModal.vue'
 import WeekRawDataModal from './WeekRawDataModal.vue'
+import SelectTradeTransactionsModal from './SelectTradeTransactionsModal.vue'
 
 // Export modals as an object so they can be imported as a group
 export {
@@ -18,5 +19,6 @@ export {
   EditPositionModal,
   ConfirmModal,
   ImportTransactionsModal,
-  WeekRawDataModal
+  WeekRawDataModal,
+  SelectTradeTransactionsModal
 }

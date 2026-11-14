@@ -4,7 +4,11 @@ const store = useAppStore()
 </script>
 
 <template>
-  <ul class="nav nav-tabs px-2 compact-tabs">
+  <ul class="nav nav-tabs card-header-tabs compact-tabs">
+    <li class="nav-item">
+      <a class="nav-link" :class="{ active: store.activeTab === 'trades' }" @click="store.activeTab = 'trades'"
+        href="#"><i class="bi bi-journal-arrow-up"></i> <span>Trades</span></a>
+    </li>
     <li class="nav-item">
       <a class="nav-link" :class="{ active: store.activeTab === 'weekly' }" @click="store.activeTab = 'weekly'"
         href="#"><i class="bi bi-graph-up"></i> <span>Weekly Performance</span></a>
@@ -28,7 +32,7 @@ const store = useAppStore()
 .compact-tabs {
   margin-top: 0;
   margin-bottom: 0;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.4);
+  border-bottom: 0;
 }
 
 .compact-tabs .nav-item {

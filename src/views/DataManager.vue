@@ -15,6 +15,7 @@ import {
 } from '@/services/stateRepository'
 
 const store = useAppStore()
+const STARTING_SEED_STATUS_MESSAGE = 'Starting account seed loaded into the editor. Review and click Apply Changes to persist it.'
 
 const editorHost = ref(null)
 const statusMessage = ref('')
@@ -52,6 +53,22 @@ let statusDismissTimer = null
 
 const driveConfigured = computed(() => isDrivePersistenceConfigured())
 const driveConnected = computed(() => isDriveConnected())
+const showStartupRecoveryGuide = computed(() => store.startupRequiresManualRecovery)
+const startupValidationErrors = computed(() => (
+  Array.isArray(store.startupValidationErrors) ? store.startupValidationErrors : []
+))
+const startupInspection = computed(() => (
+  store.startupInspection && typeof store.startupInspection === 'object'
+    ? store.startupInspection
+    : null
+))
+const startupCollectionSummary = computed(() => {
+  const inspection = startupInspection.value
+  if (!inspection || !inspection.v2CollectionCounts || typeof inspection.v2CollectionCounts !== 'object') return []
+  return Object.entries(inspection.v2CollectionCounts)
+    .map(([key, count]) => ({ key, count: Number(count || 0) }))
+    .sort((a, b) => a.key.localeCompare(b.key))
+})
 const driveStatusLabel = computed(() => {
   if (!driveConfigured.value) return 'Not configured'
   return driveConnected.value ? 'Connected' : 'Not connected'
@@ -196,14 +213,32 @@ function createEditor() {
   refreshFromStore()
 }
 
-async function refreshFromStore() {
+async function refreshFromStore(options = {}) {
+  const showRefreshedStatus = Boolean(options?.showRefreshedStatus)
   if (!editor) return
   try {
+    if (store.loadDataPromise) {
+      await store.loadDataPromise
+    } else if (store.loading) {
+      await store.loadData()
+    }
+
     const localEnvelope = await loadLocalEnvelope()
-    editor.set(cloneForEditor(localEnvelope || createLocalEnvelopeForSync()))
-    hasUnsavedChanges.value = false
-    editorParseError.value = ''
-    setStatus('Editor refreshed from persisted envelope state.', 'info')
+    if (localEnvelope) {
+      editor.set(cloneForEditor(localEnvelope))
+      hasUnsavedChanges.value = false
+      editorParseError.value = ''
+      if (showRefreshedStatus) {
+        setStatus('Editor refreshed from local data.', 'info')
+      }
+    } else {
+      editor.set(cloneForEditor(createLocalEnvelopeForSync()))
+      hasUnsavedChanges.value = false
+      editorParseError.value = ''
+      if (showRefreshedStatus) {
+        setStatus('No persisted v2 envelope was found. Use "Reset to Default Data" only if you want to create a new baseline.', 'warning')
+      }
+    }
   } catch (error) {
     editor.set(cloneForEditor(createLocalEnvelopeForSync()))
     hasUnsavedChanges.value = false
@@ -236,11 +271,75 @@ async function reloadLocalEditor() {
     if (!approved) return
   }
 
-  refreshFromStore()
+  refreshFromStore({ showRefreshedStatus: true })
 }
 
 function openImportFilePicker() {
   importInput.value?.click()
+}
+
+function createDefaultStartupSeedAccount() {
+  return {
+    id: 1,
+    name: 'Default',
+    description: '',
+    formatKey: 'schwab',
+    transactions: [],
+    importedTransactions: [],
+    positions: [],
+    notes: [],
+    cashCheckpoints: [],
+    trades: [],
+    relTradeTransactions: [],
+    relPositionTransactions: [],
+    positionMeta: [],
+    settings: {
+      startDate: new Date().toISOString().split('T')[0],
+      startingBalance: 5000,
+      weeklyReturn: 1,
+      years: 4
+    }
+  }
+}
+
+async function loadStartingAccountSeedToEditor() {
+  return await loadStartingAccountSeedToEditorInternal({})
+}
+
+async function loadStartingAccountSeedToEditorInternal(options = {}) {
+  const { skipConfirm = false, suppressStatus = false } = options
+  if (!editor) return
+
+  if (!skipConfirm && hasUnsavedChanges.value) {
+    const message = 'Load a default starting account seed into the editor? This will replace current unsaved editor changes.'
+    const approved = store.confirm
+      ? await new Promise(resolve => {
+          store.confirm(message, () => resolve(true), () => resolve(false))
+        })
+      : window.confirm(message)
+    if (!approved) return
+  }
+
+  const seedAppState = {
+    accounts: [createDefaultStartupSeedAccount()]
+  }
+  const seedCollections = convertAppStateToV2Collections(seedAppState)
+  editor.set(cloneForEditor({
+    meta: store.persistenceMeta || {
+      dataModel: 'v2',
+      revision: 1,
+      updatedAt: new Date().toISOString(),
+      updatedByDevice: 'local-device',
+      lastSyncedRevision: null,
+      lastDriveSyncAt: null
+    },
+    data: seedCollections
+  }))
+  hasUnsavedChanges.value = true
+  editorParseError.value = ''
+  if (!suppressStatus) {
+    setStatus(STARTING_SEED_STATUS_MESSAGE, 'info')
+  }
 }
 
 function openDriveModal() {
@@ -1120,6 +1219,64 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="card-body">
+        <div v-if="showStartupRecoveryGuide" class="accordion mb-3" id="startup-recovery-guide">
+          <div class="accordion-item border-warning-subtle">
+            <h2 class="accordion-header" id="startup-recovery-heading">
+              <button
+                class="accordion-button"
+                type="button"
+                data-bs-toggle="collapse"
+                data-bs-target="#startup-recovery-body"
+                aria-expanded="true"
+                aria-controls="startup-recovery-body"
+              >
+                Startup recovery required
+              </button>
+            </h2>
+            <div
+              id="startup-recovery-body"
+              class="accordion-collapse collapse show"
+              aria-labelledby="startup-recovery-heading"
+              data-bs-parent="#startup-recovery-guide"
+            >
+              <div class="accordion-body small">
+                <p class="mb-2">
+                  Local runtime data was not recognized for automatic startup. Use <strong>Load Data → Reset to Default Data</strong>,
+                  review the envelope, and click <strong>Apply Changes</strong> to initialize a valid v2 baseline.
+                </p>
+                <p class="mb-2">
+                  <strong>Startup reason:</strong> {{ store.startupRecoveryReason || 'unrecognized-local-state' }}
+                </p>
+                <div v-if="startupValidationErrors.length" class="mb-0">
+                  <strong>Validation issues</strong>
+                  <ul class="mb-0 mt-1">
+                    <li v-for="(error, index) in startupValidationErrors" :key="`${index}-${error}`">{{ error }}</li>
+                  </ul>
+                </div>
+                <div v-if="startupInspection" class="mt-2 mb-0">
+                  <strong>Local database inspection</strong>
+                  <ul class="mb-0 mt-1">
+                    <li>Stores found: {{ startupInspection.storeNames?.length || 0 }}</li>
+                    <li v-if="startupInspection.nonV2StoreNames?.length">
+                      Non-v2 stores: {{ startupInspection.nonV2StoreNames.join(', ') }}
+                    </li>
+                    <li v-else>Non-v2 stores: none</li>
+                    <li>Meta marker: {{ startupInspection.dataModel || 'missing' }}</li>
+                  </ul>
+                  <div v-if="startupCollectionSummary.length" class="mt-2">
+                    <strong>v2 collection object counts</strong>
+                    <ul class="mb-0 mt-1">
+                      <li v-for="row in startupCollectionSummary" :key="row.key">
+                        {{ row.key }}: {{ row.count }}
+                      </li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div class="btn-toolbar flex-wrap gap-2 mb-3" role="toolbar" aria-label="Data manager actions">
           <div class="btn-group" role="group" aria-label="Load data actions">
             <button
@@ -1140,6 +1297,16 @@ onBeforeUnmount(() => {
               <li>
                 <button type="button" class="dropdown-item" title="Load a JSON file into the editor for review before applying changes" @click="openImportFilePicker">
                   Upload from Files
+                </button>
+              </li>
+              <li>
+                <button
+                  type="button"
+                  class="dropdown-item text-warning-emphasis"
+                  title="Reset editor content to default v2 data, then Apply Changes to persist"
+                  @click="loadStartingAccountSeedToEditor"
+                >
+                  Reset to Default Data
                 </button>
               </li>
             </ul>

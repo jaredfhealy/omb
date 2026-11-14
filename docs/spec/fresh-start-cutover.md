@@ -14,23 +14,23 @@ This document defines v2 cutover behavior for a fresh-start release (no data mig
 
 1. On startup, read v2 metadata/object stores only.
 2. If `meta.dataModel === 'v2'`, continue normally.
-3. If non-v2 local data exists, block startup and require explicit reset confirmation.
-4. Offer optional local backup export before reset.
-5. On confirmation, initialize default v2 seed state.
-6. Persist `meta.dataModel = 'v2'`.
+3. If local persistence is missing/unrecognized/invalid, block normal runtime startup.
+4. Redirect to Data Manager with recovery guidance.
+5. Initialization is explicit and user-driven: load the starting account seed in Data Manager and apply changes.
+6. Persist `meta.dataModel = 'v2'` only when user applies valid data.
 
 ## UX requirements
 
-- A one-time blocking reset prompt is required when non-v2 local data is detected.
-- Prompt flow must include optional local backup export before reset.
-- After reset, app should be immediately usable for manual setup (cash flows, projections, positions, trades).
+- Startup must never auto-reset or auto-seed over unrecognized data.
+- Recovery instructions should surface in Data Manager only when startup is blocked.
+- After initialization via Data Manager, app should be immediately usable for manual setup (cash flows, projections, positions, trades).
 - Import workflows remain optional, not mandatory.
 
 ## Verification checklist
 
-- App initializes valid default v2 state on first launch/reset.
+- App does not auto-initialize persisted state during blocked startup.
 - Old local v1 payloads are not read by v2 runtime flows.
-- Startup path is atomic: either v2 state loads, or new v2 state is fully initialized.
+- Startup path is atomic: either v2 state loads, or app remains blocked until explicit Data Manager action.
 - App does not require import completion before normal use.
 
 ## Out of scope

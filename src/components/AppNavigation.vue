@@ -16,7 +16,8 @@ let accountSelectionInitiatedByUser = false
 const isFixedTopRoute = computed(() =>
   route.path.startsWith('/summarizer') ||
   route.path.startsWith('/data-manager') ||
-  route.path.startsWith('/reporting')
+  route.path.startsWith('/reporting') ||
+  route.path.startsWith('/trade-desk')
 )
 const isOnSummarizer = computed(() => route.path === '/summarizer')
 
@@ -157,7 +158,11 @@ watch(
 // Load persisted state for all pages except the standalone summarizer tool
 onMounted(() => {
   if (!isOnSummarizer.value) {
-    store.loadData()
+    store.loadData().finally(() => {
+      if (store.startupRequiresManualRecovery && route.path !== '/data-manager') {
+        router.replace('/data-manager')
+      }
+    })
   }
 })
 
@@ -215,12 +220,11 @@ const openAddAccount = () => {
       <div class="collapse navbar-collapse justify-content-end" id="navbarContent" ref="navbarCollapse">
         <ul class="navbar-nav align-items-center">
           <li class="nav-item">
-            <router-link to="/" class="nav-link" :class="{ 'active': route.path === '/' }">Projections</router-link>
+            <router-link to="/" class="nav-link" :class="{ 'active': route.path === '/' }">Trades</router-link>
           </li>
           <li class="nav-item">
             <router-link to="/reporting" class="nav-link" :class="{ 'active': route.path === '/reporting' }">Reports</router-link>
           </li>
-          
           <li class="nav-item dropdown">
             <a class="nav-link dropdown-toggle" href="#" id="pageSelector" role="button" data-bs-toggle="dropdown"
               aria-expanded="false">

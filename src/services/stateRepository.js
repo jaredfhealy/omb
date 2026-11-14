@@ -251,6 +251,17 @@ function idbGetAllFromStore(db, storeName) {
   })
 }
 
+function idbCountStore(db, storeName) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readonly')
+    const store = tx.objectStore(storeName)
+    const request = store.count()
+
+    request.onerror = () => reject(new Error(`IndexedDB count failed: ${request.error?.message || 'unknown error'}`))
+    request.onsuccess = () => resolve(Number(request.result || 0))
+  })
+}
+
 /**
  * Deletes all records from an IndexedDB store.
  * 
@@ -307,6 +318,18 @@ function serializeForStorage(value) {
 
 function normalizeString(value) {
   return String(value || '').trim().replace(/\s+/g, ' ')
+}
+
+function normalizeTradeMatchSymbol(symbol, description = '') {
+  const rawSymbol = normalizeString(symbol).toUpperCase()
+  const rawDescription = normalizeString(description)
+  const optionSymbolRegex = /^([\w.-]+)\s+(\d{2}\/\d{2}\/\d{2,4})\s+([\d.]+)\s+([CP])$/i
+  const optionMatch = optionSymbolRegex.exec(rawSymbol) || optionSymbolRegex.exec(rawDescription)
+  if (optionMatch) {
+    return normalizeString(optionMatch[1]).toUpperCase()
+  }
+  if (!rawSymbol) return ''
+  return rawSymbol.includes(' ') ? rawSymbol.split(/\s+/)[0] : rawSymbol
 }
 
 function toFixedNumericString(value, decimals = 6) {
@@ -1168,7 +1191,9 @@ function validateV2Collections(data) {
     }
     const tradeSymbol = normalizeString(trade?.symbol).toUpperCase()
     const sourceSymbol = normalizeString(source?.symbol).toUpperCase()
-    if (sourceSymbol && tradeSymbol && sourceSymbol !== tradeSymbol) {
+    const tradeMatchSymbol = normalizeTradeMatchSymbol(trade?.symbol)
+    const sourceMatchSymbol = normalizeTradeMatchSymbol(source?.symbol, source?.description)
+    if (sourceMatchSymbol && tradeMatchSymbol && sourceMatchSymbol !== tradeMatchSymbol) {
       errors.push(`Trade ${trade?.id || '<missing-id>'} symbol (${tradeSymbol}) does not match source transaction symbol (${sourceSymbol}).`)
     }
   })
@@ -1212,7 +1237,9 @@ function validateV2Collections(data) {
       }
       const tradeSymbol = normalizeString(trade?.symbol).toUpperCase()
       const sourceSymbol = normalizeString(source?.symbol).toUpperCase()
-      if (sourceSymbol && tradeSymbol && sourceSymbol !== tradeSymbol) {
+      const tradeMatchSymbol = normalizeTradeMatchSymbol(trade?.symbol)
+      const sourceMatchSymbol = normalizeTradeMatchSymbol(source?.symbol, source?.description)
+      if (sourceMatchSymbol && tradeMatchSymbol && sourceMatchSymbol !== tradeMatchSymbol) {
         errors.push(`relTradeTransactions ${relId} symbol mismatch between trade (${tradeSymbol}) and source (${sourceSymbol}).`)
       }
       const sourceKey = String(rel.sourceTransactionId)
@@ -1403,15 +1430,16 @@ class IndexedDbStateRepository {
   /**
    * Inspects IndexedDB to determine current data state and format.
    * 
-   * PURPOSE: Classify the database as v2 (new model), non-v2 (legacy), or empty.
-   * This is the entry point for determining startup flow (data load vs reset).
+   * PURPOSE: Classify whether local persistence is startup-readable v2 data,
+   * completely empty, or present-but-unrecognized.
+   * This is the entry point for determining startup flow (normal load vs manual recovery).
    * 
    * LOGIC:
    * 1. Check if all v2 collection stores exist by name (not by reading contents)
    * 2. If stores exist, check if meta.dataModel === 'v2'
    * 3. If yes → return { kind: 'v2' }
-   * 4. If no → return { kind: 'non-v2' } (corrupted or legacy data)
-   * 5. If stores missing → return { kind: 'empty' }
+   * 4. If no model marker and all v2 collections are empty → return { kind: 'empty' }
+   * 5. Otherwise → return { kind: 'unrecognized' } for manual user recovery
    * 
    * IMPORTANT: Do NOT load or validate store contents here. That's the responsibility
    * of load() and normalizeEnvelope(). This function only checks schema presence
@@ -1419,8 +1447,8 @@ class IndexedDbStateRepository {
    * 
    * @returns {Promise<Object>} 
    *   { kind: 'v2', meta: {...} } - Valid v2 data with metadata
-   *   { kind: 'non-v2', meta: {...} | null } - Legacy or corrupted data
-   *   { kind: 'empty' } - No data found
+   *   { kind: 'empty', meta: null, inspection: {...} } - No persisted local data yet
+   *   { kind: 'unrecognized', meta: {...} | null, inspection: {...} } - Missing/invalid startup model marker
    * 
    * @see docs/spec/data-model-v2.md for v2 collection schema
    * @see docs/spec/fresh-start-cutover.md for startup flow context
@@ -1429,44 +1457,48 @@ class IndexedDbStateRepository {
     const db = await openIndexedDb()
     const meta = await idbGetFromStore(db, META_STORE_NAME, META_KEY)
 
-    // Check if all v2 collection stores exist by name
     const storeNames = Array.from(db.objectStoreNames || [])
     const hasAllV2Stores = V2_COLLECTION_STORES.every(storeName => storeNames.includes(storeName))
+    const nonV2StoreNames = storeNames.filter(storeName => !V2_COLLECTION_STORES.includes(storeName) && storeName !== META_STORE_NAME)
+    const v2CollectionCounts = {}
 
-    // If v2 stores exist and meta.dataModel is 'v2', it's valid v2 data
+    if (hasAllV2Stores) {
+      for (const storeName of V2_COLLECTION_STORES) {
+        v2CollectionCounts[storeName] = await idbCountStore(db, storeName)
+      }
+    }
+
+    const inspection = {
+      hasAllV2Stores,
+      storeNames,
+      nonV2StoreNames,
+      v2CollectionCounts,
+      hasMeta: Boolean(meta),
+      dataModel: meta?.dataModel || null
+    }
+
     if (hasAllV2Stores && meta && meta.dataModel === DATA_MODEL_VERSION) {
       return {
         kind: 'v2',
-        meta
+        meta,
+        inspection
       }
     }
 
-    // If v2 stores exist but meta.dataModel is not 'v2', it's corrupted/legacy
-    if (hasAllV2Stores) {
+    const totalCollectionRecords = Object.values(v2CollectionCounts).reduce((sum, count) => sum + Number(count || 0), 0)
+    if (hasAllV2Stores && !meta && totalCollectionRecords === 0 && nonV2StoreNames.length === 0) {
       return {
-        kind: 'non-v2',
-        meta: meta || null
+        kind: 'empty',
+        meta: null,
+        inspection
       }
     }
 
-    // No v2 stores found → check if it's completely empty or has legacy stores
-    // This handles the case where old IndexedDB databases (pre-v2) might still exist
-    let hasLegacyData = false
-    for (const storeName of storeNames) {
-      if (!V2_COLLECTION_STORES.includes(storeName)) {
-        hasLegacyData = true
-        break
-      }
+    return {
+      kind: 'unrecognized',
+      meta: meta || null,
+      inspection
     }
-
-    if (meta || hasLegacyData) {
-      return {
-        kind: 'non-v2',
-        meta: meta || null
-      }
-    }
-
-    return { kind: 'empty' }
   }
 
   /**
@@ -1477,7 +1509,7 @@ class IndexedDbStateRepository {
    * 
    * PROCESS:
    * 1. Call inspect() to check if v2 data exists
-   * 2. If not v2, return null (caller handles reset flow)
+   * 2. If not startup-readable v2, return null (caller handles manual recovery flow)
    * 3. If v2, read all collection stores from IndexedDB
    * 4. Reconstruct envelope with meta + all collections
    * 5. Return to caller for validation and app-state conversion
@@ -2007,6 +2039,64 @@ export async function loadLocalEnvelope() {
 }
 
 /**
+ * Validates converted app-state shape for startup safety.
+ *
+ * PURPOSE: Prevent automatic bootstrap continuation when persisted data cannot
+ * safely hydrate core account structures.
+ *
+ * @param {Object} data - App-state payload converted from v2 collections
+ * @returns {string[]} Validation error messages; empty means startup-safe
+ */
+function validateStartupAppStateShape(data) {
+  const errors = []
+  const safeData = data && typeof data === 'object' ? data : {}
+  const accounts = Array.isArray(safeData.accounts) ? safeData.accounts : []
+  if (accounts.length === 0) {
+    errors.push('No accounts were found in local v2 data.')
+    return errors
+  }
+
+  accounts.forEach((account, index) => {
+    const accountLabel = `Account ${index + 1}`
+    const requiredArrayKeys = [
+      'transactions',
+      'importedTransactions',
+      'positions',
+      'notes',
+      'cashCheckpoints',
+      'trades',
+      'relTradeTransactions',
+      'relPositionTransactions',
+      'positionMeta'
+    ]
+    requiredArrayKeys.forEach((key) => {
+      if (!Array.isArray(account?.[key])) {
+        errors.push(`${accountLabel} is missing required array "${key}".`)
+      }
+    })
+    if (!account?.settings || typeof account.settings !== 'object') {
+      errors.push(`${accountLabel} is missing settings.`)
+      return
+    }
+    const settings = account.settings
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(settings?.startDate || ''))) {
+      errors.push(`${accountLabel} has invalid settings.startDate.`)
+    }
+    if (!Number.isFinite(Number(settings?.startingBalance))) {
+      errors.push(`${accountLabel} has invalid settings.startingBalance.`)
+    }
+    if (!Number.isFinite(Number(settings?.weeklyReturn))) {
+      errors.push(`${accountLabel} has invalid settings.weeklyReturn.`)
+    }
+    if (!Number.isFinite(Number(settings?.years)) || Number(settings.years) <= 0) {
+      errors.push(`${accountLabel} has invalid settings.years.`)
+    }
+  })
+
+  return errors
+}
+
+/**
  * Loads app state from local IndexedDB storage.
  * 
  * PURPOSE: High-level entry point for startup data loading. Reads from IndexedDB
@@ -2014,17 +2104,15 @@ export async function loadLocalEnvelope() {
  * 
  * PROCESS:
  * 1. Call localRepository.load() to get v2 envelope from IndexedDB
- * 2. If v2 data found, convert collections to app-shape and return
- * 3. If no v2 data (inspect=non-v2), return null with source='legacy-reset-required'
- * 4. If completely empty, return null with source='empty'
+ * 2. If v2 data found, convert collections to app-shape and validate startup shape
+ * 3. If local state is missing/unrecognized/invalid, return source='startup-manual-recovery-required'
  * 
  * ERROR HANDLING: Validation errors during conversion are thrown to caller;
- * caller determines if reset is needed based on source indicator.
+ * caller determines if manual recovery is needed based on source indicator.
  * 
  * @returns {Promise<Object>}
  *   { data: {...}, meta: {...}, source: 'indexeddb' } — Valid v2 data loaded
- *   { data: null, meta: null, source: 'legacy-reset-required', legacySnapshot: {...} } — Needs reset
- *   { data: null, meta: null, source: 'empty' } — No data found
+ *   { data: null, meta: null, source: 'startup-manual-recovery-required', reason: string, validationErrors?: string[] } — Manual recovery required
  * 
  * @see docs/spec/fresh-start-cutover.md for startup flow context
  * @see convertV2CollectionsToAppState() for collection shape conversion
@@ -2037,26 +2125,45 @@ export async function loadAppState() {
   if (inspected.kind === 'v2') {
     const envelope = await localRepository.load()
     if (envelope) {
+      const appStateData = buildAppStateDataFromV2Collections(envelope.data)
+      const startupValidationErrors = validateStartupAppStateShape(appStateData)
+      if (startupValidationErrors.length > 0) {
+        return {
+          data: null,
+          meta: null,
+          source: 'startup-manual-recovery-required',
+          reason: 'loaded-v2-data-failed-startup-shape-validation',
+          validationErrors: startupValidationErrors,
+          inspection: inspected.inspection || null
+        }
+      }
+
       return {
-        data: buildAppStateDataFromV2Collections(envelope.data),
+        data: appStateData,
         meta: envelope.meta,
-        source: 'indexeddb'
+        source: 'indexeddb',
+        inspection: inspected.inspection || null
       }
     }
   }
 
-  // If stores exist but not v2 (corrupted or legacy), trigger reset flow
-  if (inspected.kind === 'non-v2') {
+  if (inspected.kind === 'empty') {
     return {
       data: null,
       meta: null,
-      source: 'legacy-reset-required',
-      legacySnapshot: inspected.meta || null
+      source: 'empty',
+      reason: 'no-local-state-detected',
+      inspection: inspected.inspection || null
     }
   }
 
-  // Completely empty database
-  return { data: null, meta: null, source: 'empty' }
+  return {
+    data: null,
+    meta: null,
+    source: 'startup-manual-recovery-required',
+    reason: 'local-state-is-unrecognized',
+    inspection: inspected.inspection || null
+  }
 }
 
 export async function saveAppState(data, previousMeta = null) {

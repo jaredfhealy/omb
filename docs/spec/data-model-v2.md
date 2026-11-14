@@ -25,9 +25,9 @@ Persisted state must include a model identifier:
 ```
 
 Startup behavior:
-- if local data is missing `meta.dataModel === 'v2'`, show a one-time reset alert.
-- offer optional local backup/export.
-- on user confirmation, overwrite local state with default v2 seed data and continue.
+- if local runtime data is missing `meta.dataModel === 'v2'` or fails startup validation, block runtime startup.
+- redirect user to Data Manager recovery guidance.
+- require explicit user action to load/apply starting seed data (no automatic overwrite).
 
 ## ID and reference conventions
 

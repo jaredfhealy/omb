@@ -24,8 +24,8 @@ This ensures the codebase remains maintainable and contributors don't need to re
 - [ ] v2 schema approved ([data-model-v2.md](./data-model-v2.md))
 - [x] IndexedDB/object-store layout finalized
 - [x] `meta.dataModel = 'v2'` persisted
-- [x] startup non-v2 handling implemented (blocking reset flow with optional local backup export)
-- [x] v2 data detection logic fixed (handles corrupted meta records gracefully)
+- [x] startup manual-recovery handling implemented (no auto-reset/auto-seed on unrecognized local state)
+- [x] v2 startup detection logic fixed (strict model marker + startup shape validation)
 
 ## Import and source ledger
 
@@ -76,9 +76,9 @@ This ensures the codebase remains maintainable and contributors don't need to re
 
 ## Behavior updates (v2 cutover)
 
-- Non-v2 local payloads now require a blocking reset confirmation during startup.
-- Users can export a one-time local JSON backup snapshot before reset.
-- Startup reset seeds a clean v2 baseline account and persists `meta.dataModel = 'v2'`.
+- Unrecognized local payloads now block runtime startup and redirect to Data Manager recovery guidance.
+- Startup no longer auto-resets or auto-seeds persisted local data.
+- Data Manager provides an explicit “Load Starting Account” initialization path; persistence occurs only after Apply Changes.
 - Weekly snapshot modal now supports in-modal week navigation (previous/next) and route state persistence (`wsWeek`, `wsTab`).
 - Weekly projection view state now supports route persistence for range/selection/scroll (`wwf`, `wws`, `wwscr`).
 - Tab route behavior preserves non-tab query parameters during cross-tab navigation; tab switches only mutate `tab`.

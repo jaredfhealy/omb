@@ -19,7 +19,8 @@ Current position-level premium allocation fields are too coarse for multi-leg se
 ## Naming and Terminology
 
 - **User-facing page name:** `Trade Desk`
-- **Route path (canonical):** `/trade-desk`
+- **Primary UX location:** first tab in the main `/` Projections workspace (`tab=trades`)
+- **Legacy route compatibility:** `/trade-desk` redirects to `/?tab=trades`
 - **Trade:** A user-managed strategy lifecycle for one symbol.
 - **Source transaction:** A raw imported brokerage transaction record.
 - **Trade event:** A trade-ledger entry derived from a linked source transaction (stored in relationship records).
@@ -32,9 +33,9 @@ Current position-level premium allocation fields are too coarse for multi-leg se
 4. As a user, I cannot allocate the same source transaction to multiple trades.
 5. As a user, I can view a chronological trade timeline and evaluate profitability.
 
-## UX: Trade Desk page
+## UX: Trade Desk workspace
 
-Add a new route/page (`/trade-desk`) with three coordinated regions:
+Implement Trade Desk as the first tab in the main workspace with three coordinated regions:
 
 1. **Trade list panel**
    - filters: open/closed/all, symbol, date range
