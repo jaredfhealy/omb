@@ -461,6 +461,22 @@ const displayNetCostBasis = computed(() => {
   return costBasis - displayNetPremiums.value
 })
 
+const displayNetCostPerShare = computed(() => {
+  const netCostBasis = displayNetCostBasis.value
+  const openShares = Number(activeMetrics.value?.plScenarios?.openShares || 0)
+  if (netCostBasis === null || !Number.isFinite(openShares) || openShares <= 0) return null
+  return netCostBasis / openShares
+})
+
+const lifecycleDateRangeHtml = computed(() => {
+  const startDate = String(activeMetrics.value?.startDate || '').trim()
+  const endDate = String(activeMetrics.value?.endDate || '').trim()
+  if (!startDate || !endDate || typeof store.formatDateRangeWithYearBadges !== 'function') {
+    return `${startDate || '—'} → ${endDate || '—'}`
+  }
+  return store.formatDateRangeWithYearBadges(startDate, endDate)
+})
+
 const performanceScenarioContext = computed(() => {
   const metrics = activeMetrics.value
   const plScenarios = metrics?.plScenarios || null
@@ -924,16 +940,13 @@ async function submit() {
               </div>
               <div class="card-body p-2" v-if="detailTab === 'performance' && showPerformanceTab && activeMetrics">
                 <div class="row g-2 mb-2">
-                  <div class="col-6 col-xl-3">
+                  <div class="col-6 col-xl-2">
                     <div class="metric-tile">
                       <div class="metric-label">Lifecycle</div>
-                      <div class="metric-value metric-value-sm">{{ activeMetrics.startDate }} → {{ activeMetrics.endDate }}</div>
-                    </div>
-                  </div>
-                  <div class="col-6 col-xl-1">
-                    <div class="metric-tile">
-                      <div class="metric-label">Weeks</div>
-                      <div class="metric-value">{{ activeMetrics.durationWeeks }}</div>
+                      <div class="metric-value metric-value-sm">
+                        <span v-html="lifecycleDateRangeHtml"></span><br />
+                        <span class="small fw-normal text-body-secondary">({{ activeMetrics.durationWeeks }} Weeks)</span>
+                      </div>
                     </div>
                   </div>
                   <div class="col-6 col-xl-2">
@@ -963,6 +976,14 @@ async function submit() {
                       <div class="metric-label">Net Cost Basis</div>
                       <div class="metric-value">
                         {{ displayNetCostBasis !== null ? store.currency(displayNetCostBasis) : 'N/A' }}
+                      </div>
+                    </div>
+                  </div>
+                  <div class="col-6 col-xl-2">
+                    <div class="metric-tile">
+                      <div class="metric-label">Net Cost / Share</div>
+                      <div class="metric-value">
+                        {{ displayNetCostPerShare !== null ? store.currency(displayNetCostPerShare) : 'N/A' }}
                       </div>
                     </div>
                   </div>

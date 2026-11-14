@@ -9,14 +9,38 @@ const symbolFilter = ref('')
 const selectedTradeId = ref('')
 
 const tradesColumns = [
-  { key: 'symbol', header: { text: 'Symbol' }, class: 'col-4 col-xl-1' },
-  { key: 'name', header: { text: 'Name' }, class: 'col-8 col-xl-3' },
-  { key: 'status', header: { text: 'Status' }, class: 'col-4 col-xl-1' },
-  { key: 'dates', header: { text: 'Lifecycle' }, class: 'col-8 col-xl-2' },
-  { key: 'duration', header: { text: 'Weeks' }, class: 'col-4 col-xl-1 text-xl-end' },
-  { key: 'capital', header: { text: 'Capital at Risk' }, class: 'col-6 col-xl-2 text-xl-end' },
-  { key: 'netPL', header: { text: 'Net P/L' }, class: 'col-6 col-xl-1 text-xl-end' },
-  { key: 'weeklyROR', header: { text: 'Weekly ROR' }, class: 'col-6 col-xl-1 text-xl-end' }
+  {
+    key: 'symbol',
+    header: { text: 'Symbol' },
+    value: (item) => item.displaySymbol || item.symbol || '—'
+  },
+  {
+    key: 'name',
+    header: { text: 'Name' },
+    value: (item) => item.name || '—'
+  },
+  { key: 'status', header: { text: 'Status' } },
+  {
+    key: 'dates',
+    header: { text: 'Lifecycle' },
+    value: (item) => `${item?.metrics?.startDate || '—'} → ${item?.metrics?.endDate || '—'}`
+  },
+  {
+    key: 'duration',
+    header: { text: 'Weeks' },
+    value: (item) => Number(item?.metrics?.durationWeeks || 0)
+  },
+  {
+    key: 'capital',
+    header: { text: 'Capital at Risk' },
+    value: (item) => Number(item?.metrics?.capitalAtRisk || 0) > 0 ? store.currency(item.metrics.capitalAtRisk) : 'N/A'
+  },
+  {
+    key: 'netPL',
+    header: { text: 'Net P/L' },
+    value: (item) => store.currency(getTradeListNetPL(item))
+  },
+  { key: 'weeklyROR', header: { text: 'Weekly ROR' } }
 ]
 
 const filteredTrades = computed(() => {
@@ -69,6 +93,15 @@ function getTradeListWeeklyROR(trade) {
   return getTradeListDisplayMetrics(trade).weeklyROR
 }
 
+function getLifecycleRangeHtml(trade) {
+  const startDate = String(trade?.metrics?.startDate || '').trim()
+  const endDate = String(trade?.metrics?.endDate || '').trim()
+  if (!startDate || !endDate || typeof store.formatDateRangeWithYearBadges !== 'function') {
+    return `${startDate || '—'} → ${endDate || '—'}`
+  }
+  return store.formatDateRangeWithYearBadges(startDate, endDate)
+}
+
 function showCreateTradeModal() {
   if (!store.showTradePanel) return
   store.showTradePanel()
@@ -90,22 +123,6 @@ function getTradeRowAttributes() {
 
 <template>
   <div class="trade-manager-container d-flex flex-column">
-    <div class="d-flex flex-wrap gap-2 align-items-center justify-content-between mb-2">
-      <div class="d-flex flex-wrap gap-2 align-items-center">
-        <button class="btn btn-primary btn-sm" @click="showCreateTradeModal">
-          <i class="bi bi-plus-circle me-1"></i> New Trade
-        </button>
-      </div>
-      <div class="d-flex gap-1">
-        <select class="form-select form-select-sm" v-model="statusFilter">
-          <option value="open">Open</option>
-          <option value="closed">Closed</option>
-          <option value="all">All</option>
-        </select>
-        <input class="form-control form-control-sm" placeholder="Symbol..." v-model.trim="symbolFilter" />
-      </div>
-    </div>
-
     <DataTable
       :items="filteredTrades"
       :columns="tradesColumns"
@@ -113,24 +130,39 @@ function getTradeRowAttributes() {
       :get-row-attributes="getTradeRowAttributes"
       @row-click="openTradeModal"
     >
-      <template #row="{ item }">
-        <div class="row align-items-center">
-          <div class="col-4 col-xl-1 fw-semibold" :class="{ 'text-primary': String(item.id) === String(selectedTradeId) }">{{ item.displaySymbol || item.symbol }}</div>
-          <div class="col-8 col-xl-3">{{ item.name || '—' }}</div>
-          <div class="col-4 col-xl-1">
-            <span class="badge" :class="item.status === 'closed' ? 'text-bg-secondary' : 'text-bg-success'">
-              {{ item.status === 'closed' ? 'Closed' : 'Open' }}
-            </span>
+      <template #table-controls>
+        <div class="d-flex flex-wrap gap-2 align-items-center justify-content-between w-100">
+          <div class="d-flex flex-wrap gap-2 align-items-center">
+            <button class="btn btn-primary btn-sm" @click="showCreateTradeModal">
+              <i class="bi bi-plus-circle me-1"></i> New Trade
+            </button>
           </div>
-          <div class="col-8 col-xl-2 small">{{ item.metrics.startDate }} → {{ item.metrics.endDate }}</div>
-          <div class="col-4 col-xl-1 text-xl-end">{{ item.metrics.durationWeeks }}</div>
-          <div class="col-6 col-xl-2 text-xl-end">{{ item.metrics.capitalAtRisk > 0 ? store.currency(item.metrics.capitalAtRisk) : 'N/A' }}</div>
-          <div class="col-6 col-xl-1 text-xl-end">{{ store.currency(getTradeListNetPL(item)) }}</div>
-          <div class="col-6 col-xl-1 text-xl-end">
-            <span v-if="getTradeListWeeklyROR(item) !== null">{{ Number(getTradeListWeeklyROR(item)).toFixed(2) }}%</span>
-            <span v-else class="text-warning">N/A</span>
+          <div class="d-flex gap-1">
+            <select class="form-select form-select-sm" v-model="statusFilter">
+              <option value="open">Open</option>
+              <option value="closed">Closed</option>
+              <option value="all">All</option>
+            </select>
+            <input class="form-control form-control-sm" placeholder="Symbol..." v-model.trim="symbolFilter" />
           </div>
         </div>
+      </template>
+      <template #symbol="{ item }">
+        <span class="fw-semibold" :class="{ 'text-primary': String(item.id) === String(selectedTradeId) }">
+          {{ item.displaySymbol || item.symbol || '—' }}
+        </span>
+      </template>
+      <template #status="{ item }">
+        <span class="badge" :class="item.status === 'closed' ? 'text-bg-secondary' : 'text-bg-success'">
+          {{ item.status === 'closed' ? 'Closed' : 'Open' }}
+        </span>
+      </template>
+      <template #dates="{ item }">
+        <span class="small" v-html="getLifecycleRangeHtml(item)"></span>
+      </template>
+      <template #weeklyROR="{ item }">
+        <span v-if="getTradeListWeeklyROR(item) !== null">{{ Number(getTradeListWeeklyROR(item)).toFixed(2) }}%</span>
+        <span v-else class="text-warning">N/A</span>
       </template>
       <template #empty>
         <div class="text-center text-muted py-4">No trades match the current filters.</div>

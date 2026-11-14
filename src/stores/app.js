@@ -1901,6 +1901,37 @@ export const useAppStore = defineStore('app', {
       }
     },
 
+    formatDateRangeWithYearBadges(startDateInput, endDateInput, plainText = false) {
+      if (!startDateInput || !endDateInput) return ''
+      const startDate = new Date(startDateInput)
+      const endDate = new Date(endDateInput)
+      if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) return ''
+
+      const startYear = startDate.getFullYear()
+      const endYear = endDate.getFullYear()
+
+      const formatMonthDay = (date) => {
+        const month = String(date.getMonth() + 1).padStart(2, '0')
+        const day = String(date.getDate()).padStart(2, '0')
+        return `${month}/${day}`
+      }
+
+      if (plainText) {
+        if (startYear === endYear) {
+          return `${startYear}: ${formatMonthDay(startDate)} - ${formatMonthDay(endDate)}`
+        }
+        return `${startYear}: ${formatMonthDay(startDate)} - ${endYear}: ${formatMonthDay(endDate)}`
+      }
+
+      const shortStartYear = startYear.toString().substring(2)
+      const shortEndYear = endYear.toString().substring(2)
+
+      if (startYear === endYear) {
+        return `<span class="badge rounded-pill bg-secondary text-white">'${shortStartYear}</span> ${formatMonthDay(startDate)} - ${formatMonthDay(endDate)}`
+      }
+      return `<span class="badge rounded-pill bg-secondary text-white">'${shortStartYear}</span> ${formatMonthDay(startDate)} - <span class="badge rounded-pill bg-secondary text-white">'${shortEndYear}</span> ${formatMonthDay(endDate)}`
+    },
+
     weekRange(weekNum, plainText = false) {
       if (!weekNum) return ''
       const startDate = this.activeAccount.settings.startDate
@@ -1910,38 +1941,7 @@ export const useAppStore = defineStore('app', {
       startDate.setDate(startDate.getDate() + (weekNum - 1) * 7)
       const endDate = new Date(startDate)
       endDate.setDate(endDate.getDate() + 6)
-
-      // Format with year first, then MM-DD
-      const startYear = startDate.getFullYear()
-      const endYear = endDate.getFullYear()
-      
-      const formatMonthDay = (date) => {
-        const month = String(date.getMonth() + 1).padStart(2, '0')
-        const day = String(date.getDate()).padStart(2, '0')
-        return `${month}/${day}`
-      }
-      
-      // For plain text version (used in selects and other non-HTML contexts)
-      if (plainText) {
-        
-        if (startYear === endYear) {
-          return `${startYear}: ${formatMonthDay(startDate)} - ${formatMonthDay(endDate)}`
-        } else {
-          return `${startYear}: ${formatMonthDay(startDate)} - ${endYear}: ${formatMonthDay(endDate)}`
-        }
-      }
-      
-      // HTML version with badges (for v-html rendering)
-      const shortStartYear = startYear.toString().substring(2)
-      const shortEndYear = endYear.toString().substring(2)
-      
-      // If years are the same, only show year once
-      if (startYear === endYear) {
-        return `<span class="badge rounded-pill bg-secondary text-white">'${shortStartYear}</span> ${formatMonthDay(startDate)} - ${formatMonthDay(endDate)}`
-      } else {
-        // If years differ, show both years
-        return `<span class="badge rounded-pill bg-secondary text-white">'${shortStartYear}</span> ${formatMonthDay(startDate)} - <span class="badge rounded-pill bg-secondary text-white">'${shortEndYear}</span> ${formatMonthDay(endDate)}`
-      }
+      return this.formatDateRangeWithYearBadges(startDate, endDate, plainText)
     },
 
     formatDate(dateString) {
