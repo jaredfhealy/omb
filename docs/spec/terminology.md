@@ -1,6 +1,6 @@
 # Terminology
 
-Last verified: 2026-10-31
+Last verified: 2026-11-22
 
 This document is the canonical glossary for user-facing and domain terminology used across Operation More Bacon specs and UI copy.
 
@@ -59,7 +59,7 @@ A broker-confirmed cash balance record (`cashCheckpoints`) used to reconcile pro
 
 ### Trade Desk
 
-The route/page for creating and managing trade lifecycles and allocations.
+The first tab in the main workspace (`tab=trades`) used to create and manage trade lifecycles and allocations.
 
 ### Trade
 

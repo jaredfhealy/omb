@@ -465,14 +465,25 @@ const addManualPosition = () => {
 const removePosition = (index) => {
   const item = filteredPositions.value[index]
   if (!item || !item.manual) return
+
+  const cascadeStatus = store.getManualPositionDeleteCascadeStatus(item)
+  if (cascadeStatus?.blocked) {
+    confirmModalRef.value.show(
+      `Cannot remove manual position for ${item.symbol}.\n\nThe linked manual-seed source transaction is still referenced by ${cascadeStatus.blockers.join(', ')}.\n\nRemove those references first, then delete the position.`,
+      null,
+      null,
+      {
+        confirmText: 'OK',
+        cancelText: 'Close'
+      }
+    )
+    return
+  }
+
   confirmModalRef.value.show(
     `Are you sure you want to remove manual position for ${item.symbol}?`,
     async () => {
-      // Find the actual index in the positions array
-      const actualIndex = store.activeAccount.positions.findIndex(p => p === item)
-      if (actualIndex !== -1) {
-        store.removePositionMeta(item)
-        store.activeAccount.positions.splice(actualIndex, 1)
+      if (store.removeManualPositionAndLinkedSyntheticSource(item)) {
         await store.saveChangesAndRecalculate()
       }
     }

@@ -369,7 +369,7 @@ function toIsoDate(value) {
  * - symbol: uppercase, normalize spaces
  * - description/quantity/price/amount: normalize and pad decimals
  * - fees: default to 0 if missing
- * - executionOrder: preserve for same-day transaction ordering
+ * - executionOrder is intentionally excluded to keep identity stable across re-import ordering changes
  * 
  * Then join all with '|' delimiter to create the canonical input.
  * 
@@ -391,7 +391,6 @@ export function getNormalizedSourceFingerprintInput(row) {
   const priceNormalized = toFixedNumericString(row?.price)
   const amountNormalized = toFixedNumericString(row?.amount)
   const feesNormalized = toFixedNumericString(row?.fees ?? 0)
-  const executionOrder = Number(row?.executionOrder || 0)
   return [
     effectiveDate,
     actionNormalized,
@@ -400,8 +399,7 @@ export function getNormalizedSourceFingerprintInput(row) {
     quantityNormalized,
     priceNormalized,
     amountNormalized,
-    feesNormalized,
-    executionOrder
+    feesNormalized
   ].join('|')
 }
 
@@ -607,7 +605,10 @@ function buildV2CollectionsFromAppStateData(data) {
     if (Array.isArray(account?.importedTransactions) && account.importedTransactions.length > 0) {
       account.importedTransactions.forEach((row, rowIndex) => {
         const executionOrder = Number(row?.executionOrder || rowIndex + 1)
-        const sourceLine = Number.isFinite(Number(row?.sourceLine)) ? Number(row.sourceLine) : null
+        const sourceLineRaw = row?.sourceLine
+        const sourceLine = sourceLineRaw === null || sourceLineRaw === undefined || String(sourceLineRaw).trim() === ''
+          ? null
+          : (Number.isFinite(Number(sourceLineRaw)) ? Number(sourceLineRaw) : null)
         const sourceFingerprint = createSourceFingerprint({ ...row, executionOrder }, fingerprintRegistry)
         const id = normalizeRecordId(row?.id, 'tx', accountId, sourceFingerprint, sourceLine ?? executionOrder)
         importedRows.push({
@@ -636,7 +637,10 @@ function buildV2CollectionsFromAppStateData(data) {
         const rows = Array.isArray(actual?.data) ? actual.data : []
         rows.forEach((row, rowIndex) => {
           const executionOrder = Number(row?.executionOrder || rowIndex + 1)
-          const sourceLine = Number.isFinite(Number(row?.sourceLine)) ? Number(row.sourceLine) : null
+          const sourceLineRaw = row?.sourceLine
+          const sourceLine = sourceLineRaw === null || sourceLineRaw === undefined || String(sourceLineRaw).trim() === ''
+            ? null
+            : (Number.isFinite(Number(sourceLineRaw)) ? Number(sourceLineRaw) : null)
           const sourceFingerprint = createSourceFingerprint({ ...row, executionOrder }, fingerprintRegistry)
           const id = createRecordId('tx', accountId, sourceFingerprint, sourceLine ?? executionOrder)
           importedRows.push({
@@ -666,6 +670,25 @@ function buildV2CollectionsFromAppStateData(data) {
       const current = Number(row?.executionOrder || 0)
       return current > highest ? current : highest
     }, 0)
+    const importedRowById = new Map(importedRows.map(row => [String(row.id), row]))
+
+    function getPositionSyntheticSeedAmount(position) {
+      const costBasis = Number(position?.costBasis || 0)
+      const offsettingProfits = Number(position?.offsettingProfits || 0)
+      const profitAllocationRaw = Number(position?.profitAllocation)
+      const allocationRatio = Number.isFinite(profitAllocationRaw)
+        ? (profitAllocationRaw / 100)
+        : 1
+      return costBasis + (offsettingProfits * allocationRatio)
+    }
+
+    function getPositionSyntheticSeedPrice(position, syntheticAmount) {
+      const shares = Math.abs(Number(position?.shares || 0))
+      if (Number.isFinite(shares) && shares > 0) {
+        return Math.abs(Number(syntheticAmount || 0)) / shares
+      }
+      return Number(position?.currentPrice || 0)
+    }
 
     function addSyntheticImportedTransaction({ seedPrefix, seedValue, eventDate, symbol, amount, quantity, price, week, description }) {
       maxExecutionOrder += 1
@@ -704,6 +727,7 @@ function buildV2CollectionsFromAppStateData(data) {
         updatedAt: now
       }
       importedRows.push(row)
+      importedRowById.set(String(id), row)
       return id
     }
 
@@ -764,22 +788,39 @@ function buildV2CollectionsFromAppStateData(data) {
       if (position?.positionKey) {
         positionIdByKey.set(String(position.positionKey), positionId)
       }
+      const syntheticSeedAmount = getPositionSyntheticSeedAmount(position)
+      const syntheticSeedPrice = getPositionSyntheticSeedPrice(position, syntheticSeedAmount)
+      const syntheticSeedDescription = `Synthetic source for position ${position?.positionKey || positionId}`
       const sourceTransactionId = position?.sourceTransactionId || addSyntheticImportedTransaction({
         seedPrefix: 'tx-pos',
         seedValue: position?.positionKey || positionId,
         eventDate: position?.date || now,
         symbol: position?.symbol,
-        amount: position?.costBasis,
+        amount: syntheticSeedAmount,
         quantity: position?.shares,
-        price: position?.currentPrice,
+        price: syntheticSeedPrice,
         week: position?.assignedWeek,
-        description: `Synthetic source for position ${position?.positionKey || positionId}`
+        description: syntheticSeedDescription
       })
+
+      const seededSourceRow = importedRowById.get(String(sourceTransactionId))
+      if (seededSourceRow && String(seededSourceRow.action || '') === 'manual-seed') {
+        seededSourceRow.date = toIsoDate(position?.date) || toIsoDate(now)
+        seededSourceRow.symbol = normalizeString(position?.symbol).toUpperCase()
+        seededSourceRow.description = syntheticSeedDescription
+        seededSourceRow.quantity = Number(position?.shares || 0)
+        seededSourceRow.price = syntheticSeedPrice
+        seededSourceRow.amount = syntheticSeedAmount
+        seededSourceRow.week = Number.isFinite(Number(position?.assignedWeek || 0)) ? Number(position.assignedWeek) : null
+        seededSourceRow.updatedAt = now
+        seededSourceRow.sourceFingerprint = createSourceFingerprint(seededSourceRow, fingerprintRegistry)
+      }
       collections.positions.push({
         id: positionId,
         accountId,
         sourceTransactionId,
         positionKey: String(position?.positionKey || positionId),
+        date: toIsoDate(position?.date) || toIsoDate(now),
         symbol: normalizeString(position?.symbol).toUpperCase(),
         shares: Number(position?.shares || 0),
         costBasis: Number(position?.costBasis || 0),
@@ -1000,6 +1041,7 @@ function buildAppStateDataFromV2Collections(collections) {
     account.positions.push({
       id: position?.id || null,
       positionKey: position?.positionKey,
+      date: position?.date ? toIsoDate(position.date) : null,
       symbol: position?.symbol,
       shares: Number(position?.shares || 0),
       costBasis: Number(position?.costBasis || 0),

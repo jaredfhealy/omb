@@ -6,7 +6,7 @@ import { extractUnderlyingSymbol, getTradeTransactionAttributes } from '@/servic
 
 const store = useAppStore()
 const isVisible = ref(false)
-const mode = ref('origin')
+const mode = ref('create')
 const tradeId = ref(null)
 const scopeSymbol = ref('')
 const selectedSourceIds = ref([])
@@ -21,14 +21,14 @@ const relativeDateFilter = ref('last30')
 
 const columns = [
   { key: 'selected', header: { text: 'Select' }, class: 'col-2 col-xl-1' },
-  { key: 'date', header: { text: 'Date' }, class: 'col-6 col-xl-1 text-nowrap' },
+  { key: 'date', header: { text: 'Date' }, class: 'col-6 col-xl-2 text-nowrap' },
   { key: 'symbol', header: { text: 'Symbol' }, class: 'col-4 col-xl-1' },
   { key: 'side', header: { text: 'Side' }, class: 'col-4 col-xl-1' },
   { key: 'optionType', header: { text: 'Type' }, class: 'col-4 col-xl-1' },
   { key: 'exp', header: { text: 'Exp' }, class: 'col-4 col-xl-1 text-nowrap' },
   { key: 'strike', header: { text: 'Strike' }, class: 'col-4 col-xl-1 text-xl-end' },
-  { key: 'qty', header: { text: 'Qty' }, class: 'col-4 col-xl-1 text-xl-end' },
-  { key: 'amount', header: { text: 'Amount' }, class: 'col-8 col-xl-3 text-xl-end text-nowrap' }
+  { key: 'qty', header: { text: 'Qty' }, class: 'col-4 col-xl-1 text-xl-end text-nowrap' },
+  { key: 'amount', header: { text: 'Amount' }, class: 'col-8 col-xl-2 text-xl-end text-nowrap' }
 ]
 
 function normalizeScopeSymbol(value) {
@@ -84,7 +84,9 @@ const sourceRows = computed(() => {
 
 const filteredRows = computed(() => {
   const symbolQuery = symbolFilter.value.trim().toUpperCase()
-  const scopedSymbol = mode.value === 'link' ? normalizeScopeSymbol(scopeSymbol.value) : ''
+  const scopedSymbol = (mode.value === 'link' || mode.value === 'create')
+    ? normalizeScopeSymbol(scopeSymbol.value)
+    : ''
   const quantity = quantityFilter.value === '' ? null : Number(quantityFilter.value)
   const strike = strikeFilter.value === '' ? null : Number(strikeFilter.value)
   const relativeDateCutoffDays = relativeDateFilter.value === 'last30'
@@ -130,7 +132,7 @@ function resetFilters() {
 
 function close() {
   isVisible.value = false
-  mode.value = 'origin'
+  mode.value = 'create'
   tradeId.value = null
   scopeSymbol.value = ''
   selectedSourceIds.value = []
@@ -140,9 +142,7 @@ function close() {
 }
 
 function show(options = {}, onConfirm = null) {
-  mode.value = options?.mode === 'link' || options?.mode === 'create'
-    ? options.mode
-    : 'origin'
+  mode.value = options?.mode === 'link' ? 'link' : 'create'
   tradeId.value = options?.tradeId || null
   scopeSymbol.value = String(options?.symbol || '').trim().toUpperCase()
   selectedSourceIds.value = Array.isArray(options?.preselectedSourceIds)
@@ -151,9 +151,7 @@ function show(options = {}, onConfirm = null) {
   selectionError.value = ''
   onConfirmSelection.value = typeof onConfirm === 'function' ? onConfirm : null
   resetFilters()
-  if (mode.value === 'link') {
-    symbolFilter.value = normalizeScopeSymbol(scopeSymbol.value)
-  }
+  symbolFilter.value = normalizeScopeSymbol(scopeSymbol.value)
   isVisible.value = true
 }
 
@@ -162,10 +160,6 @@ store.showSelectTradeTransactionsModal = show
 function toggleSelection(sourceId, checked) {
   const sourceIdValue = String(sourceId || '')
   if (!sourceIdValue) return
-  if (mode.value === 'origin') {
-    selectedSourceIds.value = checked ? [sourceIdValue] : []
-    return
-  }
   const selected = new Set(selectedSourceIds.value.map(value => String(value)))
   if (checked) selected.add(sourceIdValue)
   else selected.delete(sourceIdValue)
@@ -173,7 +167,6 @@ function toggleSelection(sourceId, checked) {
 }
 
 function toggleSelectAllVisible(checked) {
-  if (mode.value === 'origin') return
   if (!checked) {
     selectedSourceIds.value = []
     return
@@ -185,10 +178,6 @@ async function applySelection() {
   selectionError.value = ''
   if (!selectedSourceIds.value.length) {
     selectionError.value = 'Select at least one transaction.'
-    return
-  }
-  if (mode.value === 'origin' && selectedSourceIds.value.length !== 1) {
-    selectionError.value = 'Select exactly one origin transaction.'
     return
   }
 
@@ -221,102 +210,99 @@ async function applySelection() {
 </script>
 
 <template>
-  <div class="modal" tabindex="-1" :class="{ 'd-block': isVisible }" v-if="isVisible">
-    <div class="modal-dialog modal-xl">
-      <div class="modal-content">
-        <div class="modal-header">
-          <h5 class="modal-title">
-            {{
-              mode === 'origin'
-                ? 'Select Origin Transaction'
-                : mode === 'create'
-                  ? 'Select Trade Activity'
-                  : `Link Activity${scopeSymbol ? ` (${scopeSymbol})` : ''}`
-            }}
-          </h5>
-          <button type="button" class="btn-close" @click="close"></button>
-        </div>
-        <div class="modal-body">
-          <div class="row g-2 mb-2">
-            <div class="col-6 col-lg-3">
-              <label class="form-label mb-1">Symbol</label>
-              <input type="text" class="form-control form-control-sm" v-model.trim="symbolFilter" placeholder="e.g. TQQQ" />
-            </div>
-            <div class="col-6 col-lg-2">
-              <label class="form-label mb-1">Qty</label>
-              <input type="number" class="form-control form-control-sm" v-model="quantityFilter" placeholder="Exact" />
-            </div>
-            <div class="col-6 col-lg-2">
-              <label class="form-label mb-1">Strike</label>
-              <input type="number" class="form-control form-control-sm" v-model="strikeFilter" placeholder="Exact" step="0.01" />
-            </div>
-            <div class="col-6 col-lg-2">
-              <label class="form-label mb-1">Type</label>
-              <select class="form-select form-select-sm" v-model="optionTypeFilter">
-                <option value="all">All</option>
-                <option value="PUT">PUT</option>
-                <option value="CALL">CALL</option>
-                <option value="STOCK">STOCK</option>
-              </select>
-            </div>
-            <div class="col-6 col-lg-2">
-              <label class="form-label mb-1">Date Range</label>
-              <select class="form-select form-select-sm" v-model="relativeDateFilter">
-                <option value="last30">Last 30 Days</option>
-                <option value="last60">Last 60 Days</option>
-                <option value="all">All</option>
-              </select>
-            </div>
-            <div class="col-6 col-lg-1 d-grid align-items-end">
-              <button class="btn btn-outline-secondary btn-sm mt-4" @click="resetFilters">Reset</button>
-            </div>
-          </div>
+  <div class="trade-link-panel-overlay" v-if="isVisible">
+    <div class="trade-link-panel">
+      <div class="trade-link-panel-header">
+        <h5 class="modal-title mb-0">
+          {{
+            mode === 'create'
+              ? 'Select Trade Activity'
+              : `Link Activity${scopeSymbol ? ` (${scopeSymbol})` : ''}`
+          }}
+        </h5>
+        <button type="button" class="btn-close" @click="close"></button>
+      </div>
 
-          <div class="trade-link-results">
-            <DataTable :items="filteredRows" :columns="columns" :striped="true">
-              <template #header-selected>
-                <input
-                  v-if="mode !== 'origin'"
-                  class="form-check-input trade-select-checkbox"
-                  type="checkbox"
-                  :checked="allVisibleSelected"
-                  :disabled="!hasVisibleRows"
-                  @change="toggleSelectAllVisible($event.target.checked)"
-                  title="Select all visible rows"
-                />
-              </template>
-              <template #selected="{ item }">
-                <input
-                  class="form-check-input trade-select-checkbox"
-                  type="checkbox"
-                  :checked="selectedSourceIds.includes(item.id)"
-                  @change="toggleSelection(item.id, $event.target.checked)"
-                />
-              </template>
-              <template #date="{ item }"><span class="text-nowrap">{{ item.date || '—' }}</span></template>
-              <template #exp="{ item }"><span class="text-nowrap">{{ item.exp || '—' }}</span></template>
-              <template #strike="{ item }">{{ item.strike === null ? '—' : Number(item.strike).toFixed(2) }}</template>
-              <template #qty="{ item }">{{ Number(item.qty || 0).toLocaleString() }}</template>
-              <template #amount="{ item }"><span class="text-nowrap">{{ store.currency(item.amount) }}</span></template>
-              <template #empty>
-                <div class="text-center text-muted py-4">No unallocated source transactions match the filters.</div>
-              </template>
-            </DataTable>
+      <div class="trade-link-panel-body">
+        <div class="row g-2 mb-2">
+          <div class="col-6 col-lg-3">
+            <label class="form-label mb-1">Symbol</label>
+            <input type="text" class="form-control form-control-sm" v-model.trim="symbolFilter" placeholder="e.g. TQQQ" />
           </div>
-
-          <div v-if="selectionError" class="alert alert-danger py-2 mt-2 mb-0">
-            {{ selectionError }}
+          <div class="col-6 col-lg-2">
+            <label class="form-label mb-1">Qty</label>
+            <input type="number" class="form-control form-control-sm" v-model="quantityFilter" placeholder="Exact" />
+          </div>
+          <div class="col-6 col-lg-2">
+            <label class="form-label mb-1">Strike</label>
+            <input type="number" class="form-control form-control-sm" v-model="strikeFilter" placeholder="Exact" step="0.01" />
+          </div>
+          <div class="col-6 col-lg-2">
+            <label class="form-label mb-1">Type</label>
+            <select class="form-select form-select-sm" v-model="optionTypeFilter">
+              <option value="all">All</option>
+              <option value="PUT">PUT</option>
+              <option value="CALL">CALL</option>
+              <option value="STOCK">STOCK</option>
+            </select>
+          </div>
+          <div class="col-6 col-lg-2">
+            <label class="form-label mb-1">Date Range</label>
+            <select class="form-select form-select-sm" v-model="relativeDateFilter">
+              <option value="last30">Last 30 Days</option>
+              <option value="last60">Last 60 Days</option>
+              <option value="all">All</option>
+            </select>
+          </div>
+          <div class="col-6 col-lg-1 d-grid align-items-end">
+            <button class="btn btn-outline-secondary btn-sm mt-4" @click="resetFilters">Reset</button>
           </div>
         </div>
-        <div class="modal-footer">
-          <button type="button" class="btn btn-secondary" @click="close">Cancel</button>
-          <button type="button" class="btn btn-primary" @click="applySelection">
-            {{ mode === 'origin' ? 'Use as Origin' : 'Use Selected' }}
-          </button>
+
+        <div class="trade-link-results">
+          <DataTable :items="filteredRows" :columns="columns" :striped="true">
+            <template #header-selected>
+              <input
+                class="form-check-input trade-select-checkbox"
+                type="checkbox"
+                :checked="allVisibleSelected"
+                :disabled="!hasVisibleRows"
+                @change="toggleSelectAllVisible($event.target.checked)"
+                title="Select all visible rows"
+              />
+            </template>
+            <template #selected="{ item }">
+              <input
+                class="form-check-input trade-select-checkbox"
+                type="checkbox"
+                :checked="selectedSourceIds.includes(item.id)"
+                @change="toggleSelection(item.id, $event.target.checked)"
+              />
+            </template>
+            <template #date="{ item }"><span class="text-nowrap">{{ item.date || '—' }}</span></template>
+            <template #exp="{ item }"><span class="text-nowrap">{{ item.exp || '—' }}</span></template>
+            <template #strike="{ item }">{{ item.strike === null ? '—' : Number(item.strike).toFixed(2) }}</template>
+            <template #qty="{ item }">{{ Number(item.qty || 0).toLocaleString() }}</template>
+            <template #amount="{ item }"><span class="text-nowrap">{{ store.currency(item.amount) }}</span></template>
+            <template #empty>
+              <div class="text-center text-muted py-4">No unallocated source transactions match the filters.</div>
+            </template>
+          </DataTable>
+        </div>
+
+        <div v-if="selectionError" class="alert alert-danger py-2 mt-2 mb-0">
+          {{ selectionError }}
         </div>
       </div>
+
+      <div class="trade-link-panel-footer">
+        <button type="button" class="btn btn-secondary" @click="close">Cancel</button>
+        <button type="button" class="btn btn-primary" @click="applySelection">
+          Use Selected
+        </button>
+      </div>
     </div>
-    <div class="modal-backdrop fade show"></div>
+    <div class="trade-link-panel-backdrop" @click="close"></div>
   </div>
 </template>
 
@@ -330,22 +316,50 @@ async function applySelection() {
   border-color: #212529;
 }
 
-.modal-dialog {
-  margin: 1.75rem auto;
-  height: calc(100vh - 3.5rem);
+.trade-link-panel-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1085;
+  display: flex;
+  justify-content: flex-end;
 }
 
-.modal-content {
-  height: 100%;
+.trade-link-panel {
+  position: relative;
+  width: min(82vw, 1080px);
+  max-width: none;
+  height: 100vh;
+  background: var(--bs-body-bg);
+  border-left: 1px solid var(--bs-border-color);
   display: flex;
   flex-direction: column;
+  z-index: 1090;
+  animation: trade-link-panel-slide-in 0.28s ease-out;
 }
 
-.modal-body {
+.trade-link-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--bs-border-color);
+}
+
+.trade-link-panel-body {
+  padding: 0.75rem;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   min-height: 0;
+  flex: 1;
+}
+
+.trade-link-panel-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--bs-border-color);
 }
 
 .trade-link-results {
@@ -365,5 +379,23 @@ async function applySelection() {
 .trade-link-results :deep(.scrollable-window) {
   height: 100%;
   min-height: 0;
+}
+
+.trade-link-panel-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.2);
+  z-index: 1088;
+}
+
+@keyframes trade-link-panel-slide-in {
+  from {
+    transform: translateX(44px);
+    opacity: 0.7;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
 }
 </style>

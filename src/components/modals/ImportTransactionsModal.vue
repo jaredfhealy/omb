@@ -21,6 +21,7 @@ const positionsError = ref('')
 const discardFirstWeek = ref(true) // Default to true for this option
 const deleteAllData = ref(false) // Default to false for this option
 const refreshPendingAfterClose = ref(false)
+const refreshUrlAfterClose = ref('')
 const selectedImportAccountId = ref(null)
 const importTargetAccount = ref(null)
 const POSITION_SHARE_EPSILON = 1e-6
@@ -38,10 +39,16 @@ const show = () => {
 const close = () => {
   isVisible.value = false
   const shouldRefresh = refreshPendingAfterClose.value
+  const refreshUrl = refreshUrlAfterClose.value
   refreshPendingAfterClose.value = false
+  refreshUrlAfterClose.value = ''
   resetForm()
   if (shouldRefresh) {
     window.setTimeout(() => {
+      if (refreshUrl) {
+        window.location.assign(refreshUrl)
+        return
+      }
       window.location.reload()
     }, 100)
   }
@@ -124,7 +131,7 @@ function isEquityLikeAssetType(assetType) {
  * WHY: executionOrder is critical for:
  * - Position allocation (must process shorts before covering buys on same day)
  * - Projection calculations (week-by-week ordering must match trading sequence)
- * - Uniqueness (fingerprint + sourceLine + executionOrder create stable IDs)
+ * - Deterministic duplicate ordinal assignment for rare same-fingerprint rows
  * 
  * @see docs/spec/data-model-v2.md for importedTransactions.executionOrder semantics
  */
@@ -183,6 +190,12 @@ function toIsoDate(value) {
   return date.toISOString().slice(0, 10)  // Extract YYYY-MM-DD part
 }
 
+function getDayBeforeIsoDate(value, fallbackDate = '') {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return toIsoDate(fallbackDate)
+  return toIsoDate(new Date(date.getTime() - (24 * 60 * 60 * 1000)))
+}
+
 /**
  * Creates a stable 32-character hex hash from input string.
  * 
@@ -194,7 +207,7 @@ function toIsoDate(value) {
  * WHY: When user re-imports CSV with same transactions, we need to detect duplicates.
  * Hash must be stable (same input → same output) and collision-resistant enough for CSV data.
  * 
- * @see createImportedTransactionId() which combines fingerprint + sourceLine + executionOrder
+ * @see createImportedTransactionId() which combines fingerprint + deterministic occurrence index
  */
 function simpleStableHash(input) {
   const text = String(input || '')
@@ -212,7 +225,7 @@ function simpleStableHash(input) {
  * 
  * PURPOSE: Wrapper around the stateRepository version, used locally during import.
  * A sourceFingerprint is a deterministic hash of key transaction fields, used to:
- * - Detect duplicate CSV rows (if same fingerprint + executionOrder → same transaction)
+ * - Detect duplicate CSV rows (same fingerprint + same logical occurrence)
  * - Track transactions across re-import cycles
  * - Match against previously imported records
  * 
@@ -258,21 +271,122 @@ function buildFingerprintRegistry(account, pendingRows = []) {
  * 
  * ALGORITHM:
  * 1. Get the sourceFingerprint (normalized hash of transaction data)
- * 2. Combine with sourceLine (line number in original CSV) and executionOrder
+ * 2. Combine with a deterministic occurrence index for true-identical duplicates
  * 3. Hash the combination to get a 32-char ID
  * 
- * WHY: sourceFingerprint alone isn't unique (two identical transactions → same fingerprint).
- * Adding sourceLine + executionOrder makes it unique per CSV row.
+ * WHY: sourceFingerprint identifies a logical source row. For rare true-identical duplicates,
+ * occurrenceIndex disambiguates rows while keeping IDs stable across re-imports.
  * 
- * STABILITY: If user re-imports same CSV, executionOrder might change (depends on sorting).
- * This is intentional: if the CSV row order changed, treat as new transaction.
- * 
- * @param row - transaction row with sourceFingerprint, sourceLine, executionOrder
+ * @param row - transaction row with sourceFingerprint
+ * @param occurrenceIndex - 0-based duplicate ordinal for same fingerprint
  * @returns 32-char hex ID
  */
-function createImportedTransactionId(row) {
+function createImportedTransactionId(row, occurrenceIndex = 0) {
   const fingerprint = String(row?.sourceFingerprint || '').trim() || createSourceFingerprint(row)
-  return simpleStableHash(`${fingerprint}|${Number(row?.sourceLine || 0)}|${Number(row?.executionOrder || 0)}`)
+  return simpleStableHash(`${fingerprint}|${Number(occurrenceIndex || 0)}`)
+}
+
+function upsertSyntheticPositionSourceTransaction(account, {
+  positionKey,
+  eventDate,
+  symbol,
+  quantity,
+  amount,
+  price,
+  week
+}) {
+  if (!account) return null
+  if (!Array.isArray(account.importedTransactions)) {
+    account.importedTransactions = []
+  }
+
+  const nowIso = new Date().toISOString()
+  const description = normalizeSpace(`Synthetic source for position ${positionKey}`)
+  const normalizedSymbol = normalizeSpace(symbol || '').toUpperCase()
+  const normalizedWeek = Number.isFinite(Number(week)) ? Number(week) : null
+  const normalizedQuantity = Number(quantity || 0)
+  const normalizedAmount = Number(amount || 0)
+  const normalizedPrice = Number(price || 0)
+  const normalizedDate = toIsoDate(eventDate)
+  const existingRow = account.importedTransactions.find((row) =>
+    String(row?.action || '').toLowerCase() === 'manual-seed' &&
+    String(row?.description || '') === description
+  ) || null
+
+  const fallbackExecutionOrder = account.importedTransactions.reduce((highest, row) => {
+    const value = Number(row?.executionOrder || 0)
+    return value > highest ? value : highest
+  }, 0) + 1
+
+  const baseRow = {
+    sourceLine: null,
+    date: normalizedDate,
+    description,
+    amount: normalizedAmount,
+    action: 'manual-seed',
+    symbol: normalizedSymbol,
+    quantity: normalizedQuantity,
+    price: normalizedPrice,
+    fees: 0,
+    executionOrder: existingRow ? Number(existingRow?.executionOrder || fallbackExecutionOrder) : fallbackExecutionOrder,
+    week: normalizedWeek
+  }
+
+  const fingerprintRegistry = buildFingerprintRegistry(account, [baseRow])
+  const sourceFingerprint = createSourceFingerprint(baseRow, fingerprintRegistry)
+
+  if (existingRow) {
+    existingRow.sourceLine = null
+    existingRow.date = normalizedDate
+    existingRow.description = description
+    existingRow.amount = normalizedAmount
+    existingRow.action = 'manual-seed'
+    existingRow.symbol = normalizedSymbol
+    existingRow.quantity = normalizedQuantity
+    existingRow.price = normalizedPrice
+    existingRow.fees = 0
+    existingRow.week = normalizedWeek
+    existingRow.sourceFingerprint = sourceFingerprint
+    existingRow.updatedAt = nowIso
+    return String(existingRow.id || '')
+  }
+
+  let occurrenceIndex = account.importedTransactions.filter((row) =>
+    String(row?.sourceFingerprint || '').trim() === sourceFingerprint
+  ).length
+  let id = createImportedTransactionId({ sourceFingerprint }, occurrenceIndex)
+  while (account.importedTransactions.some((row) => String(row?.id || '') === id)) {
+    occurrenceIndex += 1
+    id = createImportedTransactionId({ sourceFingerprint }, occurrenceIndex)
+  }
+
+  account.importedTransactions.push({
+    id,
+    sourceLine: null,
+    sourceFingerprint,
+    executionOrder: baseRow.executionOrder,
+    week: normalizedWeek,
+    date: normalizedDate,
+    action: 'manual-seed',
+    symbol: normalizedSymbol,
+    description,
+    quantity: normalizedQuantity,
+    price: normalizedPrice,
+    amount: normalizedAmount,
+    fees: 0,
+    raw: null,
+    createdAt: nowIso,
+    updatedAt: nowIso
+  })
+
+  account.importedTransactions.sort((a, b) => {
+    const weekA = Number(a?.week || 0)
+    const weekB = Number(b?.week || 0)
+    if (weekA !== weekB) return weekA - weekB
+    return Number(a?.executionOrder || 0) - Number(b?.executionOrder || 0)
+  })
+
+  return id
 }
 
 function upsertRelPositionTransaction(account, rel) {
@@ -384,6 +498,7 @@ const processTransactionImport = async () => {
         // Persist imported state first, then refresh projections from saved state
         await store.saveChangesAndRecalculate()
         refreshPendingAfterClose.value = true
+        refreshUrlAfterClose.value = window.location.href
       } catch (error) {
         transactionError.value = error.message || 'An error occurred during import'
         console.error('Import error:', error)
@@ -601,6 +716,7 @@ const processPositionsImport = async () => {
         positionsError.value = ''
         await store.saveChangesAndRecalculate()
         refreshPendingAfterClose.value = true
+        refreshUrlAfterClose.value = window.location.href
       } catch (error) {
         positionsError.value = error.message || 'An error occurred during positions import'
         console.error('Positions import error:', error)
@@ -624,8 +740,10 @@ async function importCurrentPositionsFromCSV(file, targetAccount) {
     throw new Error('No position rows found. Confirm this is a Schwab Positions export CSV.')
   }
 
-  const accountPositions = targetAccount.positions || []
+  if (!Array.isArray(targetAccount.positions)) targetAccount.positions = []
+  const accountPositions = targetAccount.positions
   const equityPriceBySymbol = new Map()
+  const equityPositionSeedBySymbol = new Map()
   const snapshot = {
     asOf: metadata?.asOfIso || new Date().toISOString(),
     asOfDate: metadata?.asOfDate || null,
@@ -647,6 +765,23 @@ async function importCurrentPositionsFromCSV(file, targetAccount) {
 
     if (isEquityLikeAssetType(assetType) && row.symbol && quantity > 0 && price > 0) {
       equityPriceBySymbol.set(row.symbol, price)
+      const existingSeed = equityPositionSeedBySymbol.get(row.symbol)
+      if (existingSeed) {
+        existingSeed.quantity += quantity
+        existingSeed.marketValue += marketValue
+        if (price > 0) existingSeed.price = price
+        if (Number.isFinite(_parseAmount(row.costBasis, NaN))) {
+          existingSeed.costBasis += _parseAmount(row.costBasis, 0)
+        }
+      } else {
+        equityPositionSeedBySymbol.set(row.symbol, {
+          symbol: row.symbol,
+          quantity,
+          price,
+          marketValue,
+          costBasis: Number.isFinite(_parseAmount(row.costBasis, NaN)) ? _parseAmount(row.costBasis, 0) : 0
+        })
+      }
       snapshot.totals.equitiesMarketValue += marketValue
     } else if (assetType.includes('option')) {
       snapshot.totals.optionsMarketValue += marketValue
@@ -685,13 +820,65 @@ async function importCurrentPositionsFromCSV(file, targetAccount) {
   })
   symbolsUpdated = matchedSymbols.size
 
+  const unmatchedSymbols = [...equityPriceBySymbol.keys()].filter(symbol => !matchedSymbols.has(symbol))
+  const fallbackPositionDate = getDayBeforeIsoDate(targetAccount?.settings?.startDate, snapshot.asOfDate)
+  let manualPositionsCreated = 0
+
+  unmatchedSymbols.forEach((symbol) => {
+    const seed = equityPositionSeedBySymbol.get(symbol)
+    if (!seed) return
+    const shares = Number(seed.quantity || 0)
+    const price = Number(seed.price || 0)
+    if (!Number.isFinite(shares) || shares <= 0) return
+    if (!Number.isFinite(price) || price <= 0) return
+
+    const costBasisCandidate = Number(seed.costBasis || 0) > 0
+      ? Number(seed.costBasis || 0)
+      : (Number(seed.marketValue || 0) > 0 ? Number(seed.marketValue || 0) : (shares * price))
+    const roundedCostBasis = Math.round(Math.abs(costBasisCandidate) * 1000) / 1000
+    if (!Number.isFinite(roundedCostBasis) || roundedCostBasis <= 0) return
+
+    const newPosition = {
+      startWeek: 1,
+      date: fallbackPositionDate,
+      sourceTransactionId: null,
+      executionOrder: 0,
+      costBasis: roundedCostBasis,
+      offsettingProfits: 0,
+      shares,
+      assignedWeek: 1,
+      soldShares: 0,
+      sellAmount: 0,
+      soldWeek: null,
+      symbol,
+      currentPrice: Math.round(price * 1000) / 1000,
+      profitAllocation: 100,
+      manual: true
+    }
+    newPosition.positionKey = store.getPositionKey(newPosition, 'buy')
+    newPosition.sourceTransactionId = upsertSyntheticPositionSourceTransaction(targetAccount, {
+      positionKey: newPosition.positionKey,
+      eventDate: newPosition.date,
+      symbol: newPosition.symbol,
+      quantity: newPosition.shares,
+      amount: newPosition.costBasis,
+      price: newPosition.shares > 0 ? (Math.abs(newPosition.costBasis) / newPosition.shares) : newPosition.currentPrice,
+      week: newPosition.assignedWeek
+    })
+    store.ensurePositionMetaKey(newPosition)
+    store.applyPositionMetaToPosition(targetAccount, newPosition)
+    accountPositions.push(newPosition)
+    manualPositionsCreated += 1
+  })
+
   targetAccount.brokerageSnapshot = snapshot
   return {
     rowsProcessed: positionsRows.length,
     symbolsInFile: equityPriceBySymbol.size,
     symbolsUpdated,
     lotsUpdated,
-    unmatchedSymbols: [...equityPriceBySymbol.keys()].filter(symbol => !matchedSymbols.has(symbol)),
+    unmatchedSymbols,
+    manualPositionsCreated,
     snapshot
   }
 }
@@ -922,7 +1109,7 @@ function parseCSV(csvText) {
  * 1. For each data row:
  *    a. Calculate week = floor((date - accountStartDate) / 7 days) + 1 (1-based)
  *    b. Create sourceFingerprint from row (normalized, deterministic)
- *    c. Create importedTransactionId from fingerprint + sourceLine + executionOrder
+ *    c. Create importedTransactionId from fingerprint + deterministic duplicate occurrence index
  *    d. Classify action against brokerMap to route to bucket:
  *       - transactionTypes (e.g., 'deposit', 'withdrawal') → transactionsImport[]
  *       - positionTypes (e.g., 'buy') → positionsImport[]
@@ -1031,7 +1218,11 @@ function _processData(dataRows, brokerMap) {
       if (lineA !== lineB) return lineA - lineB
       return Number(a?.executionOrder || 0) - Number(b?.executionOrder || 0)
     })
+    rows.forEach((row, index) => {
+      row.occurrenceIndex = index
+    })
   })
+  const seenFingerprintCounts = new Map()
 
   // First pass: derive week + ids/fingerprint and classify each row
   orderedRows.forEach(dataRow => {
@@ -1065,17 +1256,22 @@ function _processData(dataRows, brokerMap) {
     }
     importedRow.sourceFingerprint = createSourceFingerprint(importedRow, fingerprintRegistry)
     const matchingExistingRows = existingByFingerprint.get(importedRow.sourceFingerprint) || []
+    const fingerprintOccurrence = Number(seenFingerprintCounts.get(importedRow.sourceFingerprint) || 0)
+    seenFingerprintCounts.set(importedRow.sourceFingerprint, fingerprintOccurrence + 1)
+    const exactOccurrenceMatch = matchingExistingRows.find((row) =>
+      !row.used && Number(row?.occurrenceIndex || 0) === fingerprintOccurrence
+    )
     const exactLineMatch = matchingExistingRows.find((row) =>
       !row.used && Number(row?.sourceLine) === Number(importedRow?.sourceLine)
     )
     const fallbackMatch = matchingExistingRows.find(row => !row.used)
-    const matchedExistingRow = exactLineMatch || fallbackMatch || null
+    const matchedExistingRow = exactOccurrenceMatch || exactLineMatch || fallbackMatch || null
     const isExistingImportedRow = Boolean(matchedExistingRow && matchedExistingRow.id)
     if (isExistingImportedRow) {
       importedRow.id = matchedExistingRow.id
       matchedExistingRow.used = true
     } else {
-      importedRow.id = createImportedTransactionId(importedRow)
+      importedRow.id = createImportedTransactionId(importedRow, fingerprintOccurrence)
       importedRows.push(importedRow)
       changedWeeks.add(week)
     }
@@ -1632,10 +1828,10 @@ function _processSellData(sellsImport) {
     // If not all shares could be allocated, create a new position for the remainder
     if (sharesToAllocate > 0) {
       const unallocatedSellAmount = Math.round((sell.amount * (sharesToAllocate / sell.shares)) * 1000) / 1000
-      const startDate = account.settings.startDate
+      const preStartDate = getDayBeforeIsoDate(account.settings.startDate, sell.date)
       const newPosition = {
         startWeek: sell.week,
-        date: startDate,
+        date: preStartDate,
         sourceTransactionId: sell.sourceTransactionId || null,
         executionOrder: sell.executionOrder,
         costBasis: unallocatedSellAmount,
@@ -1651,6 +1847,17 @@ function _processSellData(sellsImport) {
         manual: true // Mark as manual/unallocated
       }
       newPosition.positionKey = store.getPositionKey(newPosition, 'buy')
+      if (!newPosition.sourceTransactionId) {
+        newPosition.sourceTransactionId = upsertSyntheticPositionSourceTransaction(account, {
+          positionKey: newPosition.positionKey,
+          eventDate: newPosition.date,
+          symbol: newPosition.symbol,
+          quantity: newPosition.shares,
+          amount: newPosition.costBasis,
+          price: newPosition.shares > 0 ? (Math.abs(newPosition.costBasis) / newPosition.shares) : newPosition.currentPrice,
+          week: newPosition.assignedWeek
+        })
+      }
       store.ensurePositionMetaKey(newPosition)
       store.applyPositionMetaToPosition(account, newPosition)
       account.positions.push(newPosition)
@@ -1858,11 +2065,14 @@ store.showImportTransactionsModal = show
                 <h5>Current Positions Import Completed</h5>
                 <p>{{ positionsImportResults.rowsProcessed }} position rows processed</p>
                 <p>{{ positionsImportResults.symbolsUpdated }} symbols updated across {{ positionsImportResults.lotsUpdated }} lots</p>
+                <p v-if="positionsImportResults.manualPositionsCreated">
+                  {{ positionsImportResults.manualPositionsCreated }} manual fallback position(s) were created one day before account start for unmatched symbols.
+                </p>
                 <p v-if="positionsImportResults.snapshot?.totals?.positionsTotal !== null">
                   Brokerage Positions Total: {{ store.currency(positionsImportResults.snapshot.totals.positionsTotal) }}
                 </p>
                 <p v-if="positionsImportResults.unmatchedSymbols?.length" class="text-warning mb-0">
-                  Unmatched symbols: {{ positionsImportResults.unmatchedSymbols.join(', ') }}
+                  Symbols without pre-existing lots: {{ positionsImportResults.unmatchedSymbols.join(', ') }}
                 </p>
               </div>
             </div>

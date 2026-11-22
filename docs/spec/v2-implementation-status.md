@@ -1,6 +1,6 @@
 # v2 Implementation Status
 
-Last verified: 2026-10-31
+Last verified: 2026-11-22
 
 Track delivery progress against the v2 model and fresh-start cutover.
 
@@ -61,11 +61,11 @@ This ensures the codebase remains maintainable and contributors don't need to re
 
 ## Trade Desk
 
-- [ ] `trades` CRUD implemented
+- [x] `trades` CRUD implemented
 - [x] `trades.sourceTransactionId` required and enforced
-- [ ] `relTradeTransactions` CRUD implemented
-- [ ] source-transaction exclusivity enforced per trade lifecycle
-- [ ] trade profitability calculations implemented and validated
+- [x] `relTradeTransactions` CRUD implemented
+- [x] source-transaction exclusivity enforced per trade lifecycle
+- [x] trade profitability calculations implemented and validated
 
 ## Cleanup and consistency
 

@@ -1,13 +1,15 @@
 <script setup>
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { useAppStore } from '@/stores/app'
 import DataTable from '@/components/custom/DataTable.vue'
 import TransactionRowsTable from '@/components/custom/TransactionRowsTable.vue'
-import { createTransactionTableColumns, getTradeTransactionAttributes, toTransactionDisplayRow } from '@/services/transactionTableDisplay'
+import { createTransactionTableColumns, extractUnderlyingSymbol, getTradeTransactionAttributes, toTransactionDisplayRow } from '@/services/transactionTableDisplay'
 import { groupOptionLifecycle, groupWeekTransactions, sortRowsByDateExecution } from '@/services/weeklyTransactionGrouping'
+import { getOpenShares } from '@/utils/positionUtils'
 
 const store = useAppStore()
 const optionSymbolRegex = /^([\w.-]+)\s+(\d{2}\/\d{2}\/\d{2,4})\s+([\d.]+)\s+([CP])$/i
+const POSITION_SHARE_EPSILON = 1e-6
 const isVisible = ref(false)
 const isEdit = ref(false)
 const tradeId = ref(null)
@@ -322,6 +324,66 @@ const linkedSummaryRows = computed(() => {
     })
 })
 
+const linkedOpenPositions = computed(() => {
+  if (!isEdit.value || !editingTrade.value || !store.activeAccount) return []
+
+  const timelineEntries = store.getTradeTimeline(editingTrade.value.id)
+  const linkedSourceIdSet = new Set(
+    timelineEntries
+      .map((entry) => String(entry?.sourceTransactionId || '').trim())
+      .filter(Boolean)
+  )
+  if (!linkedSourceIdSet.size) return []
+
+  const relPositionRows = Array.isArray(store.activeAccount?.relPositionTransactions)
+    ? store.activeAccount.relPositionTransactions
+    : []
+  const linkedPositionKeySet = new Set(
+    relPositionRows
+      .filter((rel) => linkedSourceIdSet.has(String(rel?.sourceTransactionId || '').trim()))
+      .map((rel) => String(rel?.positionKey || '').trim())
+      .filter(Boolean)
+  )
+
+  const matched = (Array.isArray(store.activeAccount?.positions) ? store.activeAccount.positions : [])
+    .filter((position) => {
+      const sourceId = String(position?.sourceTransactionId || '').trim()
+      const positionKey = String(position?.positionKey || '').trim()
+      return (sourceId && linkedSourceIdSet.has(sourceId)) || (positionKey && linkedPositionKeySet.has(positionKey))
+    })
+    .filter((position) => Number(getOpenShares(position) || 0) > POSITION_SHARE_EPSILON)
+
+  const dedupedByKey = new Map()
+  matched.forEach((position) => {
+    const key = String(position?.positionKey || '').trim()
+    if (!key) return
+    if (!dedupedByKey.has(key)) dedupedByKey.set(key, position)
+  })
+
+  return Array.from(dedupedByKey.values()).sort((a, b) => {
+    const openA = Number(getOpenShares(a) || 0)
+    const openB = Number(getOpenShares(b) || 0)
+    if (openA !== openB) return openB - openA
+    const basisA = Math.abs(Number(a?.costBasis || 0))
+    const basisB = Math.abs(Number(b?.costBasis || 0))
+    if (basisA !== basisB) return basisB - basisA
+    const weekA = Number(a?.assignedWeek || 0)
+    const weekB = Number(b?.assignedWeek || 0)
+    if (weekA !== weekB) return weekB - weekA
+    return String(a?.positionKey || '').localeCompare(String(b?.positionKey || ''))
+  })
+})
+
+const primaryLinkedOpenPosition = computed(() => (
+  linkedOpenPositions.value.length ? linkedOpenPositions.value[0] : null
+))
+
+const linkedPositionActionLabel = computed(() => (
+  linkedOpenPositions.value.length > 1
+    ? `Edit linked position (${linkedOpenPositions.value.length} matches)`
+    : 'Edit linked position'
+))
+
 const linkedRawRows = computed(() => {
   return sortRowsByDateExecution(activityTimelineRows.value, { descending: true })
     .map((row) => {
@@ -468,6 +530,38 @@ const displayNetCostPerShare = computed(() => {
   return netCostBasis / openShares
 })
 
+const displayPutSecuredCostPerShare = computed(() => {
+  const capitalAtRisk = Number(activeMetrics.value?.capitalAtRisk || 0)
+  if (!Number.isFinite(capitalAtRisk) || capitalAtRisk <= 0) return null
+
+  const timelineRows = sortRowsByDateExecution(activityTimelineRows.value, { descending: false })
+  if (!timelineRows.length) return null
+
+  const hasStockPurchase = timelineRows.some((row) => {
+    const contractType = String(row?.contractType || '').trim().toLowerCase()
+    const action = String(row?.action || '').trim().toLowerCase()
+    return contractType === 'stock' && action.includes('buy')
+  })
+  if (hasStockPurchase) return null
+
+  const lastRow = timelineRows[timelineRows.length - 1]
+  const lastContractType = String(lastRow?.contractType || '').trim().toLowerCase()
+  if (lastContractType !== 'put') return null
+
+  const contractQty = Math.abs(Number(lastRow?.quantity ?? lastRow?.qty ?? 0))
+  if (!Number.isFinite(contractQty) || contractQty <= 0) return null
+
+  const netPremiums = Number(displayNetPremiums.value || 0)
+  const netCapitalBasis = capitalAtRisk - (Number.isFinite(netPremiums) ? netPremiums : 0)
+  return netCapitalBasis / (contractQty * 100)
+})
+
+const displayCostPerShare = computed(() => (
+  displayNetCostPerShare.value !== null
+    ? displayNetCostPerShare.value
+    : displayPutSecuredCostPerShare.value
+))
+
 const lifecycleDateRangeHtml = computed(() => {
   const startDate = String(activeMetrics.value?.startDate || '').trim()
   const endDate = String(activeMetrics.value?.endDate || '').trim()
@@ -602,13 +696,22 @@ const normalizedSelectedRows = computed(() => sortRowsOldestFirst(selectedRows.v
 
 const derivedSymbol = computed(() => {
   if (isEdit.value) return String(form.symbol || '').trim().toUpperCase()
-  const originSymbol = String(originRow.value?._raw?.symbol || originRow.value?.symbol || '').trim().toUpperCase()
+  const typedSymbol = String(form.symbol || '').trim().toUpperCase()
+  if (typedSymbol) return typedSymbol
+  const originSymbol = extractUnderlyingSymbol(
+    originRow.value?._raw?.symbol || originRow.value?.symbol || '',
+    originRow.value?._raw?.description || originRow.value?.description || ''
+  )
   if (originSymbol) return originSymbol
-  const firstNonEmpty = normalizedSelectedRows.value.find(row => String(row?.symbol || '').trim())
+  const firstNonEmpty = normalizedSelectedRows.value.find((row) => extractUnderlyingSymbol(
+    row?._raw?.symbol || row?.symbol || '',
+    row?._raw?.description || row?.description || ''
+  ))
   if (!firstNonEmpty) return ''
-  const fullSymbol = String(firstNonEmpty?._raw?.symbol || '').trim().toUpperCase()
-  if (fullSymbol) return fullSymbol
-  return String(firstNonEmpty.symbol).trim().toUpperCase()
+  return extractUnderlyingSymbol(
+    firstNonEmpty?._raw?.symbol || firstNonEmpty?.symbol || '',
+    firstNonEmpty?._raw?.description || firstNonEmpty?.description || ''
+  )
 })
 
 const canSave = computed(() => {
@@ -737,17 +840,21 @@ function validateCreateSelection() {
     return false
   }
 
-  if (!derivedSymbol.value) {
-    formError.value = 'Unable to determine trade symbol from selected activity.'
+  const tradeTicker = String(form.symbol || derivedSymbol.value || '').trim().toUpperCase()
+  if (!tradeTicker) {
+    formError.value = 'Ticker is required.'
     return false
   }
 
   const mismatched = normalizedSelectedRows.value.find((row) => {
-    const rowSymbol = String(row?.symbol || '').trim().toUpperCase()
-    return rowSymbol && rowSymbol !== derivedSymbol.value
+    const rowSymbol = extractUnderlyingSymbol(
+      row?._raw?.symbol || row?.symbol || '',
+      row?._raw?.description || row?.description || ''
+    )
+    return rowSymbol && rowSymbol !== tradeTicker
   })
   if (mismatched) {
-    formError.value = `All selected activity must match symbol ${derivedSymbol.value} (blank symbols are allowed).`
+    formError.value = `All selected activity must match ticker ${tradeTicker} (blank symbols are allowed).`
     return false
   }
   return true
@@ -773,6 +880,7 @@ function openCreateActivityModal() {
   store.showSelectTradeTransactionsModal(
     {
       mode: 'create',
+      symbol: String(form.symbol || '').trim().toUpperCase(),
       preselectedSourceIds: selectedRows.value.map(row => String(row?.id || ''))
     },
     ({ selectedRows: sourceRows }) => {
@@ -808,6 +916,36 @@ function removeLinkedActivity(row) {
   if (window.confirm('Remove this linked activity from the trade?')) runUnlink()
 }
 
+function openLinkedPositionModal() {
+  if (!isEdit.value) return
+
+  const position = primaryLinkedOpenPosition.value
+  if (!position) return
+
+  const targetPosition = { ...position }
+  const targetMergeGroup = position?.mergeGroup || null
+
+  const tryOpenModal = () => {
+    if (typeof store.showPositionModal === 'function') {
+      store.showPositionModal(targetPosition, targetMergeGroup)
+      formError.value = ''
+      return true
+    }
+    return false
+  }
+
+  if (tryOpenModal()) return
+
+  const previousTab = String(store.activeTab || '')
+  store.activeTab = 'positions'
+
+  nextTick(() => {
+    if (tryOpenModal()) return
+    if (previousTab) store.activeTab = previousTab
+    formError.value = 'Position editor is not available right now. Please switch to the Positions tab and try again.'
+  })
+}
+
 function deleteTradeFromModal() {
   if (!editingTrade.value) return
   const runDelete = () => {
@@ -835,8 +973,14 @@ async function submit() {
 
   try {
     if (isEdit.value && tradeId.value) {
+      const nextSymbol = String(form.symbol || '').trim().toUpperCase()
+      if (!nextSymbol) {
+        formError.value = 'Ticker is required.'
+        return
+      }
       store.updateTrade(tradeId.value, {
         sourceTransactionId: form.sourceTransactionId,
+        symbol: nextSymbol,
         name: form.name || null,
         status: form.status,
         closedAt: form.status === 'closed' ? form.closedAt : null
@@ -847,9 +991,14 @@ async function submit() {
 
     if (!validateCreateSelection()) return
     const origin = originRow.value
+    const tradeTicker = String(form.symbol || derivedSymbol.value || '').trim().toUpperCase()
+    if (!tradeTicker) {
+      formError.value = 'Ticker is required.'
+      return
+    }
     const trade = store.createTrade({
       sourceTransactionId: origin.id,
-      symbol: derivedSymbol.value,
+      symbol: tradeTicker,
       name: form.name || null,
       status: form.status,
       closedAt: form.status === 'closed' ? form.closedAt : null
@@ -885,11 +1034,15 @@ async function submit() {
         </div>
         <div class="modal-body">
           <div class="row g-2 mb-3">
-            <div class="col-12 col-lg-6">
+            <div class="col-12 col-lg-5">
               <label class="form-label">Trade name</label>
               <input class="form-control form-control-sm" v-model.trim="form.name" placeholder="Optional name" />
             </div>
-            <div class="col-12 col-lg-3">
+            <div class="col-12 col-lg-2">
+              <label class="form-label">Ticker</label>
+              <input class="form-control form-control-sm text-uppercase" v-model.trim="form.symbol" placeholder="e.g. TQQQ" />
+            </div>
+            <div class="col-12 col-lg-2">
               <label class="form-label">Status</label>
               <select class="form-select form-select-sm" v-model="form.status">
                 <option value="open">Open</option>
@@ -983,14 +1136,24 @@ async function submit() {
                     <div class="metric-tile">
                       <div class="metric-label">Net Cost / Share</div>
                       <div class="metric-value">
-                        {{ displayNetCostPerShare !== null ? store.currency(displayNetCostPerShare) : 'N/A' }}
+                      {{ displayCostPerShare !== null ? store.currency(displayCostPerShare) : 'N/A' }}
                       </div>
                     </div>
                   </div>
                 </div>
 
                 <div class="metric-tile">
-                  <div class="metric-label">P/L outlook range</div>
+                  <div class="metric-label metric-label-row">
+                    <span>P/L outlook range</span>
+                    <button
+                      v-if="isEdit && primaryLinkedOpenPosition"
+                      type="button"
+                      class="btn btn-sm btn-outline-primary"
+                      @click="openLinkedPositionModal"
+                    >
+                      <i class="bi bi-box-arrow-up-right me-1"></i>{{ linkedPositionActionLabel }}
+                    </button>
+                  </div>
                   <DataTable
                     v-if="performanceScenarioRows.length"
                     :items="performanceScenarioRows"
@@ -1036,7 +1199,7 @@ async function submit() {
                     </button>
                   </div>
                   <button class="btn btn-outline-success btn-sm ms-auto" @click="openActivitySelector">
-                    <i class="bi bi-link-45deg me-1"></i> {{ isEdit ? 'Link Activity' : 'Select Activity' }}
+                    <i class="bi bi-link-45deg me-1"></i> Link Activity
                   </button>
                 </div>
                 <TransactionRowsTable
@@ -1202,6 +1365,13 @@ async function submit() {
   font-size: 0.75rem;
   color: var(--bs-secondary-color);
   margin-bottom: 0.15rem;
+}
+
+.metric-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
 }
 
 .metric-value {

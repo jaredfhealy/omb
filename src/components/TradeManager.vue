@@ -65,16 +65,11 @@ watch(filteredTrades, (rows) => {
 function getTradeListDisplayMetrics(trade) {
   const metrics = trade?.metrics || {}
   const netPremiums = Number(metrics?.netPremiums)
-  const fullRecoveryNetPL = Number(metrics?.plScenarios?.fullRecoveryNetPL)
   const baselineNetPL = Number(metrics?.netPL)
-  const hasOpenStockExposure = Boolean(metrics?.plScenarios?.hasOpenStockExposure)
-  const needsPositionResolution = Boolean(metrics?.plScenarios?.needsPositionResolution)
   const isOpenTrade = String(trade?.status || 'open') === 'open'
-  const netPL = (!hasOpenStockExposure && !needsPositionResolution && isOpenTrade && Number.isFinite(netPremiums))
+  const netPL = (isOpenTrade && Number.isFinite(netPremiums))
     ? netPremiums
-    : (Number.isFinite(fullRecoveryNetPL)
-    ? fullRecoveryNetPL
-    : (Number.isFinite(baselineNetPL) ? baselineNetPL : 0))
+    : (Number.isFinite(baselineNetPL) ? baselineNetPL : 0)
 
   const capitalAtRisk = Number(metrics?.capitalAtRisk || 0)
   const durationWeeks = Number(metrics?.durationWeeks || 0)
@@ -148,7 +143,7 @@ function getTradeRowAttributes() {
         </div>
       </template>
       <template #symbol="{ item }">
-        <span class="fw-semibold" :class="{ 'text-primary': String(item.id) === String(selectedTradeId) }">
+        <span class="fw-semibold">
           {{ item.displaySymbol || item.symbol || '—' }}
         </span>
       </template>

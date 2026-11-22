@@ -198,11 +198,8 @@ function normalizeSpace(value) {
   return String(value || '').trim().replace(/\s+/g, ' ')
 }
 
-function getImportedTransactionAllocationKey(row) {
+function getImportedTransactionStableRowKey(row) {
   if (!row || typeof row !== 'object') return ''
-  const sourceFingerprint = String(row?.sourceFingerprint || '').trim()
-  if (sourceFingerprint) return `fp:${sourceFingerprint}`
-
   const date = String(toIsoDateOnly(row?.date) || '').trim()
   const action = normalizeSpace(row?.action).toLowerCase()
   const symbol = toUpperSymbol(row?.symbol)
@@ -210,23 +207,166 @@ function getImportedTransactionAllocationKey(row) {
   const quantity = Number(row?.quantity || 0)
   const price = Number(row?.price || 0)
   const amount = Number(row?.amount || 0)
+  const fees = Number(row?.fees ?? 0)
 
-  return `legacy:${date}|${action}|${symbol}|${description}|${quantity.toFixed(6)}|${price.toFixed(6)}|${amount.toFixed(2)}`
+  return `stable:${date}|${action}|${symbol}|${description}|${quantity.toFixed(6)}|${price.toFixed(6)}|${amount.toFixed(2)}|${fees.toFixed(2)}`
 }
 
-function getImportedTransactionLooseKey(row) {
-  if (!row || typeof row !== 'object') return ''
-  const symbol = toUpperSymbol(row?.symbol)
-  const description = String(row?.description || '').trim()
-  const optionMatch = OPTION_SYMBOL_REGEX.exec(symbol) || OPTION_SYMBOL_REGEX.exec(description)
-  const date = String(toIsoDateOnly(row?.date) || '').trim()
-  const underlying = toTradeUnderlyingSymbol(symbol, description)
-  const action = normalizeSpace(row?.action).toLowerCase()
-  const optionType = optionMatch ? String(optionMatch[4] || '').toUpperCase() : 'STOCK'
-  const expiration = optionMatch ? String(optionMatch[2] || '').trim() : ''
-  const strike = optionMatch ? String(optionMatch[3] || '').trim() : ''
-  const quantity = Math.abs(Number(row?.quantity || 0))
-  return `loose:${date}|${underlying}|${action}|${optionType}|${expiration}|${strike}|${quantity.toFixed(6)}`
+function chooseCanonicalImportedTransaction(rows, referencedIds = new Set()) {
+  if (!Array.isArray(rows) || rows.length === 0) return null
+  return rows
+    .slice()
+    .sort((left, right) => {
+      const leftId = String(left?.id || '').trim()
+      const rightId = String(right?.id || '').trim()
+      const leftReferenced = referencedIds.has(leftId) ? 1 : 0
+      const rightReferenced = referencedIds.has(rightId) ? 1 : 0
+      if (leftReferenced !== rightReferenced) return rightReferenced - leftReferenced
+
+      const leftCreatedAt = String(left?.createdAt || '')
+      const rightCreatedAt = String(right?.createdAt || '')
+      if (leftCreatedAt !== rightCreatedAt) return leftCreatedAt.localeCompare(rightCreatedAt)
+
+      const leftOrder = Number(left?.executionOrder || 0)
+      const rightOrder = Number(right?.executionOrder || 0)
+      if (leftOrder !== rightOrder) return leftOrder - rightOrder
+
+      const leftLine = Number(left?.sourceLine || 0)
+      const rightLine = Number(right?.sourceLine || 0)
+      if (leftLine !== rightLine) return leftLine - rightLine
+
+      return leftId.localeCompare(rightId)
+    })[0]
+}
+
+function normalizeImportedTransactionReferences(dbState) {
+  if (!dbState || !Array.isArray(dbState.accounts)) return false
+  let migrated = false
+
+  dbState.accounts.forEach((account) => {
+    const importedRows = Array.isArray(account?.importedTransactions) ? account.importedTransactions : []
+    if (importedRows.length <= 1) return
+
+    const referencedIds = new Set()
+    ;(Array.isArray(account?.trades) ? account.trades : []).forEach((trade) => {
+      const sourceId = String(trade?.sourceTransactionId || '').trim()
+      if (sourceId) referencedIds.add(sourceId)
+    })
+    ;(Array.isArray(account?.relTradeTransactions) ? account.relTradeTransactions : []).forEach((rel) => {
+      const sourceId = String(rel?.sourceTransactionId || '').trim()
+      if (sourceId) referencedIds.add(sourceId)
+    })
+    ;(Array.isArray(account?.transactions) ? account.transactions : []).forEach((flow) => {
+      const sourceId = String(flow?.sourceTransactionId || '').trim()
+      if (sourceId) referencedIds.add(sourceId)
+    })
+    ;(Array.isArray(account?.positions) ? account.positions : []).forEach((position) => {
+      const sourceId = String(position?.sourceTransactionId || '').trim()
+      if (sourceId) referencedIds.add(sourceId)
+    })
+    ;(Array.isArray(account?.relPositionTransactions) ? account.relPositionTransactions : []).forEach((rel) => {
+      const sourceId = String(rel?.sourceTransactionId || '').trim()
+      if (sourceId) referencedIds.add(sourceId)
+    })
+    ;(Array.isArray(account?.notes) ? account.notes : []).forEach((note) => {
+      if (String(note?.targetCollection || '') !== 'importedTransactions') return
+      const targetId = String(note?.targetId || '').trim()
+      if (targetId) referencedIds.add(targetId)
+    })
+
+    const groupedByStableKey = new Map()
+    importedRows.forEach((row) => {
+      const rowId = String(row?.id || '').trim()
+      if (!rowId) return
+      const stableKey = getImportedTransactionStableRowKey(row)
+      if (!stableKey) return
+      if (!groupedByStableKey.has(stableKey)) {
+        groupedByStableKey.set(stableKey, [])
+      }
+      groupedByStableKey.get(stableKey).push(row)
+    })
+
+    const remap = new Map()
+    groupedByStableKey.forEach((rows) => {
+      if (!Array.isArray(rows) || rows.length <= 1) return
+      const canonical = chooseCanonicalImportedTransaction(rows, referencedIds)
+      const canonicalId = String(canonical?.id || '').trim()
+      if (!canonicalId) return
+      rows.forEach((row) => {
+        const rowId = String(row?.id || '').trim()
+        if (!rowId || rowId === canonicalId) return
+        remap.set(rowId, canonicalId)
+      })
+    })
+
+    if (!remap.size) return
+
+    const remapSourceId = (value) => {
+      const sourceId = String(value || '').trim()
+      if (!sourceId) return value
+      return remap.get(sourceId) || sourceId
+    }
+
+    account.importedTransactions = importedRows
+      .filter((row) => !remap.has(String(row?.id || '').trim()))
+      .sort((a, b) => {
+        const weekA = Number(a?.week || 0)
+        const weekB = Number(b?.week || 0)
+        if (weekA !== weekB) return weekA - weekB
+        const orderA = Number(a?.executionOrder || 0)
+        const orderB = Number(b?.executionOrder || 0)
+        if (orderA !== orderB) return orderA - orderB
+        return String(a?.id || '').localeCompare(String(b?.id || ''))
+      })
+
+    ;(Array.isArray(account?.trades) ? account.trades : []).forEach((trade) => {
+      trade.sourceTransactionId = remapSourceId(trade?.sourceTransactionId)
+    })
+
+    ;(Array.isArray(account?.relTradeTransactions) ? account.relTradeTransactions : []).forEach((rel) => {
+      rel.sourceTransactionId = remapSourceId(rel?.sourceTransactionId)
+    })
+    const seenTradeRelation = new Set()
+    account.relTradeTransactions = (Array.isArray(account?.relTradeTransactions) ? account.relTradeTransactions : [])
+      .filter((rel) => {
+        const tradeId = String(rel?.tradeId || '').trim()
+        const sourceId = String(rel?.sourceTransactionId || '').trim()
+        if (!tradeId || !sourceId) return true
+        const dedupeKey = `${tradeId}|${sourceId}`
+        if (seenTradeRelation.has(dedupeKey)) return false
+        seenTradeRelation.add(dedupeKey)
+        return true
+      })
+
+    ;(Array.isArray(account?.transactions) ? account.transactions : []).forEach((flow) => {
+      const sourceId = String(flow?.sourceTransactionId || '').trim()
+      if (!sourceId) return
+      flow.sourceTransactionId = remapSourceId(sourceId)
+    })
+
+    ;(Array.isArray(account?.positions) ? account.positions : []).forEach((position) => {
+      const sourceId = String(position?.sourceTransactionId || '').trim()
+      if (!sourceId) return
+      position.sourceTransactionId = remapSourceId(sourceId)
+    })
+
+    ;(Array.isArray(account?.relPositionTransactions) ? account.relPositionTransactions : []).forEach((rel) => {
+      const sourceId = String(rel?.sourceTransactionId || '').trim()
+      if (!sourceId) return
+      rel.sourceTransactionId = remapSourceId(sourceId)
+    })
+
+    ;(Array.isArray(account?.notes) ? account.notes : []).forEach((note) => {
+      if (String(note?.targetCollection || '') !== 'importedTransactions') return
+      const targetId = String(note?.targetId || '').trim()
+      if (!targetId) return
+      note.targetId = remapSourceId(targetId)
+    })
+
+    migrated = true
+  })
+
+  return migrated
 }
 
 function parseOptionExpirationToIso(value) {
@@ -384,34 +524,15 @@ export const useAppStore = defineStore('app', {
         const importedRows = Array.isArray(account.importedTransactions)
           ? account.importedTransactions
           : []
-        const importedById = new Map(
-          importedRows.map((row) => [String(row?.id || '').trim(), row])
-        )
         const trades = Array.isArray(account.trades) ? account.trades : []
         const relRows = Array.isArray(account.relTradeTransactions) ? account.relTradeTransactions : []
         const symbolFilter = toUpperSymbol(symbol)
 
         const allocatedSourceIds = new Set()
-        const allocatedSourceFingerprints = new Set()
-        const allocatedSourceKeys = new Set()
-        const allocatedSourceLooseKeys = new Set()
         const markAllocated = (sourceId) => {
           const normalizedId = String(sourceId || '').trim()
           if (!normalizedId) return
           allocatedSourceIds.add(normalizedId)
-          const sourceRow = importedById.get(normalizedId)
-          const sourceFingerprint = String(sourceRow?.sourceFingerprint || '').trim()
-          if (sourceFingerprint) {
-            allocatedSourceFingerprints.add(sourceFingerprint)
-          }
-          const sourceKey = getImportedTransactionAllocationKey(sourceRow)
-          if (sourceKey) {
-            allocatedSourceKeys.add(sourceKey)
-          }
-          const sourceLooseKey = getImportedTransactionLooseKey(sourceRow)
-          if (sourceLooseKey) {
-            allocatedSourceLooseKeys.add(sourceLooseKey)
-          }
         }
 
         trades.forEach((trade) => {
@@ -425,12 +546,6 @@ export const useAppStore = defineStore('app', {
           .filter((row) => {
             const sourceId = String(row?.id || '').trim()
             if (!sourceId || allocatedSourceIds.has(sourceId)) return false
-            const sourceFingerprint = String(row?.sourceFingerprint || '').trim()
-            if (sourceFingerprint && allocatedSourceFingerprints.has(sourceFingerprint)) return false
-            const sourceKey = getImportedTransactionAllocationKey(row)
-            if (sourceKey && allocatedSourceKeys.has(sourceKey)) return false
-            const sourceLooseKey = getImportedTransactionLooseKey(row)
-            if (sourceLooseKey && allocatedSourceLooseKeys.has(sourceLooseKey)) return false
             const rowSymbol = toTradeUnderlyingSymbol(row?.symbol, row?.description)
             if (!symbolFilter) return true
             if (!rowSymbol) return true
@@ -593,11 +708,16 @@ export const useAppStore = defineStore('app', {
 
         if (data && Array.isArray(data.accounts)) {
           this.db = createPersistableStateSnapshot(data)
+          const normalizedImportedReferences = normalizeImportedTransactionReferences(this.db)
+          const prunedTradeNotes = pruneOrphanedTradeNotes(this.db)
           this.ensureSelectedAccount()
           this.applyPositionMetadataForActiveAccount()
           this.startupRequiresManualRecovery = false
           this.startupRecoveryReason = null
           this.startupValidationErrors = []
+          if (normalizedImportedReferences || prunedTradeNotes) {
+            await this.saveChanges()
+          }
         } else {
           this.startupRequiresManualRecovery = true
           this.startupRecoveryReason = 'startup-payload-missing-data'
@@ -626,6 +746,7 @@ export const useAppStore = defineStore('app', {
     
     async saveChanges() {
       try {
+        normalizeImportedTransactionReferences(this.db)
         pruneOrphanedTradeNotes(this.db)
         const dataToSave = createPersistableStateSnapshot(this.db)
         const { meta } = await saveAppState(dataToSave, this.persistenceMeta)
@@ -2081,6 +2202,99 @@ export const useAppStore = defineStore('app', {
       const key = position.positionMetaKey || this.getPositionMetaKey(position)
       const basePrefix = `${this.getPositionMetaBaseKey(position)}|`
       this.activeAccount.positionMeta = this.activeAccount.positionMeta.filter(entry => entry.key !== key && !(typeof entry.key === 'string' && entry.key.startsWith(basePrefix)))
+    },
+
+    getManualPositionDeleteCascadeStatus(position) {
+      const account = this.activeAccount
+      if (!account || !position || !position.manual) {
+        return { blocked: false, sourceTransactionId: '', blockers: [] }
+      }
+
+      const positionKey = String(position?.positionKey || '').trim()
+      const sourceTransactionId = String(position?.sourceTransactionId || '').trim()
+      if (!sourceTransactionId) {
+        return { blocked: false, sourceTransactionId, blockers: [] }
+      }
+
+      const importedRows = Array.isArray(account.importedTransactions) ? account.importedTransactions : []
+      const sourceRow = importedRows.find((row) => String(row?.id || '') === sourceTransactionId)
+      const action = String(sourceRow?.action || '').trim().toLowerCase()
+      if (action !== 'manual-seed') {
+        return { blocked: false, sourceTransactionId, blockers: [] }
+      }
+
+      const blockers = []
+      const positionReferences = (Array.isArray(account.positions) ? account.positions : [])
+        .filter((existing) => {
+          if (String(existing?.sourceTransactionId || '') !== sourceTransactionId) return false
+          if (positionKey) return String(existing?.positionKey || '') !== positionKey
+          return existing !== position
+        })
+      if (positionReferences.length > 0) {
+        blockers.push(`positions (${positionReferences.length})`)
+      }
+
+      const tradeOriginReferences = (Array.isArray(account.trades) ? account.trades : [])
+        .filter((trade) => String(trade?.sourceTransactionId || '') === sourceTransactionId)
+      if (tradeOriginReferences.length > 0) {
+        blockers.push(`trade origins (${tradeOriginReferences.length})`)
+      }
+
+      const tradeRelationReferences = (Array.isArray(account.relTradeTransactions) ? account.relTradeTransactions : [])
+        .filter((rel) => String(rel?.sourceTransactionId || '') === sourceTransactionId)
+      if (tradeRelationReferences.length > 0) {
+        blockers.push(`trade activity links (${tradeRelationReferences.length})`)
+      }
+
+      const positionRelationReferences = (Array.isArray(account.relPositionTransactions) ? account.relPositionTransactions : [])
+        .filter((rel) => {
+          if (String(rel?.sourceTransactionId || '') !== sourceTransactionId) return false
+          if (positionKey) return String(rel?.positionKey || '') !== positionKey
+          return true
+        })
+      if (positionRelationReferences.length > 0) {
+        blockers.push(`position activity links (${positionRelationReferences.length})`)
+      }
+
+      return {
+        blocked: blockers.length > 0,
+        sourceTransactionId,
+        blockers
+      }
+    },
+
+    removeManualPositionAndLinkedSyntheticSource(position) {
+      const account = this.activeAccount
+      if (!account || !position || !position.manual) return false
+
+      const positionKey = String(position?.positionKey || '').trim()
+      const sourceTransactionId = String(position?.sourceTransactionId || '').trim()
+      const cascadeStatus = this.getManualPositionDeleteCascadeStatus(position)
+      if (cascadeStatus.blocked) return false
+
+      this.removePositionMeta(position)
+
+      account.positions = (Array.isArray(account.positions) ? account.positions : []).filter((existing) => {
+        if (positionKey) return String(existing?.positionKey || '') !== positionKey
+        return existing !== position
+      })
+
+      if (positionKey) {
+        account.relPositionTransactions = (Array.isArray(account.relPositionTransactions) ? account.relPositionTransactions : [])
+          .filter((rel) => String(rel?.positionKey || '') !== positionKey)
+      }
+
+      if (!sourceTransactionId) return true
+
+      const importedRows = Array.isArray(account.importedTransactions) ? account.importedTransactions : []
+      const sourceRow = importedRows.find((row) => String(row?.id || '') === sourceTransactionId)
+      const action = String(sourceRow?.action || '').trim().toLowerCase()
+      if (action !== 'manual-seed') return true
+
+      account.importedTransactions = importedRows
+        .filter((row) => String(row?.id || '') !== sourceTransactionId)
+
+      return true
     },
 
     calculateWeekStartEnd(weekNumber) {
