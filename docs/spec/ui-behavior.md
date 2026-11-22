@@ -1,6 +1,6 @@
 # UI Behavior and Interaction Rules
 
-Last verified: 2026-10-31
+Last verified: 2026-11-22
 
 ## Layout and scrolling
 
@@ -33,6 +33,7 @@ Last verified: 2026-10-31
 - Positions list ordering should be newest-to-oldest by opening execution (initial buy or short-open event).
 - Position status filters include `Open`, `Recent`, `Closed`, and `All`; `Recent` shows lots with open or close activity in the last 30 days and includes a tooltip clarifying the 30-day window.
 - Manual delete controls (trash icon) should appear only for user-created manual positions.
+- Deleting a manual position is blocked if its linked synthetic `manual-seed` imported transaction is still referenced elsewhere (positions/trades/relations). When unreferenced, delete cascades to remove that synthetic source row.
 - Imported/system-generated positions (including short lots created from `sell short`) should not be treated as manual/deletable.
 
 ## Weekly workflows
@@ -55,6 +56,9 @@ Last verified: 2026-10-31
 
 - Trade management route is `/trade-desk` (canonical).
 - Trade Desk should prioritize active workflows: open/closed filtering, allocation management, and timeline-driven review.
+- Trade details persist a trade ticker, and Link Activity uses that ticker as the default filter scope (including first-time activity selection during trade creation).
+- Trade details should provide a contextual action to open the linked position editor when open stock exposure is detected.
+- Link Activity should open as a stacked right-side panel over Trade Details (instead of a centered modal) while preserving existing filter/selection behavior.
 
 ## Import workflows
 

@@ -1,64 +1,55 @@
 # Trade Desk and Trade Sequence Profitability
 
-Last verified: 2026-10-24
+Last verified: 2026-11-22
 
-This document defines the Trade Desk workflow and its v2 data-model requirements.
+This document defines current Trade Desk behavior and its v2 data-model constraints.
 
-## Problem statement
+## Purpose
 
-Current position-level premium allocation fields are too coarse for multi-leg sequences, changing strikes/quantities, and partial attribution. Trade Desk introduces explicit source-transaction linkage and trade lifecycle tracking.
+Trade Desk provides explicit source-transaction linkage and lifecycle tracking for single-symbol trade sequences.
 
-## Goals
+## Navigation and workspace location
 
-1. Provide a dedicated Trade Desk surface for defining, reviewing, and closing trade sequences.
-2. Enforce exclusive allocation: a source transaction can belong to at most one trade lifecycle.
-3. Keep trade scope single-symbol (`TQQQ` trade cannot include `SOXL` rows).
-4. Calculate trade profitability with time and capital context (weekly ROR, net P/L, duration).
-5. Align with v2 collection model and fresh-start cutover behavior.
+- **User-facing name:** `Trade Desk`
+- **Primary location:** first tab in the main `/` workspace (`tab=trades`)
+- **Legacy route compatibility:** `/trade-desk` redirects to `/?tab=trades`
 
-## Naming and Terminology
+## Core behavior
 
-- **User-facing page name:** `Trade Desk`
-- **Route path (canonical):** `/trade-desk`
-- **Trade:** A user-managed strategy lifecycle for one symbol.
-- **Source transaction:** A raw imported brokerage transaction record.
-- **Trade event:** A trade-ledger entry derived from a linked source transaction (stored in relationship records).
+1. A trade is created from selected activity where the oldest selected row becomes the originating source transaction.
+2. Additional source transactions can be linked/unlinked from the trade.
+3. Source transactions are exclusive to one trade lifecycle.
+4. Trade activity is timeline-first (oldest to newest) with grouped and raw views.
+5. Trade metrics are derived from linked source rows and linked position context.
 
-## User stories
+## Workspace surfaces
 
-1. As a user, I can create a trade for a symbol and assign a label/notes.
-2. As a user, I must associate exactly one originating source transaction when creating a trade.
-3. As a user, I can link one or more additional source transactions to that trade.
-4. As a user, I cannot allocate the same source transaction to multiple trades.
-5. As a user, I can view a chronological trade timeline and evaluate profitability.
-
-## UX: Trade Desk page
-
-Add a new route/page (`/trade-desk`) with three coordinated regions:
+Trade Desk uses three coordinated surfaces:
 
 1. **Trade list panel**
-   - filters: open/closed/all, symbol, date range
-   - summary columns: symbol, status, start date, end date, weeks, capital at risk, net P/L, weekly ROR
-   - implementation should use existing shared table patterns/components (notably `components/custom/DataTable.vue`) for layout, slots, tooltips, and responsive behavior consistency
-2. **Trade detail panel**
-   - lifecycle timeline (oldest -> newest)
-   - exposure summary (shares/options obligations)
-   - profitability card with formulas and denominator transparency
-   - detail interactions should follow existing modal-based patterns and conform to established sizing, margin, and spacing conventions used across current modals
-3. **Unallocated activity panel**
-   - symbol-scoped list of eligible unallocated source transactions
-   - batch link/unlink actions
-   - visual lock indicator for already allocated rows
+   - filters: open/closed/all, symbol
+   - summary fields: symbol, status, lifecycle, weeks, capital at risk, net P/L, weekly ROR
+2. **Trade detail slide-out panel**
+   - performance tab with lifecycle, capital, cost basis context, and P/L outlook table
+   - activity tab with grouped/raw linked activity and link/unlink actions
+   - notes tab for trade-scoped notes
+   - contextual action to open the linked position editor when open stock exposure exists
+3. **Link Activity stacked panel**
+   - opens over Trade Details
+   - symbol/qty/strike/type/date filtering
+   - multi-select linking flow for create and edit paths
 
 ## Data model integration (v2)
 
-Trade Desk uses these v2 collections (see [data-model-v2.md](./data-model-v2.md)):
+Trade Desk uses:
 
 - `trades`
 - `relTradeTransactions`
 - `importedTransactions`
 
-### Trade
+See [data-model-v2.md](./data-model-v2.md) for canonical collection schemas.
+
+### Trade record
 
 ```js
 {
@@ -96,64 +87,45 @@ Trade Desk uses these v2 collections (see [data-model-v2.md](./data-model-v2.md)
 }
 ```
 
-Notes:
-- relationship table naming convention is `rel<Entity>Transactions`.
-- no role/anchor flag is required in v2; originating linkage is derived from `trades.sourceTransactionId`.
+## Constraints
 
-## Constraint rules
+1. `trades.sourceTransactionId` is required and must reference an `importedTransactions` row in the same account.
+2. `relTradeTransactions.tradeId` and `relTradeTransactions.sourceTransactionId` must reference records in the same account.
+3. A source transaction can be linked to at most one trade lifecycle.
+4. Trade symbol must match linked source transaction symbol when the source symbol is non-empty.
+5. Deleting a trade removes trade metadata and relations; source transactions remain.
 
-1. `trades.sourceTransactionId` is required and must reference an imported transaction in the same account.
-2. `relTradeTransactions.tradeId` must reference an existing trade in the same account.
-3. `relTradeTransactions.sourceTransactionId` must reference an existing imported transaction in the same account.
-4. A source transaction can be linked to at most one trade lifecycle.
-5. Trade symbol must match linked source transaction symbol when transaction symbol is non-empty.
-6. Deleting a trade removes only relationship records and trade metadata; source transactions remain unchanged.
+## Metrics model
 
-## Calculation model
+### Net P/L
 
-### 1) Net profit/loss
+- `netPL` is the sum of linked trade cash impacts.
+- For open-trade list display, net premiums are used when available.
 
-`netPL = sum(relTradeTransactions.cashImpact) + unrealizedAdjustment`
+### Duration
 
-- MVP default: `unrealizedAdjustment = 0` for closed-trade scoring.
-- Open-trade view may optionally include mark-to-market estimate if price data exists.
-
-### 2) Duration
-
-- `startDate = min(related eventDate values)`
-- `endDate = status === 'closed' ? max(related eventDate values) : today`
+- `startDate = min(eventDate)`
+- `endDate = max(eventDate)` for closed trades, otherwise current terminal date
 - `weeks = max(1, ceil((endDate - startDate + 1 day) / 7))`
 
-### 3) Capital at risk
+### Capital at risk
 
-Phase 1 baseline:
-- `capitalAtRisk = max(runningRequiredCapital)` over lifecycle snapshots.
-- for CSP legs, required capital uses strike * contracts * 100 when available; fallback to assignment cash outlay.
-- for covered-call legs after assignment, required capital uses share cost basis tied to assigned shares.
+- inferred from linked put collateral, linked open-position basis, or linked stock transaction basis (in that precedence path)
+- marked partial/incomplete when denominator inference is unavailable
 
-If required-capital inference is unavailable for an event, mark metric as partial and surface that state in UI.
-
-### 4) Weekly ROR
+### Weekly ROR
 
 - `weeklyROR = (netPL / capitalAtRisk) / weeks * 100`
-- show `N/A` when `capitalAtRisk <= 0` or denominator inputs are incomplete.
+- `N/A` when denominator inputs are incomplete or non-positive
 
-## Import integration
+## Import behavior
 
-- import writes source-of-truth brokerage rows to `importedTransactions`.
-- Trade Desk consumes imported rows and does not alter import parsing rules.
-- new imports should auto-surface unallocated candidates in Trade Desk.
-- re-import should preserve links when `sourceFingerprint` matches.
+1. New imports surface new unallocated candidates in Link Activity.
+2. Re-import preserves trade linkage when `sourceFingerprint` identity matches.
+3. Synthetic `manual-seed` source rows are used for manual-position origin continuity when applicable.
 
-## Cutover alignment
+## Store/API surfaces
 
-Trade Desk implementation follows [fresh-start-cutover.md](./fresh-start-cutover.md).
-
-## API/store surfaces (proposed)
-
-- collections:
-  - `trades`
-  - `relTradeTransactions`
 - getters:
   - `currentTrades`
   - `unallocatedSourceTransactionsBySymbol(symbol)`
@@ -164,16 +136,3 @@ Trade Desk implementation follows [fresh-start-cutover.md](./fresh-start-cutover
   - `linkSourceTransactionsToTrade(tradeId, sourceTransactionIds[])`
   - `unlinkTradeTransactions(relIds[])`
   - `recalculateTradeMetrics(tradeId)`
-
-## Acceptance criteria (MVP)
-
-1. A source transaction can be linked to at most one trade.
-2. A trade cannot be created without an originating `sourceTransactionId`.
-3. Trade detail shows deterministic net P/L, duration weeks, and weekly ROR (or explicit `N/A` with reason).
-4. Imported new rows appear as unallocated candidates without data loss.
-5. Existing projection and position workflows continue to function.
-
-## Open questions
-
-1. Should trade close state be user-controlled, auto-detected, or hybrid?
-2. Should Trade Desk metrics feed reporting charts in phase 1 or phase 2?

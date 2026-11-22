@@ -31,6 +31,11 @@ function getCellClass(column, row) {
   }
   return baseClass
 }
+
+function handleCellAction(column, row) {
+  if (typeof column?.onClick !== 'function') return
+  column.onClick(row)
+}
 </script>
 
 <template>
@@ -67,6 +72,16 @@ function getCellClass(column, row) {
               {{ row.rollFromText }}
               <i :class="['bi', row.rollDirectionIcon, 'mx-1']" aria-hidden="true"></i>
               {{ row.rollToText }}
+            </template>
+            <template v-else-if="column.key === 'actions' && typeof column?.onClick === 'function'">
+              <button
+                type="button"
+                class="btn btn-sm btn-outline-danger py-0 px-1"
+                :title="column.actionTitle || 'Remove linked activity'"
+                @click="handleCellAction(column, row)"
+              >
+                <i :class="column.iconClass || 'bi bi-dash-circle'"></i>
+              </button>
             </template>
             <template v-else>
               {{ getCellValue(column, row) }}

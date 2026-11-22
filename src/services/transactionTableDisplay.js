@@ -41,12 +41,31 @@ export function formatActionLabel(value) {
     .join(' ')
 }
 
-function extractTicker(value) {
-  const symbol = String(value || '').trim()
-  if (!symbol) return ''
-  const optionMatch = symbol.match(/^([\w.-]+)\s+\d{2}\/\d{2}\/\d{4}\s+[\d.]+\s+[CP]$/i)
-  if (optionMatch) return optionMatch[1]
-  return symbol
+const OPTION_SYMBOL_REGEX = /^([\w.-]+)\s+(\d{2}\/\d{2}\/\d{2,4})\s+([\d.]+)\s+([CP])$/i
+
+export function extractUnderlyingSymbol(symbolValue, descriptionValue = '') {
+  const symbol = String(symbolValue || '').trim().toUpperCase()
+  const description = String(descriptionValue || '').trim()
+  if (!symbol && !description) return ''
+  const optionMatch = OPTION_SYMBOL_REGEX.exec(symbol) || OPTION_SYMBOL_REGEX.exec(description)
+  if (optionMatch) return String(optionMatch[1] || '').toUpperCase()
+  return symbol.includes(' ') ? symbol.split(/\s+/)[0] : symbol
+}
+
+export function getTradeTransactionAttributes(row) {
+  const rawSymbol = String(row?.symbol || '').trim().toUpperCase()
+  const description = String(row?.description || '').trim()
+  const action = String(row?.action || row?.type || '').trim().toLowerCase()
+  const match = OPTION_SYMBOL_REGEX.exec(rawSymbol) || OPTION_SYMBOL_REGEX.exec(description)
+
+  const side = action.includes('sell') ? 'Sell' : (action.includes('buy') ? 'Buy' : 'Other')
+  const optionType = match ? (String(match[4]).toUpperCase() === 'P' ? 'PUT' : 'CALL') : 'STOCK'
+  const strike = match ? Number(match[3]) : null
+  const exp = match ? String(match[2]) : null
+  const qty = Math.abs(Number(row?.quantity || 0))
+  const symbol = extractUnderlyingSymbol(rawSymbol, description)
+
+  return { side, optionType, strike, exp, qty, symbol, isOption: Boolean(match) }
 }
 
 function formatRorValue(value) {
@@ -98,7 +117,7 @@ export function toTransactionDisplayRow(row) {
     ...row,
     date: row?.date || '',
     action: row?.action || row?.type || row?.contractType || '',
-    symbol: extractTicker(row?.symbol || row?.ticker || ''),
+    symbol: extractUnderlyingSymbol(row?.symbol || row?.ticker || '', row?.description || ''),
     description: row?.description || '',
     quantity: row?.quantity ?? '',
     price,

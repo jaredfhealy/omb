@@ -17,6 +17,17 @@ export const routes = [
     component: () => import('../views/Reporting.vue')
   },
   {
+    path: '/trade-desk',
+    name: 'TradeDeskLegacyRedirect',
+    redirect: (to) => ({
+      path: '/',
+      query: {
+        ...to.query,
+        tab: 'trades'
+      }
+    })
+  },
+  {
     path: '/',
     name: 'Bacon',
     component: () => import('../views/Bacon.vue')

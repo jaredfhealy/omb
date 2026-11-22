@@ -3,7 +3,7 @@ import { ref, onMounted, computed, watch } from 'vue'
 import html2canvas from 'html2canvas'
 import { useAppStore } from '@/stores/app'
 import { groupOptionLifecycle, groupWeekTransactions, sortRowsByDateExecution } from '@/services/weeklyTransactionGrouping'
-import { createTransactionTableColumns, toTransactionDisplayRow } from '@/services/transactionTableDisplay'
+import { createTransactionTableColumns, getTradeTransactionAttributes, toTransactionDisplayRow } from '@/services/transactionTableDisplay'
 import TransactionRowsTable from '@/components/custom/TransactionRowsTable.vue'
 
 const store = useAppStore()
@@ -158,18 +158,17 @@ const calculateSummary = () => {
     if (!brokerMap.weeklyTotalTypes.includes(action)) {
       return null
     }
-    let ticker = txn.symbol
+    const attrs = getTradeTransactionAttributes(txn)
+    let ticker = attrs.symbol || txn.symbol
     let contractType = '-'
     let strike = '-'
     let qty = txn.quantity
     let capitalRequirement = null
-    const optMatch = String(txn?.symbol || '').match(/^([\w.-]+) (\d{2}\/\d{2}\/\d{4}) ([\d.]+) ([CP])$/)
-    if (optMatch) {
-      ticker = optMatch[1]
-      strike = optMatch[3]
-      contractType = optMatch[4] === 'C' ? 'Call' : 'Put'
-      const strikeValue = Number(strike)
-      const qtyValue = Math.abs(Number(qty || 0))
+    if (attrs.optionType === 'CALL' || attrs.optionType === 'PUT') {
+      strike = attrs.strike === null ? '-' : String(attrs.strike)
+      contractType = attrs.optionType === 'CALL' ? 'Call' : 'Put'
+      const strikeValue = Number(attrs.strike)
+      const qtyValue = Math.abs(Number(attrs.qty || 0))
       if (Number.isFinite(strikeValue) && strikeValue > 0 && Number.isFinite(qtyValue) && qtyValue > 0) {
         capitalRequirement = strikeValue * qtyValue * 100
       }

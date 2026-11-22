@@ -25,9 +25,9 @@ Persisted state must include a model identifier:
 ```
 
 Startup behavior:
-- if local data is missing `meta.dataModel === 'v2'`, show a one-time reset alert.
-- offer optional local backup/export.
-- on user confirmation, overwrite local state with default v2 seed data and continue.
+- if local runtime data is missing `meta.dataModel === 'v2'` or fails startup validation, block runtime startup.
+- redirect user to Data Manager recovery guidance.
+- require explicit user action to load/apply starting seed data (no automatic overwrite).
 
 ## ID and reference conventions
 
@@ -69,7 +69,10 @@ Normalized input order:
 6. `priceNormalized`
 7. `amountNormalized`
 8. `feesNormalized` (default `0`)
-9. `executionOrder`
+
+Notes:
+- `executionOrder` is excluded from `sourceFingerprint` so identity remains stable across re-import ordering shifts.
+- If truly identical duplicate rows exist, import disambiguates them using deterministic duplicate occurrence ordering while keeping the same fingerprint base.
 
 Collision handling:
 - if a hash collision is detected for mismatched core values in the same account scope, append a deterministic suffix token before hashing.
@@ -188,6 +191,7 @@ Broker-confirmed cash balance checkpoints used for reconciliation.
   accountId: String,
   sourceTransactionId: String, // originating imported transaction
   positionKey: String,
+  date: 'YYYY-MM-DD',
   symbol: String,
   shares: Number,
   costBasis: Number,

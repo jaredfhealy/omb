@@ -10,10 +10,69 @@ import {
   getWeekDateRange,
   getWeekStatus
 } from '@/services/projectionEngineV2'
+import { getOpenShares } from '@/utils/positionUtils'
 
 const SELECTED_ACCOUNT_ID_KEY = 'omb.selectedAccountId.v1'
-const NON_V2_RESET_ACK_KEY = 'omb.nonV2ResetHandled.v1'
 const POSITION_SHARE_EPSILON = 1e-6
+const OPTION_SYMBOL_REGEX = /^([\w.-]+)\s+(\d{2}\/\d{2}\/\d{2,4})\s+([\d.]+)\s+([CP])$/i
+const TRADE_OPEN_EVENT_KINDS = new Set(['open', 'opened', 'assignment', 'assigned', 'sell-to-open', 'buy-to-open'])
+const TRADE_CLOSE_EVENT_KINDS = new Set(['close', 'closed', 'sell-to-close', 'buy-to-close', 'expired'])
+
+function getPutCollateralFromOpenShortContracts(timelineEntries) {
+  if (!Array.isArray(timelineEntries) || timelineEntries.length === 0) return 0
+
+  const openShortPutsByContract = new Map()
+
+  timelineEntries.forEach((event) => {
+    const source = event?.source || null
+    const symbol = toUpperSymbol(source?.symbol)
+    const description = String(source?.description || '').trim()
+    const optionMatch = OPTION_SYMBOL_REGEX.exec(symbol) || OPTION_SYMBOL_REGEX.exec(description)
+    if (!optionMatch) return
+
+    const right = String(optionMatch[4] || '').toUpperCase()
+    if (right !== 'P') return
+
+    const strike = Number(optionMatch[3])
+    const quantity = Math.abs(Number(source?.quantity ?? event?.quantity ?? 0))
+    if (!Number.isFinite(strike) || strike <= 0 || quantity <= 0) return
+
+    const action = String(source?.action || '').trim().toLowerCase()
+    const eventKind = String(event?.eventKind || '').trim().toLowerCase()
+    const contractKey = `${String(optionMatch[1] || '').toUpperCase()}|${optionMatch[2]}|${strike.toFixed(4)}`
+
+    let delta = 0
+    if (action.includes('sell to open')) {
+      delta = quantity
+    } else if (action.includes('buy to close')) {
+      delta = -quantity
+    } else if (action.includes('expired') || eventKind === 'expired') {
+      delta = -quantity
+    } else if (action.includes('assigned') || eventKind === 'assignment' || eventKind === 'assigned') {
+      delta = -quantity
+    } else if (action.includes('sell') && !action.includes('sell to close')) {
+      delta = quantity
+    } else if (action.includes('buy') && !action.includes('buy to open')) {
+      delta = -quantity
+    }
+    if (delta === 0) return
+
+    const existing = openShortPutsByContract.get(contractKey)
+    const existingQuantity = Number(existing?.quantity || 0)
+    const nextQuantity = Math.max(0, existingQuantity + delta)
+    openShortPutsByContract.set(contractKey, { strike, quantity: nextQuantity })
+  })
+
+  let collateral = 0
+  openShortPutsByContract.forEach((entry) => {
+    const strike = Number(entry?.strike)
+    const quantity = Number(entry?.quantity)
+    if (!Number.isFinite(strike) || strike <= 0 || !Number.isFinite(quantity) || quantity <= 0) return
+    collateral += strike * quantity * 100
+  })
+
+  return roundMoney(collateral)
+}
 
 function loadSelectedAccountIdPreference() {
   try {
@@ -52,107 +111,26 @@ function resolveSelectedAccountId(accounts, preferredId = null) {
   return Number(safeAccounts[0]?.id) || null
 }
 
-function ensureAccountCollections(dbState) {
-  if (!dbState || !Array.isArray(dbState.accounts)) return false
-
-  let migrated = false
-  if (dbState.accounts.length === 0) {
-    dbState.accounts.push(createDefaultAccount())
-    migrated = true
-  }
-  dbState.accounts.forEach(account => {
-    if (!account.transactions) {
-      account.transactions = []
-      migrated = true
-    }
-    if (!account.importedTransactions) {
-      account.importedTransactions = []
-      migrated = true
-    }
-    if (!account.positions) {
-      account.positions = []
-      migrated = true
-    }
-    if (!account.notes) {
-      account.notes = []
-      migrated = true
-    }
-    if (!account.cashCheckpoints) {
-      account.cashCheckpoints = []
-      migrated = true
-    }
-    if (!account.trades) {
-      account.trades = []
-      migrated = true
-    }
-    if (!account.relTradeTransactions) {
-      account.relTradeTransactions = []
-      migrated = true
-    }
-    if (!account.relPositionTransactions) {
-      account.relPositionTransactions = []
-      migrated = true
-    }
-    if (!account.positionMeta) {
-      account.positionMeta = []
-      migrated = true
-    }
-  })
-
-  return migrated
-}
-
-function normalizePositionShareStates(dbState) {
+function pruneOrphanedTradeNotes(dbState) {
   if (!dbState || !Array.isArray(dbState.accounts)) return false
   let migrated = false
 
   dbState.accounts.forEach((account) => {
-    if (!Array.isArray(account?.positions) || account.positions.length === 0) return
+    const trades = Array.isArray(account?.trades) ? account.trades : []
+    const notes = Array.isArray(account?.notes) ? account.notes : []
+    if (!notes.length) return
 
-    const closeWeeksByPositionKey = new Map()
-    ;(Array.isArray(account.relPositionTransactions) ? account.relPositionTransactions : []).forEach((rel) => {
-      const eventKind = String(rel?.eventKind || '').toLowerCase()
-      if (eventKind !== 'close') return
-      const positionKey = String(rel?.positionKey || '')
-      if (!positionKey) return
-      const eventWeek = Number(rel?.eventWeek)
-      if (!Number.isFinite(eventWeek) || eventWeek <= 0) return
-      const current = closeWeeksByPositionKey.get(positionKey)
-      if (!Number.isFinite(current) || eventWeek > current) {
-        closeWeeksByPositionKey.set(positionKey, eventWeek)
-      }
+    const tradeIds = new Set(trades.map((trade) => String(trade?.id || '').trim()).filter(Boolean))
+    const filtered = notes.filter((note) => {
+      const targetCollection = String(note?.targetCollection || '')
+      if (targetCollection !== 'trades') return true
+      const targetId = String(note?.targetId || '').trim()
+      return targetId && tradeIds.has(targetId)
     })
-
-    account.positions.forEach((position) => {
-      const shares = Number(position?.shares || 0)
-      let soldShares = Number(position?.soldShares || 0)
-      if (!Number.isFinite(soldShares) || soldShares < 0) soldShares = 0
-
-      if (Number.isFinite(shares) && shares >= 0) {
-        if (Math.abs(shares - soldShares) <= POSITION_SHARE_EPSILON || soldShares > shares) {
-          soldShares = shares
-        }
-      }
-
-      if (soldShares !== Number(position?.soldShares || 0)) {
-        position.soldShares = soldShares
-        migrated = true
-      }
-
-      const hasSoldWeek = Number.isFinite(Number(position?.soldWeek)) && Number(position.soldWeek) > 0
-      const isFullyClosed = Number.isFinite(shares) && shares > 0 && Math.abs(shares - soldShares) <= POSITION_SHARE_EPSILON
-      if (!hasSoldWeek && isFullyClosed) {
-        const positionKey = String(position?.positionKey || '')
-        const closeWeekFromRelations = positionKey ? closeWeeksByPositionKey.get(positionKey) : null
-        const assignedWeek = Number(position?.assignedWeek)
-        const fallbackWeek = Number.isFinite(assignedWeek) && assignedWeek > 0 ? assignedWeek : null
-        const soldWeek = Number.isFinite(closeWeekFromRelations) ? closeWeekFromRelations : fallbackWeek
-        if (Number.isFinite(soldWeek) && soldWeek > 0) {
-          position.soldWeek = soldWeek
-          migrated = true
-        }
-      }
-    })
+    if (filtered.length !== notes.length) {
+      account.notes = filtered
+      migrated = true
+    }
   })
 
   return migrated
@@ -195,30 +173,261 @@ function createPersistableStateSnapshot(dbState) {
   }
 }
 
-function setNonV2ResetAcknowledged() {
-  try {
-    localStorage.setItem(NON_V2_RESET_ACK_KEY, '1')
-  } catch (error) {
-    // best effort
-  }
+function toIsoDateOnly(value) {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toISOString().slice(0, 10)
 }
 
-function isNonV2ResetAcknowledged() {
-  try {
-    return localStorage.getItem(NON_V2_RESET_ACK_KEY) === '1'
-  } catch (error) {
-    return false
-  }
+function toUpperSymbol(value) {
+  return String(value || '').trim().toUpperCase()
 }
 
-function downloadJsonBackup(fileName, payload) {
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
-  const url = URL.createObjectURL(blob)
-  const anchor = document.createElement('a')
-  anchor.href = url
-  anchor.download = fileName
-  anchor.click()
-  URL.revokeObjectURL(url)
+function toTradeUnderlyingSymbol(value, fallback = '') {
+  const raw = toUpperSymbol(value)
+  const fallbackValue = String(fallback || '').trim()
+  const match = OPTION_SYMBOL_REGEX.exec(raw) || OPTION_SYMBOL_REGEX.exec(fallbackValue)
+  if (match) return toUpperSymbol(match[1])
+  if (!raw) return ''
+  if (raw.includes(' ')) return raw.split(/\s+/)[0]
+  return raw
+}
+
+function normalizeSpace(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ')
+}
+
+function getImportedTransactionStableRowKey(row) {
+  if (!row || typeof row !== 'object') return ''
+  const date = String(toIsoDateOnly(row?.date) || '').trim()
+  const action = normalizeSpace(row?.action).toLowerCase()
+  const symbol = toUpperSymbol(row?.symbol)
+  const description = normalizeSpace(row?.description).toUpperCase()
+  const quantity = Number(row?.quantity || 0)
+  const price = Number(row?.price || 0)
+  const amount = Number(row?.amount || 0)
+  const fees = Number(row?.fees ?? 0)
+
+  return `stable:${date}|${action}|${symbol}|${description}|${quantity.toFixed(6)}|${price.toFixed(6)}|${amount.toFixed(2)}|${fees.toFixed(2)}`
+}
+
+function chooseCanonicalImportedTransaction(rows, referencedIds = new Set()) {
+  if (!Array.isArray(rows) || rows.length === 0) return null
+  return rows
+    .slice()
+    .sort((left, right) => {
+      const leftId = String(left?.id || '').trim()
+      const rightId = String(right?.id || '').trim()
+      const leftReferenced = referencedIds.has(leftId) ? 1 : 0
+      const rightReferenced = referencedIds.has(rightId) ? 1 : 0
+      if (leftReferenced !== rightReferenced) return rightReferenced - leftReferenced
+
+      const leftCreatedAt = String(left?.createdAt || '')
+      const rightCreatedAt = String(right?.createdAt || '')
+      if (leftCreatedAt !== rightCreatedAt) return leftCreatedAt.localeCompare(rightCreatedAt)
+
+      const leftOrder = Number(left?.executionOrder || 0)
+      const rightOrder = Number(right?.executionOrder || 0)
+      if (leftOrder !== rightOrder) return leftOrder - rightOrder
+
+      const leftLine = Number(left?.sourceLine || 0)
+      const rightLine = Number(right?.sourceLine || 0)
+      if (leftLine !== rightLine) return leftLine - rightLine
+
+      return leftId.localeCompare(rightId)
+    })[0]
+}
+
+function normalizeImportedTransactionReferences(dbState) {
+  if (!dbState || !Array.isArray(dbState.accounts)) return false
+  let migrated = false
+
+  dbState.accounts.forEach((account) => {
+    const importedRows = Array.isArray(account?.importedTransactions) ? account.importedTransactions : []
+    if (importedRows.length <= 1) return
+
+    const referencedIds = new Set()
+    ;(Array.isArray(account?.trades) ? account.trades : []).forEach((trade) => {
+      const sourceId = String(trade?.sourceTransactionId || '').trim()
+      if (sourceId) referencedIds.add(sourceId)
+    })
+    ;(Array.isArray(account?.relTradeTransactions) ? account.relTradeTransactions : []).forEach((rel) => {
+      const sourceId = String(rel?.sourceTransactionId || '').trim()
+      if (sourceId) referencedIds.add(sourceId)
+    })
+    ;(Array.isArray(account?.transactions) ? account.transactions : []).forEach((flow) => {
+      const sourceId = String(flow?.sourceTransactionId || '').trim()
+      if (sourceId) referencedIds.add(sourceId)
+    })
+    ;(Array.isArray(account?.positions) ? account.positions : []).forEach((position) => {
+      const sourceId = String(position?.sourceTransactionId || '').trim()
+      if (sourceId) referencedIds.add(sourceId)
+    })
+    ;(Array.isArray(account?.relPositionTransactions) ? account.relPositionTransactions : []).forEach((rel) => {
+      const sourceId = String(rel?.sourceTransactionId || '').trim()
+      if (sourceId) referencedIds.add(sourceId)
+    })
+    ;(Array.isArray(account?.notes) ? account.notes : []).forEach((note) => {
+      if (String(note?.targetCollection || '') !== 'importedTransactions') return
+      const targetId = String(note?.targetId || '').trim()
+      if (targetId) referencedIds.add(targetId)
+    })
+
+    const groupedByStableKey = new Map()
+    importedRows.forEach((row) => {
+      const rowId = String(row?.id || '').trim()
+      if (!rowId) return
+      const stableKey = getImportedTransactionStableRowKey(row)
+      if (!stableKey) return
+      if (!groupedByStableKey.has(stableKey)) {
+        groupedByStableKey.set(stableKey, [])
+      }
+      groupedByStableKey.get(stableKey).push(row)
+    })
+
+    const remap = new Map()
+    groupedByStableKey.forEach((rows) => {
+      if (!Array.isArray(rows) || rows.length <= 1) return
+      const canonical = chooseCanonicalImportedTransaction(rows, referencedIds)
+      const canonicalId = String(canonical?.id || '').trim()
+      if (!canonicalId) return
+      rows.forEach((row) => {
+        const rowId = String(row?.id || '').trim()
+        if (!rowId || rowId === canonicalId) return
+        remap.set(rowId, canonicalId)
+      })
+    })
+
+    if (!remap.size) return
+
+    const remapSourceId = (value) => {
+      const sourceId = String(value || '').trim()
+      if (!sourceId) return value
+      return remap.get(sourceId) || sourceId
+    }
+
+    account.importedTransactions = importedRows
+      .filter((row) => !remap.has(String(row?.id || '').trim()))
+      .sort((a, b) => {
+        const weekA = Number(a?.week || 0)
+        const weekB = Number(b?.week || 0)
+        if (weekA !== weekB) return weekA - weekB
+        const orderA = Number(a?.executionOrder || 0)
+        const orderB = Number(b?.executionOrder || 0)
+        if (orderA !== orderB) return orderA - orderB
+        return String(a?.id || '').localeCompare(String(b?.id || ''))
+      })
+
+    ;(Array.isArray(account?.trades) ? account.trades : []).forEach((trade) => {
+      trade.sourceTransactionId = remapSourceId(trade?.sourceTransactionId)
+    })
+
+    ;(Array.isArray(account?.relTradeTransactions) ? account.relTradeTransactions : []).forEach((rel) => {
+      rel.sourceTransactionId = remapSourceId(rel?.sourceTransactionId)
+    })
+    const seenTradeRelation = new Set()
+    account.relTradeTransactions = (Array.isArray(account?.relTradeTransactions) ? account.relTradeTransactions : [])
+      .filter((rel) => {
+        const tradeId = String(rel?.tradeId || '').trim()
+        const sourceId = String(rel?.sourceTransactionId || '').trim()
+        if (!tradeId || !sourceId) return true
+        const dedupeKey = `${tradeId}|${sourceId}`
+        if (seenTradeRelation.has(dedupeKey)) return false
+        seenTradeRelation.add(dedupeKey)
+        return true
+      })
+
+    ;(Array.isArray(account?.transactions) ? account.transactions : []).forEach((flow) => {
+      const sourceId = String(flow?.sourceTransactionId || '').trim()
+      if (!sourceId) return
+      flow.sourceTransactionId = remapSourceId(sourceId)
+    })
+
+    ;(Array.isArray(account?.positions) ? account.positions : []).forEach((position) => {
+      const sourceId = String(position?.sourceTransactionId || '').trim()
+      if (!sourceId) return
+      position.sourceTransactionId = remapSourceId(sourceId)
+    })
+
+    ;(Array.isArray(account?.relPositionTransactions) ? account.relPositionTransactions : []).forEach((rel) => {
+      const sourceId = String(rel?.sourceTransactionId || '').trim()
+      if (!sourceId) return
+      rel.sourceTransactionId = remapSourceId(sourceId)
+    })
+
+    ;(Array.isArray(account?.notes) ? account.notes : []).forEach((note) => {
+      if (String(note?.targetCollection || '') !== 'importedTransactions') return
+      const targetId = String(note?.targetId || '').trim()
+      if (!targetId) return
+      note.targetId = remapSourceId(targetId)
+    })
+
+    migrated = true
+  })
+
+  return migrated
+}
+
+function parseOptionExpirationToIso(value) {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  const parts = raw.split('/')
+  if (parts.length !== 3) return ''
+
+  const month = Number(parts[0])
+  const day = Number(parts[1])
+  let year = Number(parts[2])
+  if (!Number.isFinite(month) || !Number.isFinite(day) || !Number.isFinite(year)) return ''
+  if (month < 1 || month > 12 || day < 1 || day > 31) return ''
+  if (year < 100) year += 2000
+  if (year < 1900 || year > 9999) return ''
+
+  const iso = `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+  const parsed = new Date(`${iso}T00:00:00Z`)
+  if (Number.isNaN(parsed.getTime())) return ''
+  if (parsed.toISOString().slice(0, 10) !== iso) return ''
+  return iso
+}
+
+function getLatestOptionExpirationIso(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return ''
+  let latestIso = ''
+
+  rows.forEach((row) => {
+    const symbol = toUpperSymbol(row?.symbol)
+    const description = String(row?.description || '').trim()
+    const optionMatch = OPTION_SYMBOL_REGEX.exec(symbol) || OPTION_SYMBOL_REGEX.exec(description)
+    if (!optionMatch) return
+    const expirationIso = parseOptionExpirationToIso(optionMatch[2])
+    if (!expirationIso) return
+    if (!latestIso || expirationIso > latestIso) {
+      latestIso = expirationIso
+    }
+  })
+
+  return latestIso
+}
+
+function isOptionTransactionRow(row) {
+  if (!row || typeof row !== 'object') return false
+  const symbol = toUpperSymbol(row?.symbol)
+  const description = String(row?.description || '').trim().toUpperCase()
+  const action = String(row?.action || '').trim().toLowerCase()
+  if (OPTION_SYMBOL_REGEX.exec(symbol) || OPTION_SYMBOL_REGEX.exec(description)) return true
+  if (/\b(PUT|CALL)\b/.test(description) && (/\bEXP\b/.test(description) || /\$\d+(\.\d+)?/.test(description))) {
+    return true
+  }
+  return /to open|to close|assigned|assignment|expired/.test(action)
+}
+
+function roundMoney(value) {
+  return Math.round(Number(value || 0) * 100) / 100
+}
+
+function createLocalRecordId(prefix) {
+  const randomPart = Math.random().toString(16).slice(2, 10)
+  return `${prefix}_${Date.now().toString(36)}_${randomPart}`
 }
 
 export const useAppStore = defineStore('app', {
@@ -234,6 +443,10 @@ export const useAppStore = defineStore('app', {
     loadDataPromise: null,
     persistenceMeta: null,
     persistenceError: null,
+    startupRequiresManualRecovery: false,
+    startupRecoveryReason: null,
+    startupValidationErrors: [],
+    startupInspection: null,
     syncCenter: {
       open: false,
       driveConfigured: isDrivePersistenceConfigured(),
@@ -247,7 +460,7 @@ export const useAppStore = defineStore('app', {
     syncCenterListenerBound: false,
 
     // UI State
-    activeTab: 'weekly',
+    activeTab: 'trades',
     transactionFilter: 'all',
     selectedWeek: null,
     windowWidth: window.innerWidth,
@@ -267,6 +480,89 @@ export const useAppStore = defineStore('app', {
     unselectedAccounts() {
       const activeId = Number(this.activeAccount?.id)
       return this.db.accounts.filter(a => Number(a.id) !== activeId)
+    },
+
+    currentTrades() {
+      const account = this.activeAccount
+      if (!account || !Array.isArray(account.trades)) return []
+      const importedById = new Map(
+        (Array.isArray(account.importedTransactions) ? account.importedTransactions : [])
+          .map(row => [String(row?.id || ''), row])
+      )
+
+      return account.trades
+        .map((trade) => {
+          const originSourceId = String(trade?.sourceTransactionId || '').trim()
+          const originSource = originSourceId ? importedById.get(originSourceId) : null
+          const originSymbol = toTradeUnderlyingSymbol(originSource?.symbol, originSource?.description)
+          const tradeSymbol = toUpperSymbol(trade?.symbol)
+          const tradeUnderlyingSymbol = toTradeUnderlyingSymbol(tradeSymbol)
+          return {
+            ...trade,
+            symbol: tradeSymbol,
+            displaySymbol: originSymbol || tradeUnderlyingSymbol || tradeSymbol,
+            metrics: this._computeTradeMetrics(trade)
+          }
+        })
+        .sort((a, b) => {
+          const statusA = a?.status === 'closed' ? 1 : 0
+          const statusB = b?.status === 'closed' ? 1 : 0
+          if (statusA !== statusB) return statusA - statusB
+          const dateA = String(a?.openedAt || '')
+          const dateB = String(b?.openedAt || '')
+          if (dateA > dateB) return -1
+          if (dateA < dateB) return 1
+          return String(a?.id || '').localeCompare(String(b?.id || ''))
+        })
+    },
+
+    unallocatedSourceTransactionsBySymbol() {
+      return (symbol) => {
+        const account = this.activeAccount
+        if (!account) return []
+
+        const importedRows = Array.isArray(account.importedTransactions)
+          ? account.importedTransactions
+          : []
+        const trades = Array.isArray(account.trades) ? account.trades : []
+        const relRows = Array.isArray(account.relTradeTransactions) ? account.relTradeTransactions : []
+        const symbolFilter = toUpperSymbol(symbol)
+
+        const allocatedSourceIds = new Set()
+        const markAllocated = (sourceId) => {
+          const normalizedId = String(sourceId || '').trim()
+          if (!normalizedId) return
+          allocatedSourceIds.add(normalizedId)
+        }
+
+        trades.forEach((trade) => {
+          markAllocated(trade?.sourceTransactionId)
+        })
+        relRows.forEach((rel) => {
+          markAllocated(rel?.sourceTransactionId)
+        })
+
+        return importedRows
+          .filter((row) => {
+            const sourceId = String(row?.id || '').trim()
+            if (!sourceId || allocatedSourceIds.has(sourceId)) return false
+            const rowSymbol = toTradeUnderlyingSymbol(row?.symbol, row?.description)
+            if (!symbolFilter) return true
+            if (!rowSymbol) return true
+            return rowSymbol === symbolFilter
+          })
+          .slice()
+          .sort((a, b) => {
+            const dateA = String(a?.date || '')
+            const dateB = String(b?.date || '')
+            if (dateA > dateB) return -1
+            if (dateA < dateB) return 1
+            const orderA = Number(a?.executionOrder || 0)
+            const orderB = Number(b?.executionOrder || 0)
+            if (orderA !== orderB) return orderB - orderA
+            return String(a?.id || '').localeCompare(String(b?.id || ''))
+          })
+      }
     },
 
     isBelowXL: (state) => state.windowWidth < 1200,
@@ -379,123 +675,66 @@ export const useAppStore = defineStore('app', {
       try {
         this.syncCenter.driveConfigured = isDrivePersistenceConfigured()
         this.syncCenter.driveConnected = isDriveConnected()
-        const { data, meta, source, legacySnapshot } = await loadAppState()
+        const { data, meta, source, reason, validationErrors, inspection } = await loadAppState()
         this.persistenceMeta = meta
         this.syncCenter.driveLastSuccessAt = meta?.lastDriveSyncAt || null
+        this.startupInspection = inspection || null
 
-        if (source === 'legacy-reset-required') {
-          const alreadyHandled = isNonV2ResetAcknowledged()
-          if (!alreadyHandled) {
-            const warningMessage = [
-              'Local data was detected, but it is not in the required v2 data model.',
-              '',
-              'Operation More Bacon must reset to a fresh v2 state before continuing.',
-              'You can optionally export a local backup snapshot before reset.'
-            ].join('\n')
-            const shouldProceed = await new Promise(resolve => {
-              if (this.confirm) {
-                this.confirm(
-                  warningMessage,
-                  () => resolve(true),
-                  () => resolve(false),
-                  {
-                    confirmText: 'Continue',
-                    cancelText: 'Cancel'
-                  }
-                )
-                return
-              }
-              resolve(window.confirm(warningMessage))
-            })
-            if (!shouldProceed) {
-              this.persistenceError = 'Startup blocked: v2 reset is required before the app can continue.'
-              this.loading = false
-              return
-            }
+        if (source === 'startup-manual-recovery-required') {
+          this.startupRequiresManualRecovery = true
+          this.startupRecoveryReason = String(reason || 'unrecognized-local-state')
+          this.startupValidationErrors = Array.isArray(validationErrors) ? validationErrors.slice() : []
+          const validationSummary = this.startupValidationErrors.length
+            ? ` Validation issues: ${this.startupValidationErrors.join(' | ')}`
+            : ''
+          this.persistenceError = `Startup blocked: local data is not recognized for automatic runtime load. Open Data Manager to review or initialize starting data manually.${validationSummary}`
+          this.loading = false
+          return
+        }
 
-            const shouldExport = await new Promise(resolve => {
-              if (this.confirm) {
-                this.confirm(
-                  'Do you want to export a local backup of the non-v2 data before reset?',
-                  () => resolve(true),
-                  () => resolve(false),
-                  {
-                    confirmText: 'Export Backup',
-                    cancelText: 'Skip Export'
-                  }
-                )
-                return
-              }
-              resolve(window.confirm('Export a local backup before reset?'))
-            })
-            if (shouldExport) {
-              downloadJsonBackup(`omb-legacy-backup-${new Date().toISOString().replace(/[:.]/g, '-')}.json`, legacySnapshot || {})
-            }
-          }
-
-          const resetMessage = [
-            'Proceeding will initialize a fresh v2 data seed state and clear non-v2 local data.',
-            'Type RESET to continue.'
-          ].join('\n')
-          const resetApproved = await new Promise(resolve => {
-            if (this.confirm) {
-              this.confirm(
-                resetMessage,
-                () => resolve(true),
-                () => resolve(false),
-                {
-                  confirmText: 'Reset to v2',
-                  cancelText: 'Cancel',
-                  confirmButtonClass: 'btn-danger',
-                  requiredInputText: 'RESET',
-                  requiredInputLabel: 'Type RESET to confirm v2 reset'
-                }
-              )
-              return
-            }
-            resolve(window.confirm('Reset local data to a fresh v2 state now?'))
-          })
-          if (!resetApproved) {
-            this.persistenceError = 'Startup blocked: reset to v2 was cancelled.'
-            this.loading = false
-            return
-          }
-
+        if (source === 'empty') {
           this.db = createPersistableStateSnapshot({
             accounts: [createDefaultAccount()]
           })
-          this.persistenceMeta = null
           this.ensureSelectedAccount()
-          await this.saveChanges()
-          setNonV2ResetAcknowledged()
+          this.startupRequiresManualRecovery = false
+          this.startupRecoveryReason = null
+          this.startupValidationErrors = []
           this.persistenceError = null
+          await this.saveChanges()
           this.calculateProjectionsV2()
           return
         }
 
         if (data && Array.isArray(data.accounts)) {
-          const migratedCollections = ensureAccountCollections(data)
-          const migratedPositionShareStates = normalizePositionShareStates(data)
-          const migrated = migratedCollections || migratedPositionShareStates
           this.db = createPersistableStateSnapshot(data)
+          const normalizedImportedReferences = normalizeImportedTransactionReferences(this.db)
+          const prunedTradeNotes = pruneOrphanedTradeNotes(this.db)
           this.ensureSelectedAccount()
           this.applyPositionMetadataForActiveAccount()
-          if (migrated) {
+          this.startupRequiresManualRecovery = false
+          this.startupRecoveryReason = null
+          this.startupValidationErrors = []
+          if (normalizedImportedReferences || prunedTradeNotes) {
             await this.saveChanges()
           }
-        } else if (source === 'empty') {
-          this.db = createPersistableStateSnapshot({
-            accounts: [createDefaultAccount()]
-          })
-          this.ensureSelectedAccount()
-          await this.saveChanges()
+        } else {
+          this.startupRequiresManualRecovery = true
+          this.startupRecoveryReason = 'startup-payload-missing-data'
+          this.startupValidationErrors = []
+          this.persistenceError = 'Startup blocked: no runtime account data was available. Open Data Manager to review local persistence.'
+          this.loading = false
+          return
         }
         this.persistenceError = null
         this.calculateProjectionsV2()
       } catch (error) {
         console.error('Failed to load data:', error)
         this.persistenceError = `Failed to load local state: ${error?.message || error}`
-        this.calculateProjectionsV2()
+        this.startupRequiresManualRecovery = true
+        this.startupRecoveryReason = 'startup-load-error'
+        this.startupValidationErrors = []
+        this.loading = false
       }
       finally {
         this.loadDataPromise = null
@@ -507,10 +746,15 @@ export const useAppStore = defineStore('app', {
     
     async saveChanges() {
       try {
+        normalizeImportedTransactionReferences(this.db)
+        pruneOrphanedTradeNotes(this.db)
         const dataToSave = createPersistableStateSnapshot(this.db)
         const { meta } = await saveAppState(dataToSave, this.persistenceMeta)
         this.persistenceMeta = meta
         this.persistenceError = null
+        this.startupRequiresManualRecovery = false
+        this.startupRecoveryReason = null
+        this.startupValidationErrors = []
         this.initTooltips()  // Initialize tooltips after save
       } catch (error) {
         console.error('Failed to save changes:', error)
@@ -521,6 +765,927 @@ export const useAppStore = defineStore('app', {
     async saveChangesAndRecalculate() {
       await this.saveChanges()
       this.calculateProjectionsV2()
+    },
+
+    _requireActiveAccount() {
+      if (!this.activeAccount) {
+        throw new Error('Trade Desk requires an active account.')
+      }
+      return this.activeAccount
+    },
+
+    _findImportedTransactionById(sourceTransactionId, account = this.activeAccount) {
+      const sourceId = String(sourceTransactionId || '').trim()
+      if (!sourceId || !account) return null
+      return (Array.isArray(account.importedTransactions) ? account.importedTransactions : [])
+        .find((row) => String(row?.id || '') === sourceId) || null
+    },
+
+    _getTradeById(tradeId, account = this.activeAccount) {
+      const id = String(tradeId || '').trim()
+      if (!id || !account) return null
+      return (Array.isArray(account.trades) ? account.trades : [])
+        .find((trade) => String(trade?.id || '') === id) || null
+    },
+
+    _getAllocatedTradeIdBySourceId(sourceTransactionId, account = this.activeAccount) {
+      const sourceId = String(sourceTransactionId || '').trim()
+      if (!sourceId || !account) return null
+
+      const tradeByOrigin = (Array.isArray(account.trades) ? account.trades : [])
+        .find((trade) => String(trade?.sourceTransactionId || '') === sourceId)
+      if (tradeByOrigin) return String(tradeByOrigin.id)
+
+      const relation = (Array.isArray(account.relTradeTransactions) ? account.relTradeTransactions : [])
+        .find((rel) => String(rel?.sourceTransactionId || '') === sourceId)
+      return relation ? String(relation.tradeId || '') : null
+    },
+
+    _normalizeTradeDeskScopeForAccount(account = this.activeAccount) {
+      const accountId = String(account?.id || '')
+      if (!account || !accountId) return false
+
+      let changed = false
+      ;(Array.isArray(account.trades) ? account.trades : []).forEach((trade) => {
+        if (String(trade?.accountId || '') === accountId) return
+        trade.accountId = accountId
+        changed = true
+      })
+      ;(Array.isArray(account.relTradeTransactions) ? account.relTradeTransactions : []).forEach((rel) => {
+        if (String(rel?.accountId || '') === accountId) return
+        rel.accountId = accountId
+        changed = true
+      })
+
+      return changed
+    },
+
+    _ensureTradeScope(trade, account = this.activeAccount) {
+      if (!trade || !account) return false
+      const accountId = String(account?.id || '')
+      if (!accountId) return false
+      if (String(trade?.accountId || '') === accountId) return false
+      trade.accountId = accountId
+      return true
+    },
+
+    _inferTradeEventKindFromAction(action) {
+      const normalized = String(action || '').trim().toLowerCase()
+      if (!normalized) return 'event'
+
+      if (normalized.includes('to open')) return 'open'
+      if (normalized.includes('to close')) return 'close'
+      if (normalized.includes('expired')) return 'close'
+      if (normalized.includes('assignment') || normalized.includes('assigned')) return 'assignment'
+      if (normalized === 'sell short') return 'open'
+      if (normalized === 'buy' || normalized === 'buy to cover') return 'open'
+      if (normalized === 'sell') return 'close'
+      return 'event'
+    },
+
+    _getTradeTimelineEntries(trade) {
+      const account = this._requireActiveAccount()
+      const importedRows = Array.isArray(account.importedTransactions) ? account.importedTransactions : []
+      const relRows = Array.isArray(account.relTradeTransactions) ? account.relTradeTransactions : []
+      const tradeId = String(trade?.id || '')
+      if (!tradeId) return []
+
+      const importedById = new Map(importedRows.map(row => [String(row?.id || ''), row]))
+      const timelineEntries = []
+      const seenOriginSourceIds = new Set()
+
+      const originSourceId = String(trade?.sourceTransactionId || '').trim()
+      if (originSourceId) {
+        const sourceRow = importedById.get(originSourceId) || null
+        timelineEntries.push({
+          id: `origin_${tradeId}_${originSourceId}`,
+          tradeId,
+          sourceTransactionId: originSourceId,
+          relId: null,
+          eventDate: toIsoDateOnly(sourceRow?.date || trade?.openedAt),
+          eventWeek: Number.isFinite(Number(sourceRow?.week)) ? Number(sourceRow.week) : null,
+          eventKind: sourceRow ? this._inferTradeEventKindFromAction(sourceRow?.action) : 'open',
+          cashImpact: Number(sourceRow?.amount || 0),
+          quantity: sourceRow?.quantity === undefined || sourceRow?.quantity === null ? null : Number(sourceRow.quantity),
+          isOrigin: true,
+          source: sourceRow
+        })
+        seenOriginSourceIds.add(originSourceId)
+      }
+
+      relRows
+        .filter((rel) => String(rel?.tradeId || '') === tradeId)
+        .forEach((rel) => {
+          const sourceId = String(rel?.sourceTransactionId || '').trim()
+          if (!sourceId) return
+          if (seenOriginSourceIds.has(sourceId)) return
+          const sourceRow = importedById.get(sourceId) || null
+          const eventDate = toIsoDateOnly(rel?.eventDate || sourceRow?.date)
+          timelineEntries.push({
+            id: String(rel?.id || `rel_${tradeId}_${sourceId}`),
+            tradeId,
+            relId: String(rel?.id || ''),
+            sourceTransactionId: sourceId,
+            eventDate,
+            eventWeek: rel?.eventWeek === undefined || rel?.eventWeek === null
+              ? (Number.isFinite(Number(sourceRow?.week)) ? Number(sourceRow.week) : null)
+              : Number(rel.eventWeek),
+            eventKind: String(rel?.eventKind || this._inferTradeEventKindFromAction(sourceRow?.action) || 'event').toLowerCase(),
+            cashImpact: Number(rel?.cashImpact || sourceRow?.amount || 0),
+            quantity: rel?.quantity === undefined || rel?.quantity === null
+              ? (sourceRow?.quantity === undefined || sourceRow?.quantity === null ? null : Number(sourceRow.quantity))
+              : Number(rel.quantity),
+            notes: rel?.notes || null,
+            metadata: rel?.metadata || null,
+            isOrigin: false,
+            source: sourceRow
+          })
+        })
+
+      return timelineEntries.sort((a, b) => {
+        const dateA = String(a?.eventDate || '')
+        const dateB = String(b?.eventDate || '')
+        if (dateA < dateB) return -1
+        if (dateA > dateB) return 1
+        const orderA = Number(a?.source?.executionOrder || 0)
+        const orderB = Number(b?.source?.executionOrder || 0)
+        if (orderA !== orderB) return orderA - orderB
+        return String(a?.id || '').localeCompare(String(b?.id || ''))
+      })
+    },
+
+    getTradeTimeline(tradeId) {
+      const account = this._requireActiveAccount()
+      const trade = this._getTradeById(tradeId, account)
+      if (!trade) return []
+      return this._getTradeTimelineEntries(trade)
+    },
+
+    _inferCapitalAtRiskFromEvent(trade, event, openPositionsBySourceId) {
+      const sourceRow = event?.source || null
+      const rawMetadataCapital = Number(event?.metadata?.capitalAtRisk)
+      if (Number.isFinite(rawMetadataCapital) && rawMetadataCapital > 0) {
+        return {
+          value: rawMetadataCapital,
+          incomplete: false,
+          reason: '',
+          inferredFrom: 'metadata.capitalAtRisk'
+        }
+      }
+
+      const sourceSymbol = toUpperSymbol(sourceRow?.symbol)
+      const description = String(sourceRow?.description || '').trim()
+      const action = String(sourceRow?.action || '').trim().toLowerCase()
+      const quantity = Math.abs(Number(sourceRow?.quantity || event?.quantity || 0))
+      const amount = Number(sourceRow?.amount || event?.cashImpact || 0)
+      const optionMatch = OPTION_SYMBOL_REGEX.exec(sourceSymbol) || OPTION_SYMBOL_REGEX.exec(description)
+
+      if (optionMatch) {
+        const strike = Number(optionMatch[3])
+        const right = String(optionMatch[4] || '').toUpperCase()
+        if (right === 'P' && quantity > 0 && Number.isFinite(strike) && strike > 0) {
+          return {
+            value: strike * quantity * 100,
+            incomplete: false,
+            reason: '',
+            inferredFrom: 'option put collateral'
+          }
+        }
+
+        if (right === 'C') {
+          const symbolToMatch = toUpperSymbol(optionMatch[1] || trade?.symbol)
+          const symbolPositions = (Array.isArray(this.activeAccount?.positions) ? this.activeAccount.positions : [])
+            .filter((position) => toUpperSymbol(position?.symbol) === symbolToMatch)
+          const positionCapital = symbolPositions.reduce((highest, position) => {
+            const basis = Math.abs(Number(position?.costBasis || 0))
+            return basis > highest ? basis : highest
+          }, 0)
+          if (positionCapital > 0) {
+            return {
+              value: positionCapital,
+              incomplete: false,
+              reason: '',
+              inferredFrom: 'covered-call position basis'
+            }
+          }
+          return {
+            value: null,
+            incomplete: true,
+            reason: 'Covered-call capital basis was not available.',
+            inferredFrom: ''
+          }
+        }
+      }
+
+      const positionMatch = openPositionsBySourceId.get(String(event?.sourceTransactionId || ''))
+      if (positionMatch) {
+        const basis = Math.abs(Number(positionMatch?.costBasis || 0))
+        if (basis > 0) {
+          return {
+            value: basis,
+            incomplete: false,
+            reason: '',
+            inferredFrom: 'position source cost basis'
+          }
+        }
+      }
+
+      if (action.includes('buy') && amount < 0) {
+        return {
+          value: Math.abs(amount),
+          incomplete: false,
+          reason: '',
+          inferredFrom: 'assignment cash outlay'
+        }
+      }
+
+      return {
+        value: null,
+        incomplete: true,
+        reason: `Unable to infer capital at risk for ${event?.eventDate || 'event'} (${event?.eventKind || 'event'}).`,
+        inferredFrom: ''
+      }
+    },
+
+    _computeTradeMetrics(trade) {
+      if (!trade) {
+        return {
+          netPremiums: 0,
+          netPL: 0,
+          durationWeeks: 0,
+          capitalAtRisk: null,
+          currentCapitalTiedUp: 0,
+          weeklyROR: null,
+          plScenarios: {
+            hasOpenStockExposure: false,
+            needsPositionResolution: false,
+            resolutionMessage: '',
+            openShares: 0,
+            costBasis: 0,
+            currentValue: 0,
+            worstCaseNetPL: null,
+            fullRecoveryNetPL: null,
+            plusTenRecoveryNetPL: null,
+          },
+          denominator: {
+            complete: false,
+            reasons: ['Trade was not found.'],
+            inferredFrom: []
+          }
+        }
+      }
+
+      const timelineEntries = this._getTradeTimelineEntries(trade)
+      if (!timelineEntries.length) {
+        return {
+          netPremiums: 0,
+          netPL: 0,
+          durationWeeks: 0,
+          capitalAtRisk: null,
+          currentCapitalTiedUp: 0,
+          weeklyROR: null,
+          plScenarios: {
+            hasOpenStockExposure: false,
+            needsPositionResolution: false,
+            resolutionMessage: '',
+            openShares: 0,
+            costBasis: 0,
+            currentValue: 0,
+            worstCaseNetPL: null,
+            fullRecoveryNetPL: null,
+            plusTenRecoveryNetPL: null,
+          },
+          denominator: {
+            complete: false,
+            reasons: ['No linked source transactions found for this trade.'],
+            inferredFrom: []
+          }
+        }
+      }
+
+      const openPositionsBySourceId = new Map(
+        (Array.isArray(this.activeAccount?.positions) ? this.activeAccount.positions : [])
+          .filter((position) => position?.sourceTransactionId)
+          .map(position => [String(position.sourceTransactionId), position])
+      )
+
+      const netPremiums = roundMoney(
+        timelineEntries.reduce((sum, event) => {
+          const source = event?.source || null
+          if (!isOptionTransactionRow(source)) return sum
+          return sum + Number(event?.cashImpact || 0)
+        }, 0)
+      )
+
+      const netPL = roundMoney(
+        timelineEntries.reduce((sum, event) => sum + Number(event?.cashImpact || 0), 0)
+      )
+
+      const datedEntries = timelineEntries.filter((entry) => /^\d{4}-\d{2}-\d{2}$/.test(String(entry?.eventDate || '')))
+      const startDate = datedEntries.length ? datedEntries[0].eventDate : toIsoDateOnly(trade?.openedAt)
+      const latestOptionExpirationDate = getLatestOptionExpirationIso(
+        timelineEntries.map((entry) => entry?.source || null).filter(Boolean)
+      )
+      const terminalDate = trade?.status === 'closed'
+        ? (datedEntries.length ? datedEntries[datedEntries.length - 1].eventDate : toIsoDateOnly(trade?.closedAt || trade?.openedAt))
+        : (latestOptionExpirationDate || toIsoDateOnly(new Date()))
+
+      const startMs = new Date(startDate).getTime()
+      const endMs = new Date(terminalDate).getTime()
+      const durationWeeks = Number.isFinite(startMs) && Number.isFinite(endMs)
+        ? Math.max(1, Math.ceil(((endMs - startMs) / (1000 * 60 * 60 * 24) + 1) / 7))
+        : 1
+
+      let runningRequiredCapital = 0
+      let maxRunningRequiredCapital = 0
+      const capitalStack = []
+      const denominatorReasons = []
+      const inferredFromSet = new Set()
+
+      timelineEntries.forEach((event) => {
+        const capitalInference = this._inferCapitalAtRiskFromEvent(trade, event, openPositionsBySourceId)
+        const inferredCapital = Number(capitalInference?.value)
+        if (capitalInference?.reason) {
+          denominatorReasons.push(capitalInference.reason)
+        }
+        if (capitalInference?.inferredFrom) {
+          inferredFromSet.add(capitalInference.inferredFrom)
+        }
+
+        const eventKind = String(event?.eventKind || '').toLowerCase()
+        const isOpenKind = TRADE_OPEN_EVENT_KINDS.has(eventKind) || event?.isOrigin
+        const isCloseKind = TRADE_CLOSE_EVENT_KINDS.has(eventKind)
+
+        if (isOpenKind) {
+          if (Number.isFinite(inferredCapital) && inferredCapital > 0) {
+            capitalStack.push(inferredCapital)
+            runningRequiredCapital += inferredCapital
+          }
+        } else if (isCloseKind) {
+          if (Number.isFinite(inferredCapital) && inferredCapital > 0) {
+            runningRequiredCapital = Math.max(0, runningRequiredCapital - inferredCapital)
+          } else if (capitalStack.length) {
+            const closedCapital = Number(capitalStack.pop() || 0)
+            runningRequiredCapital = Math.max(0, runningRequiredCapital - closedCapital)
+          }
+        }
+
+        if (Number.isFinite(inferredCapital) && inferredCapital > 0) {
+          maxRunningRequiredCapital = Math.max(maxRunningRequiredCapital, inferredCapital, runningRequiredCapital)
+        } else if (!isCloseKind) {
+          denominatorReasons.push(`Denominator is partial for ${event?.eventDate || 'an event'} due to missing capital inference.`)
+        }
+      })
+
+      const linkedSourceIdSet = new Set(
+        timelineEntries.map(entry => String(entry?.sourceTransactionId || '').trim()).filter(Boolean)
+      )
+      const allPositions = Array.isArray(this.activeAccount?.positions) ? this.activeAccount.positions : []
+      const relPositionRows = Array.isArray(this.activeAccount?.relPositionTransactions)
+        ? this.activeAccount.relPositionTransactions
+        : []
+      const linkedPositionKeySet = new Set(
+        relPositionRows
+          .filter((rel) => linkedSourceIdSet.has(String(rel?.sourceTransactionId || '').trim()))
+          .map((rel) => String(rel?.positionKey || '').trim())
+          .filter(Boolean)
+      )
+      const matchedPositions = allPositions.filter((position) => {
+        const sourceId = String(position?.sourceTransactionId || '').trim()
+        const positionKey = String(position?.positionKey || '').trim()
+        return (sourceId && linkedSourceIdSet.has(sourceId)) || (positionKey && linkedPositionKeySet.has(positionKey))
+      })
+
+      const putCollateralCapital = getPutCollateralFromOpenShortContracts(timelineEntries)
+
+      let capitalAtRisk = null
+      let denominatorComplete = false
+      if (putCollateralCapital > 0) {
+        capitalAtRisk = putCollateralCapital
+        denominatorComplete = true
+        inferredFromSet.add('net open put collateral')
+      } else if (maxRunningRequiredCapital > 0 && denominatorReasons.length === 0) {
+        capitalAtRisk = roundMoney(maxRunningRequiredCapital)
+        denominatorComplete = true
+      }
+
+      const hasStockExposureEvents = timelineEntries.some((event) => {
+        const source = event?.source || null
+        if (!source) return false
+        const eventKind = String(event?.eventKind || '').toLowerCase()
+        if (eventKind === 'assignment' || eventKind === 'assigned') return true
+        const action = String(source?.action || '').trim().toLowerCase()
+        if (!action.includes('buy')) return false
+        const symbol = toUpperSymbol(source?.symbol)
+        const description = String(source?.description || '').trim()
+        const optionMatch = OPTION_SYMBOL_REGEX.exec(symbol) || OPTION_SYMBOL_REGEX.exec(description)
+        return !optionMatch
+      })
+
+      const openStockExposure = matchedPositions.reduce((acc, position) => {
+        const totalShares = Math.abs(Number(position?.shares || 0))
+        const openShares = Math.abs(Number(getOpenShares(position) || 0))
+        if (!Number.isFinite(openShares) || openShares <= 0) return acc
+
+        const costBasis = Math.abs(Number(position?.costBasis || 0))
+        const openCostBasis = totalShares > 0 ? costBasis * (openShares / totalShares) : costBasis
+        const currentPrice = Number(position?.currentPrice || 0)
+        const currentValue = openShares * currentPrice
+
+        if (Number.isFinite(openCostBasis) && openCostBasis > 0) {
+          acc.costBasis += openCostBasis
+        }
+        if (Number.isFinite(currentValue) && currentValue >= 0) {
+          acc.currentValue += currentValue
+        }
+        acc.openShares += openShares
+        return acc
+      }, { openShares: 0, costBasis: 0, currentValue: 0 })
+
+      const hasOpenStockExposure = openStockExposure.openShares > 0 && openStockExposure.costBasis > 0
+      const stockTransactionExposure = timelineEntries.reduce((acc, event) => {
+        const source = event?.source || null
+        if (!source) return acc
+
+        const symbol = toUpperSymbol(source?.symbol)
+        const description = String(source?.description || '').trim()
+        const optionMatch = OPTION_SYMBOL_REGEX.exec(symbol) || OPTION_SYMBOL_REGEX.exec(description)
+        if (optionMatch) return acc
+
+        const action = String(source?.action || event?.eventKind || '').trim().toLowerCase()
+        const quantity = Math.abs(Number(source?.quantity ?? event?.quantity ?? 0))
+        if (!Number.isFinite(quantity) || quantity <= 0) return acc
+
+        const amount = Math.abs(Number(source?.amount ?? event?.cashImpact ?? 0))
+        if (action.includes('buy')) {
+          acc.buyShares += quantity
+          if (Number.isFinite(amount) && amount > 0) acc.buyCost += amount
+        } else if (action.includes('sell')) {
+          acc.sellShares += quantity
+        }
+        return acc
+      }, { buyShares: 0, sellShares: 0, buyCost: 0 })
+
+      const openTransactionShares = Math.max(0, stockTransactionExposure.buyShares - stockTransactionExposure.sellShares)
+      const inferredTransactionOpenCostBasis = stockTransactionExposure.buyShares > 0 && openTransactionShares > 0
+        ? roundMoney(stockTransactionExposure.buyCost * (openTransactionShares / stockTransactionExposure.buyShares))
+        : 0
+      const hasStockTransactionExposure = openTransactionShares > POSITION_SHARE_EPSILON && inferredTransactionOpenCostBasis > 0
+
+      if (hasOpenStockExposure) {
+        capitalAtRisk = roundMoney(openStockExposure.costBasis)
+        denominatorComplete = capitalAtRisk > 0
+        inferredFromSet.add('linked open position cost basis total')
+      } else if (hasStockTransactionExposure) {
+        capitalAtRisk = inferredTransactionOpenCostBasis
+        denominatorComplete = capitalAtRisk > 0
+        inferredFromSet.add('linked stock transaction cost basis')
+      }
+
+      const currentCapitalTiedUp = capitalAtRisk !== null
+        ? capitalAtRisk
+        : roundMoney(Math.max(0, runningRequiredCapital))
+      const weeklyROR = denominatorComplete && capitalAtRisk > 0 && durationWeeks > 0
+        ? roundMoney((netPL / capitalAtRisk / durationWeeks) * 100)
+        : null
+      const normalizedDenominatorReasons = denominatorComplete
+        ? []
+        : (denominatorReasons.length
+            ? Array.from(new Set(denominatorReasons))
+            : ['Capital at risk could not be inferred from linked puts or linked open-position cost basis.'])
+
+      const plScenarios = hasOpenStockExposure
+        ? {
+            hasOpenStockExposure: true,
+            needsPositionResolution: false,
+            resolutionMessage: '',
+            openShares: roundMoney(openStockExposure.openShares),
+            costBasis: roundMoney(openStockExposure.costBasis),
+            currentValue: roundMoney(openStockExposure.currentValue),
+            worstCaseNetPL: roundMoney(netPL + openStockExposure.currentValue),
+            fullRecoveryNetPL: roundMoney(netPL + openStockExposure.costBasis),
+            plusTenRecoveryNetPL: roundMoney(netPL + (openStockExposure.costBasis * 1.10)),
+          }
+        : {
+            hasOpenStockExposure: false,
+            needsPositionResolution: hasStockExposureEvents,
+            resolutionMessage: hasStockExposureEvents
+              ? 'Assignment/stock-buy activity exists, but no linked position was found from this trade’s linked transactions.'
+              : '',
+            openShares: 0,
+            costBasis: 0,
+            currentValue: 0,
+            worstCaseNetPL: null,
+            fullRecoveryNetPL: null,
+            plusTenRecoveryNetPL: null,
+          }
+
+      return {
+        netPremiums,
+        netPL,
+        durationWeeks,
+        capitalAtRisk,
+        currentCapitalTiedUp,
+        weeklyROR,
+        plScenarios,
+        denominator: {
+          complete: denominatorComplete,
+          reasons: normalizedDenominatorReasons,
+          inferredFrom: Array.from(inferredFromSet),
+        },
+        startDate,
+        endDate: terminalDate
+      }
+    },
+
+    _validateTradeMetricOutput(metrics, tradeId = '') {
+      const context = tradeId ? ` for trade ${tradeId}` : ''
+      if (!metrics || typeof metrics !== 'object') {
+        throw new Error(`Trade metrics${context} did not return an object.`)
+      }
+      const requiredKeys = ['netPremiums', 'netPL', 'durationWeeks', 'capitalAtRisk', 'currentCapitalTiedUp', 'weeklyROR', 'denominator', 'plScenarios']
+      requiredKeys.forEach((key) => {
+        if (!(key in metrics)) {
+          throw new Error(`Trade metrics${context} is missing required key "${key}".`)
+        }
+      })
+      if (!metrics.denominator || typeof metrics.denominator !== 'object') {
+        throw new Error(`Trade metrics${context} has invalid denominator payload.`)
+      }
+      if (!Array.isArray(metrics.denominator.reasons)) {
+        throw new Error(`Trade metrics${context} denominator.reasons must be an array.`)
+      }
+      if (metrics.plScenarios !== null && typeof metrics.plScenarios !== 'object') {
+        throw new Error(`Trade metrics${context} plScenarios must be an object or null.`)
+      }
+      if (
+        metrics.weeklyROR !== null &&
+        (metrics.capitalAtRisk === null || Number(metrics.capitalAtRisk) <= 0 || Number(metrics.durationWeeks) <= 0 || !metrics.denominator.complete)
+      ) {
+        throw new Error(`Trade metrics${context} produced weeklyROR while denominator was incomplete or invalid.`)
+      }
+      if (
+        (metrics.capitalAtRisk === null || Number(metrics.capitalAtRisk) <= 0 || !metrics.denominator.complete) &&
+        metrics.weeklyROR !== null
+      ) {
+        throw new Error(`Trade metrics${context} must return weeklyROR as null when denominator is incomplete.`)
+      }
+    },
+
+    recalculateTradeMetrics(tradeId) {
+      const account = this._requireActiveAccount()
+      this._normalizeTradeDeskScopeForAccount(account)
+      const trade = this._getTradeById(tradeId, account)
+      if (!trade) {
+        throw new Error(`Trade ${tradeId} was not found in the active account.`)
+      }
+      this._ensureTradeScope(trade, account)
+      const metrics = this._computeTradeMetrics(trade)
+      this._validateTradeMetricOutput(metrics, tradeId)
+      return metrics
+    },
+
+    _assertTradeDeskInvariants() {
+      this._normalizeTradeDeskScopeForAccount(this.activeAccount)
+      const check = this.runTradeDeskInvariantChecks()
+      if (!check.ok) {
+        throw new Error(`Trade Desk invariant check failed: ${check.errors.join(' | ')}`)
+      }
+    },
+
+    createTrade(payload = {}) {
+      const account = this._requireActiveAccount()
+      if (!Array.isArray(account.trades)) account.trades = []
+      if (!Array.isArray(account.relTradeTransactions)) account.relTradeTransactions = []
+
+      const sourceTransactionId = String(payload?.sourceTransactionId || '').trim()
+      if (!sourceTransactionId) {
+        throw new Error('Creating a trade requires sourceTransactionId.')
+      }
+
+      const sourceRow = this._findImportedTransactionById(sourceTransactionId, account)
+      if (!sourceRow) {
+        throw new Error('sourceTransactionId must reference an imported transaction in the active account.')
+      }
+
+      const allocatedTradeId = this._getAllocatedTradeIdBySourceId(sourceTransactionId, account)
+      if (allocatedTradeId) {
+        throw new Error(`Source transaction ${sourceTransactionId} is already allocated to trade ${allocatedTradeId}.`)
+      }
+
+      const sourceSymbol = toUpperSymbol(sourceRow?.symbol)
+      const payloadSymbol = toUpperSymbol(payload?.symbol)
+      const symbol = payloadSymbol || sourceSymbol
+      if (!symbol) {
+        throw new Error('Trade symbol is required. Provide payload.symbol or select a source transaction with a symbol.')
+      }
+      const sourceMatchSymbol = toTradeUnderlyingSymbol(sourceRow?.symbol, sourceRow?.description)
+      const tradeMatchSymbol = toTradeUnderlyingSymbol(symbol)
+      if (sourceMatchSymbol && tradeMatchSymbol && tradeMatchSymbol !== sourceMatchSymbol) {
+        throw new Error(`Trade symbol ${symbol} does not match source transaction symbol ${sourceSymbol}.`)
+      }
+
+      const now = new Date().toISOString()
+      const trade = {
+        id: createLocalRecordId('trd'),
+        accountId: String(account.id),
+        sourceTransactionId,
+        symbol,
+        status: payload?.status === 'closed' ? 'closed' : 'open',
+        openedAt: toIsoDateOnly(payload?.openedAt || sourceRow?.date || now),
+        closedAt: payload?.status === 'closed'
+          ? toIsoDateOnly(payload?.closedAt || payload?.openedAt || sourceRow?.date || now)
+          : null,
+        name: payload?.name ? String(payload.name) : null,
+        notes: payload?.notes ? String(payload.notes) : null,
+        createdAt: now,
+        updatedAt: now
+      }
+
+      account.trades.push(trade)
+      this.recalculateTradeMetrics(trade.id)
+      this._assertTradeDeskInvariants()
+      this.saveChangesAndRecalculate()
+      return trade
+    },
+
+    updateTrade(id, patch = {}) {
+      const account = this._requireActiveAccount()
+      this._normalizeTradeDeskScopeForAccount(account)
+      const trade = this._getTradeById(id, account)
+      if (!trade) {
+        throw new Error(`Trade ${id} was not found in the active account.`)
+      }
+      this._ensureTradeScope(trade, account)
+
+      let sourceTransactionId = String(trade?.sourceTransactionId || '').trim()
+      if (patch?.sourceTransactionId !== undefined) {
+        sourceTransactionId = String(patch.sourceTransactionId || '').trim()
+        if (!sourceTransactionId) {
+          throw new Error('Trade sourceTransactionId is required.')
+        }
+        const sourceRow = this._findImportedTransactionById(sourceTransactionId, account)
+        if (!sourceRow) {
+          throw new Error('sourceTransactionId must reference an imported transaction in the active account.')
+        }
+        const allocatedTradeId = this._getAllocatedTradeIdBySourceId(sourceTransactionId, account)
+        if (allocatedTradeId && allocatedTradeId !== String(trade.id)) {
+          throw new Error(`Source transaction ${sourceTransactionId} is already allocated to trade ${allocatedTradeId}.`)
+        }
+        trade.sourceTransactionId = sourceTransactionId
+      }
+
+      if (patch?.symbol !== undefined) {
+        const nextSymbol = toUpperSymbol(patch.symbol)
+        if (!nextSymbol) {
+          throw new Error('Trade symbol cannot be empty.')
+        }
+        const sourceRow = this._findImportedTransactionById(sourceTransactionId, account)
+        const sourceSymbol = toUpperSymbol(sourceRow?.symbol)
+        const sourceMatchSymbol = toTradeUnderlyingSymbol(sourceRow?.symbol, sourceRow?.description)
+        const nextMatchSymbol = toTradeUnderlyingSymbol(nextSymbol)
+        if (sourceMatchSymbol && nextMatchSymbol && sourceMatchSymbol !== nextMatchSymbol) {
+          throw new Error(`Trade symbol ${nextSymbol} does not match source transaction symbol ${sourceSymbol}.`)
+        }
+        trade.symbol = nextSymbol
+      }
+
+      if (patch?.status !== undefined) {
+        trade.status = patch.status === 'closed' ? 'closed' : 'open'
+      }
+      if (patch?.openedAt !== undefined) {
+        const openedAt = toIsoDateOnly(patch.openedAt)
+        if (!openedAt) throw new Error('Trade openedAt must be a valid YYYY-MM-DD date.')
+        trade.openedAt = openedAt
+      }
+      if (patch?.closedAt !== undefined) {
+        trade.closedAt = patch.closedAt ? toIsoDateOnly(patch.closedAt) : null
+      }
+      if (patch?.name !== undefined) {
+        trade.name = patch.name ? String(patch.name) : null
+      }
+      if (patch?.notes !== undefined) {
+        trade.notes = patch.notes ? String(patch.notes) : null
+      }
+      trade.updatedAt = new Date().toISOString()
+
+      this.recalculateTradeMetrics(trade.id)
+      this._assertTradeDeskInvariants()
+      this.saveChangesAndRecalculate()
+      return trade
+    },
+
+    deleteTrade(id) {
+      const account = this._requireActiveAccount()
+      this._normalizeTradeDeskScopeForAccount(account)
+      const tradeId = String(id || '').trim()
+      if (!tradeId) throw new Error('deleteTrade requires a trade id.')
+      const tradeExists = (Array.isArray(account.trades) ? account.trades : []).some(trade => String(trade?.id || '') === tradeId)
+      if (!tradeExists) throw new Error(`Trade ${tradeId} was not found in the active account.`)
+
+      account.trades = (Array.isArray(account.trades) ? account.trades : [])
+        .filter(trade => String(trade?.id || '') !== tradeId)
+      account.relTradeTransactions = (Array.isArray(account.relTradeTransactions) ? account.relTradeTransactions : [])
+        .filter(rel => String(rel?.tradeId || '') !== tradeId)
+      account.notes = (Array.isArray(account.notes) ? account.notes : [])
+        .filter((note) => !(
+          String(note?.targetCollection || '') === 'trades' &&
+          String(note?.targetId || '') === tradeId
+        ))
+
+      this._assertTradeDeskInvariants()
+      this.saveChangesAndRecalculate()
+    },
+
+    linkSourceTransactionsToTrade(tradeId, sourceTransactionIds = []) {
+      const account = this._requireActiveAccount()
+      this._normalizeTradeDeskScopeForAccount(account)
+      const trade = this._getTradeById(tradeId, account)
+      if (!trade) {
+        throw new Error(`Trade ${tradeId} was not found in the active account.`)
+      }
+      this._ensureTradeScope(trade, account)
+      if (!Array.isArray(account.relTradeTransactions)) account.relTradeTransactions = []
+
+      const uniqueSourceIds = Array.from(
+        new Set((Array.isArray(sourceTransactionIds) ? sourceTransactionIds : []).map(id => String(id || '').trim()).filter(Boolean))
+      )
+      if (!uniqueSourceIds.length) return []
+
+      const importedById = new Map(
+        (Array.isArray(account.importedTransactions) ? account.importedTransactions : [])
+          .map(row => [String(row?.id || ''), row])
+      )
+      const linkedSourceIdsInTrade = new Set(
+        (Array.isArray(account.relTradeTransactions) ? account.relTradeTransactions : [])
+          .filter(rel => String(rel?.tradeId || '') === String(trade.id))
+          .map(rel => String(rel?.sourceTransactionId || ''))
+      )
+
+      const createdRelations = []
+      uniqueSourceIds.forEach((sourceTransactionId) => {
+        if (sourceTransactionId === String(trade.sourceTransactionId || '')) return
+        if (linkedSourceIdsInTrade.has(sourceTransactionId)) return
+
+        const sourceRow = importedById.get(sourceTransactionId)
+        if (!sourceRow) {
+          throw new Error(`sourceTransactionId ${sourceTransactionId} does not exist in active account importedTransactions.`)
+        }
+
+        const allocatedTradeId = this._getAllocatedTradeIdBySourceId(sourceTransactionId, account)
+        if (allocatedTradeId && allocatedTradeId !== String(trade.id)) {
+          throw new Error(`Source transaction ${sourceTransactionId} is already allocated to trade ${allocatedTradeId}.`)
+        }
+
+        const sourceSymbol = toTradeUnderlyingSymbol(sourceRow?.symbol, sourceRow?.description)
+        const tradeSymbol = toTradeUnderlyingSymbol(trade?.symbol)
+        if (sourceSymbol && tradeSymbol && sourceSymbol !== tradeSymbol) {
+          throw new Error(`Cannot link ${sourceTransactionId}: source symbol ${sourceSymbol} does not match trade symbol ${tradeSymbol}.`)
+        }
+
+        const relation = {
+          id: createLocalRecordId('reltrd'),
+          accountId: String(account.id),
+          tradeId: String(trade.id),
+          sourceTransactionId,
+          eventDate: toIsoDateOnly(sourceRow?.date) || toIsoDateOnly(new Date()),
+          eventWeek: Number.isFinite(Number(sourceRow?.week)) ? Number(sourceRow.week) : this.getWeekNumber(sourceRow?.date),
+          eventKind: this._inferTradeEventKindFromAction(sourceRow?.action),
+          cashImpact: Number(sourceRow?.amount || 0),
+          quantity: sourceRow?.quantity === undefined || sourceRow?.quantity === null ? null : Number(sourceRow.quantity),
+          notes: null,
+          metadata: null,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        }
+
+        account.relTradeTransactions.push(relation)
+        createdRelations.push(relation)
+      })
+
+      this.recalculateTradeMetrics(trade.id)
+      this._assertTradeDeskInvariants()
+      this.saveChangesAndRecalculate()
+      return createdRelations
+    },
+
+    unlinkTradeTransactions(relIds = []) {
+      const account = this._requireActiveAccount()
+      const relIdSet = new Set(
+        (Array.isArray(relIds) ? relIds : []).map(id => String(id || '').trim()).filter(Boolean)
+      )
+      if (!relIdSet.size) return
+
+      const impactedTradeIds = new Set()
+      ;(Array.isArray(account.relTradeTransactions) ? account.relTradeTransactions : []).forEach((rel) => {
+        if (relIdSet.has(String(rel?.id || ''))) {
+          impactedTradeIds.add(String(rel?.tradeId || ''))
+        }
+      })
+
+      account.relTradeTransactions = (Array.isArray(account.relTradeTransactions) ? account.relTradeTransactions : [])
+        .filter(rel => !relIdSet.has(String(rel?.id || '')))
+
+      impactedTradeIds.forEach((tradeId) => {
+        if (!tradeId) return
+        const trade = this._getTradeById(tradeId, account)
+        if (trade) this.recalculateTradeMetrics(trade.id)
+      })
+
+      this._assertTradeDeskInvariants()
+      this.saveChangesAndRecalculate()
+    },
+
+    runTradeDeskInvariantChecks() {
+      const account = this._requireActiveAccount()
+      const trades = Array.isArray(account.trades) ? account.trades : []
+      const relRows = Array.isArray(account.relTradeTransactions) ? account.relTradeTransactions : []
+      const importedRows = Array.isArray(account.importedTransactions) ? account.importedTransactions : []
+      const notes = Array.isArray(account.notes) ? account.notes : []
+      const importedById = new Map(importedRows.map(row => [String(row?.id || ''), row]))
+      const tradeById = new Map(trades.map(trade => [String(trade?.id || ''), trade]))
+
+      const errors = []
+      const allocated = new Map()
+
+      trades.forEach((trade) => {
+        const tradeId = String(trade?.id || '')
+        const sourceId = String(trade?.sourceTransactionId || '').trim()
+        if (String(trade?.accountId || '') !== String(account?.id || '')) {
+          errors.push(`Trade ${tradeId} accountId ${trade?.accountId || '<missing>'} is outside active account scope.`)
+        }
+        if (!sourceId) {
+          errors.push(`Trade ${tradeId} is missing sourceTransactionId.`)
+          return
+        }
+        const sourceRow = importedById.get(sourceId)
+        if (!sourceRow) {
+          errors.push(`Trade ${tradeId} sourceTransactionId ${sourceId} is missing from importedTransactions.`)
+          return
+        }
+        const tradeSymbol = toTradeUnderlyingSymbol(trade?.symbol)
+        const sourceSymbol = toTradeUnderlyingSymbol(sourceRow?.symbol, sourceRow?.description)
+        if (sourceSymbol && tradeSymbol && sourceSymbol !== tradeSymbol) {
+          errors.push(`Trade ${tradeId} symbol ${tradeSymbol} does not match source ${sourceSymbol}.`)
+        }
+        const existing = allocated.get(sourceId)
+        if (existing && existing !== tradeId) {
+          errors.push(`Source transaction ${sourceId} is allocated to multiple trades (${existing}, ${tradeId}).`)
+        }
+        allocated.set(sourceId, tradeId)
+      })
+
+      relRows.forEach((rel) => {
+        const relId = String(rel?.id || '')
+        const sourceId = String(rel?.sourceTransactionId || '').trim()
+        const tradeId = String(rel?.tradeId || '')
+        const trade = tradeById.get(tradeId)
+        if (!trade) {
+          errors.push(`Relation ${relId} references missing trade ${tradeId}.`)
+          return
+        }
+        if (String(rel?.accountId || '') !== String(account?.id || '')) {
+          errors.push(`Relation ${relId} accountId ${rel?.accountId || '<missing>'} is outside active account scope.`)
+        }
+        if (!sourceId) {
+          errors.push(`Relation ${relId} is missing sourceTransactionId.`)
+          return
+        }
+        const sourceRow = importedById.get(sourceId)
+        if (!sourceRow) {
+          errors.push(`Relation ${relId} sourceTransactionId ${sourceId} is missing from importedTransactions.`)
+          return
+        }
+        const existing = allocated.get(sourceId)
+        if (existing && existing !== tradeId) {
+          errors.push(`Source transaction ${sourceId} is allocated to multiple trades (${existing}, ${tradeId}).`)
+        } else {
+          allocated.set(sourceId, tradeId)
+        }
+        const tradeSymbol = toTradeUnderlyingSymbol(trade?.symbol)
+        const sourceSymbol = toTradeUnderlyingSymbol(sourceRow?.symbol, sourceRow?.description)
+        if (sourceSymbol && tradeSymbol && sourceSymbol !== tradeSymbol) {
+          errors.push(`Relation ${relId} symbol mismatch (${tradeSymbol} vs ${sourceSymbol}).`)
+        }
+      })
+
+      notes.forEach((note) => {
+        if (String(note?.targetCollection || '') !== 'trades') return
+        const noteId = String(note?.id || '<missing-id>')
+        const targetId = String(note?.targetId || '').trim()
+        if (!targetId) {
+          errors.push(`Trade note ${noteId} is missing targetId.`)
+          return
+        }
+        if (!tradeById.has(targetId)) {
+          errors.push(`Trade note ${noteId} targets missing trade ${targetId}.`)
+        }
+      })
+
+      return {
+        ok: errors.length === 0,
+        errors
+      }
     },
 
     // Core Data Actions
@@ -857,6 +2022,37 @@ export const useAppStore = defineStore('app', {
       }
     },
 
+    formatDateRangeWithYearBadges(startDateInput, endDateInput, plainText = false) {
+      if (!startDateInput || !endDateInput) return ''
+      const startDate = new Date(startDateInput)
+      const endDate = new Date(endDateInput)
+      if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) return ''
+
+      const startYear = startDate.getFullYear()
+      const endYear = endDate.getFullYear()
+
+      const formatMonthDay = (date) => {
+        const month = String(date.getMonth() + 1).padStart(2, '0')
+        const day = String(date.getDate()).padStart(2, '0')
+        return `${month}/${day}`
+      }
+
+      if (plainText) {
+        if (startYear === endYear) {
+          return `${startYear}: ${formatMonthDay(startDate)} - ${formatMonthDay(endDate)}`
+        }
+        return `${startYear}: ${formatMonthDay(startDate)} - ${endYear}: ${formatMonthDay(endDate)}`
+      }
+
+      const shortStartYear = startYear.toString().substring(2)
+      const shortEndYear = endYear.toString().substring(2)
+
+      if (startYear === endYear) {
+        return `<span class="badge rounded-pill bg-secondary text-white">'${shortStartYear}</span> ${formatMonthDay(startDate)} - ${formatMonthDay(endDate)}`
+      }
+      return `<span class="badge rounded-pill bg-secondary text-white">'${shortStartYear}</span> ${formatMonthDay(startDate)} - <span class="badge rounded-pill bg-secondary text-white">'${shortEndYear}</span> ${formatMonthDay(endDate)}`
+    },
+
     weekRange(weekNum, plainText = false) {
       if (!weekNum) return ''
       const startDate = this.activeAccount.settings.startDate
@@ -866,38 +2062,7 @@ export const useAppStore = defineStore('app', {
       startDate.setDate(startDate.getDate() + (weekNum - 1) * 7)
       const endDate = new Date(startDate)
       endDate.setDate(endDate.getDate() + 6)
-
-      // Format with year first, then MM-DD
-      const startYear = startDate.getFullYear()
-      const endYear = endDate.getFullYear()
-      
-      const formatMonthDay = (date) => {
-        const month = String(date.getMonth() + 1).padStart(2, '0')
-        const day = String(date.getDate()).padStart(2, '0')
-        return `${month}/${day}`
-      }
-      
-      // For plain text version (used in selects and other non-HTML contexts)
-      if (plainText) {
-        
-        if (startYear === endYear) {
-          return `${startYear}: ${formatMonthDay(startDate)} - ${formatMonthDay(endDate)}`
-        } else {
-          return `${startYear}: ${formatMonthDay(startDate)} - ${endYear}: ${formatMonthDay(endDate)}`
-        }
-      }
-      
-      // HTML version with badges (for v-html rendering)
-      const shortStartYear = startYear.toString().substring(2)
-      const shortEndYear = endYear.toString().substring(2)
-      
-      // If years are the same, only show year once
-      if (startYear === endYear) {
-        return `<span class="badge rounded-pill bg-secondary text-white">'${shortStartYear}</span> ${formatMonthDay(startDate)} - ${formatMonthDay(endDate)}`
-      } else {
-        // If years differ, show both years
-        return `<span class="badge rounded-pill bg-secondary text-white">'${shortStartYear}</span> ${formatMonthDay(startDate)} - <span class="badge rounded-pill bg-secondary text-white">'${shortEndYear}</span> ${formatMonthDay(endDate)}`
-      }
+      return this.formatDateRangeWithYearBadges(startDate, endDate, plainText)
     },
 
     formatDate(dateString) {
@@ -1037,6 +2202,99 @@ export const useAppStore = defineStore('app', {
       const key = position.positionMetaKey || this.getPositionMetaKey(position)
       const basePrefix = `${this.getPositionMetaBaseKey(position)}|`
       this.activeAccount.positionMeta = this.activeAccount.positionMeta.filter(entry => entry.key !== key && !(typeof entry.key === 'string' && entry.key.startsWith(basePrefix)))
+    },
+
+    getManualPositionDeleteCascadeStatus(position) {
+      const account = this.activeAccount
+      if (!account || !position || !position.manual) {
+        return { blocked: false, sourceTransactionId: '', blockers: [] }
+      }
+
+      const positionKey = String(position?.positionKey || '').trim()
+      const sourceTransactionId = String(position?.sourceTransactionId || '').trim()
+      if (!sourceTransactionId) {
+        return { blocked: false, sourceTransactionId, blockers: [] }
+      }
+
+      const importedRows = Array.isArray(account.importedTransactions) ? account.importedTransactions : []
+      const sourceRow = importedRows.find((row) => String(row?.id || '') === sourceTransactionId)
+      const action = String(sourceRow?.action || '').trim().toLowerCase()
+      if (action !== 'manual-seed') {
+        return { blocked: false, sourceTransactionId, blockers: [] }
+      }
+
+      const blockers = []
+      const positionReferences = (Array.isArray(account.positions) ? account.positions : [])
+        .filter((existing) => {
+          if (String(existing?.sourceTransactionId || '') !== sourceTransactionId) return false
+          if (positionKey) return String(existing?.positionKey || '') !== positionKey
+          return existing !== position
+        })
+      if (positionReferences.length > 0) {
+        blockers.push(`positions (${positionReferences.length})`)
+      }
+
+      const tradeOriginReferences = (Array.isArray(account.trades) ? account.trades : [])
+        .filter((trade) => String(trade?.sourceTransactionId || '') === sourceTransactionId)
+      if (tradeOriginReferences.length > 0) {
+        blockers.push(`trade origins (${tradeOriginReferences.length})`)
+      }
+
+      const tradeRelationReferences = (Array.isArray(account.relTradeTransactions) ? account.relTradeTransactions : [])
+        .filter((rel) => String(rel?.sourceTransactionId || '') === sourceTransactionId)
+      if (tradeRelationReferences.length > 0) {
+        blockers.push(`trade activity links (${tradeRelationReferences.length})`)
+      }
+
+      const positionRelationReferences = (Array.isArray(account.relPositionTransactions) ? account.relPositionTransactions : [])
+        .filter((rel) => {
+          if (String(rel?.sourceTransactionId || '') !== sourceTransactionId) return false
+          if (positionKey) return String(rel?.positionKey || '') !== positionKey
+          return true
+        })
+      if (positionRelationReferences.length > 0) {
+        blockers.push(`position activity links (${positionRelationReferences.length})`)
+      }
+
+      return {
+        blocked: blockers.length > 0,
+        sourceTransactionId,
+        blockers
+      }
+    },
+
+    removeManualPositionAndLinkedSyntheticSource(position) {
+      const account = this.activeAccount
+      if (!account || !position || !position.manual) return false
+
+      const positionKey = String(position?.positionKey || '').trim()
+      const sourceTransactionId = String(position?.sourceTransactionId || '').trim()
+      const cascadeStatus = this.getManualPositionDeleteCascadeStatus(position)
+      if (cascadeStatus.blocked) return false
+
+      this.removePositionMeta(position)
+
+      account.positions = (Array.isArray(account.positions) ? account.positions : []).filter((existing) => {
+        if (positionKey) return String(existing?.positionKey || '') !== positionKey
+        return existing !== position
+      })
+
+      if (positionKey) {
+        account.relPositionTransactions = (Array.isArray(account.relPositionTransactions) ? account.relPositionTransactions : [])
+          .filter((rel) => String(rel?.positionKey || '') !== positionKey)
+      }
+
+      if (!sourceTransactionId) return true
+
+      const importedRows = Array.isArray(account.importedTransactions) ? account.importedTransactions : []
+      const sourceRow = importedRows.find((row) => String(row?.id || '') === sourceTransactionId)
+      const action = String(sourceRow?.action || '').trim().toLowerCase()
+      if (action !== 'manual-seed') return true
+
+      account.importedTransactions = importedRows
+        .filter((row) => String(row?.id || '') !== sourceTransactionId)
+
+      return true
     },
 
     calculateWeekStartEnd(weekNumber) {

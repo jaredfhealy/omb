@@ -18,7 +18,8 @@ const confirmModal = ref(null)
 const isFixedNavRoute = computed(() =>
   route.path.startsWith('/summarizer') ||
   route.path.startsWith('/data-manager') ||
-  route.path.startsWith('/reporting')
+  route.path.startsWith('/reporting') ||
+  route.path.startsWith('/trade-desk')
 )
 
 // Set up the confirm method
@@ -41,9 +42,11 @@ onBeforeUnmount(() => {
 
 <template>
   <AppNavigation />
-  <div v-if="store.persistenceError" class="alert alert-danger rounded-0 mb-0 px-3 py-2 d-flex justify-content-between align-items-center" role="alert">
-    <span>{{ store.persistenceError }}</span>
-    <button type="button" class="btn btn-sm btn-outline-light ms-3" @click="store.persistenceError = null">Dismiss</button>
+  <div v-if="store.persistenceError" class="position-fixed top-0 start-50 translate-middle-x p-3 persistence-status-overlay">
+    <div class="alert alert-danger alert-dismissible fade show mb-0 shadow" role="alert">
+      {{ store.persistenceError }}
+      <button type="button" class="btn-close" aria-label="Dismiss status" @click="store.persistenceError = null"></button>
+    </div>
   </div>
   <div :class="[
     'container-fluid',
@@ -103,5 +106,10 @@ body,
 
 #confirm-modal {
   z-index: 1060 !important;
+}
+
+.persistence-status-overlay {
+  z-index: 1090;
+  max-width: min(92vw, 960px);
 }
 </style>

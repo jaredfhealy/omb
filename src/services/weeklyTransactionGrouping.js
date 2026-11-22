@@ -174,6 +174,13 @@ function formatStrikeDisplay(strike) {
   return `$${numeric.toFixed(2)}`
 }
 
+function formatStrikeCompact(strike) {
+  const numeric = Number(strike)
+  if (!Number.isFinite(numeric)) return ''
+  const rounded = Math.round(numeric * 100) / 100
+  return `$${Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(2)}`
+}
+
 function getRollDirectionIconClass(fromDate, toDate, fromStrike, toStrike) {
   const fromStrikeNum = Number(fromStrike)
   const toStrikeNum = Number(toStrike)
@@ -560,6 +567,12 @@ export function groupOptionLifecycle(rows, { sortDescending = false } = {}) {
         if (optionType === 'PUT' || optionType === 'CALL') {
           nextRow.action = `new short ${optionType.toLowerCase()}`
           nextRow.type = nextRow.action
+          if (optionType === 'PUT') {
+            const strikeSuffix = formatStrikeCompact(nextRow.strike)
+            if (strikeSuffix) {
+              nextRow.description = `${nextRow.description} ${strikeSuffix}`
+            }
+          }
         }
       }
       if (actionEquals(nextRow, 'buy to open')) {
